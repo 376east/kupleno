@@ -2,7 +2,7 @@
 
 Локальный журнал покупок, возвратов и чеков Ozon, Wildberries и Яндекс Маркета.
 
-<p><img src="docs/badges/status.svg" alt="Статус: в разработке" height="24"> <img src="docs/badges/stack.svg" alt="Стек: React + WXT" height="24"> <img src="docs/badges/mode.svg" alt="Запуск: локально" height="24"></p>
+<p><img src="https://img.shields.io/badge/%D0%A1%D1%82%D0%B0%D1%82%D1%83%D1%81-%D0%B2%20%D1%80%D0%B0%D0%B7%D1%80%D0%B0%D0%B1%D0%BE%D1%82%D0%BA%D0%B5-orange?style=flat&labelColor=555" alt="Статус: в разработке"> <img src="https://img.shields.io/badge/%D0%A1%D1%82%D0%B5%D0%BA-React%20%2B%20WXT-blue?style=flat&labelColor=555" alt="Стек: React + WXT"> <img src="https://img.shields.io/badge/%D0%97%D0%B0%D0%BF%D1%83%D1%81%D0%BA-%D0%BB%D0%BE%D0%BA%D0%B0%D0%BB%D1%8C%D0%BD%D0%BE-blue?style=flat&labelColor=555" alt="Запуск: локально"></p>
 
 **[Демо](assets/demo/kupleno-0.21-voice.mp4) · [Запуск](#запуск) · [Архитектура](#архитектура) · [План](PLAN.md) · [Для агента](AGENTS.md)**
 
