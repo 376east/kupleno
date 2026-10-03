@@ -9,8 +9,8 @@
 ```sh
 npm ci
 npm --prefix extension/next ci
-npm run preview:check
 npx playwright install chromium
+npm run preview:check
 npm run preview:browser
 ```
 
@@ -71,3 +71,17 @@ npm run preview:browser
 ## Публикация
 
 Production output WXT находится в `.output/chrome-mv3`, в Git не хранится. Старый `npm run package` не включает `next`. Предпросмотр можно скачать как артефакт успешного preview CI и загрузить распакованным. Стабильный релиз, смена default branch, магазин расширений и слияние PR требуют отдельного решения. Перед публикацией проверять точный commit, его набор файлов и CI, не копировать папку чата.
+
+## Откат основной ветки
+
+С 4 октября 2026 основной вход `main` - предпросмотр 0.21.0. Это смена исходников по умолчанию, а не подтверждение стабильности сборщиков. Старый опубликованный HEAD `258e8272559c69f72f99c27911b4bc71c5a42303` сохранён тегом `archive/pre-021-20261004`.
+
+Чтобы вернуть публичный вход без force-push и удаления истории, создайте архивную ветку и сделайте её основной:
+
+```sh
+git fetch origin --tags
+git push origin refs/tags/archive/pre-021-20261004:refs/heads/archive/legacy-0192
+gh api --method PATCH repos/malyarq/kupleno -f default_branch=archive/legacy-0192
+```
+
+Последняя команда требует уже авторизованного `gh`; альтернатива - GitHub Settings → Default branch → `archive/legacy-0192`. Новая история остаётся в `main`. Это откат репозитория, не локальной базы: перед заменой расширения экспортируйте JSON. Не открывайте новую базу старым кодом без проверки совместимости.

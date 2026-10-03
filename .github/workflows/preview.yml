@@ -19,8 +19,8 @@ jobs:
           node-version: '24'
       - run: npm ci
       - run: npm --prefix extension/next ci
-      - run: npm run preview:check
       - run: npx playwright install --with-deps chromium
+      - run: npm run preview:check
       - run: npm run preview:browser
       - run: npm run preview:design
         env:

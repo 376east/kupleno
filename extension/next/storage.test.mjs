@@ -60,7 +60,7 @@ test('backup rejects corrupt settings and duplicate identities before saving', (
   assert.throws(() => serializeBackup({ ...state, rows: [...state.rows, ...state.rows] }), error => error.code === 'INVALID_ROW');
 });
 
-test('IndexedDB store keeps epochs, history and legacy database read-only', async () => {
+test('IndexedDB store keeps epochs, history and legacy database read-only', async (t) => {
   const source = await readFile(new URL('./storage.mjs', import.meta.url), 'utf8');
   const domain = await readFile(new URL('./domain.mjs', import.meta.url), 'utf8');
   const server = createServer((request, response) => {
@@ -73,6 +73,7 @@ test('IndexedDB store keeps epochs, history and legacy database read-only', asyn
     response.end('<!doctype html><title>storage test</title>');
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
   const { port } = server.address();
   const browser = await chromium.launch({ headless: true, executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH });
   const page = await browser.newPage();
@@ -140,6 +141,5 @@ test('IndexedDB store keeps epochs, history and legacy database read-only', asyn
   } finally {
     await page.close();
     await browser.close();
-    await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   }
 });
