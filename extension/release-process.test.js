@@ -113,14 +113,30 @@ assert.doesNotMatch(verifyWorkflow, /pull_request:|statuses:\s*write|Купле�
 assert.doesNotMatch(verifyWorkflow, /contents:\s*write|gh release|softprops\/action-gh-release/i);
 
 const codeqlWorkflow = read('.github/workflows/codeql.yml');
-assert.match(codeqlWorkflow, /push:\n\s+branches: \[main\]/);
-assert.match(codeqlWorkflow, /schedule:/);
+assert.doesNotMatch(codeqlWorkflow, /push:|schedule:/);
+assert.match(codeqlWorkflow, /actions: read/);
 assert.match(codeqlWorkflow, /workflow_dispatch:/);
 assert.match(codeqlWorkflow, /security-events: write/);
 assert.match(codeqlWorkflow, /languages: javascript-typescript/);
 for (const action of [...codeqlWorkflow.matchAll(/^\s*uses:\s*([^\s#]+)/gm)].map((match) => match[1])) {
   assert.match(action, /^[^@]+@[0-9a-f]{40}$/, `${action} must be pinned to a full commit SHA`);
 }
+
+const securityWorkflow = read('.github/workflows/security.yml');
+assert.match(securityWorkflow, /push:\n\s+branches: \[main\]/);
+assert.match(securityWorkflow, /pull_request:/);
+assert.match(securityWorkflow, /schedule:/);
+assert.match(securityWorkflow, /semgrep==1\.179\.0/);
+assert.match(securityWorkflow, /ref: [0-9a-f]{40}/);
+assert.match(securityWorkflow, /python3 scripts\/security-scan\.py/);
+assert.doesNotMatch(securityWorkflow, /continue-on-error|contents: write|security-events: write/);
+for (const action of [...securityWorkflow.matchAll(/^\s*uses:\s*([^\s#]+)/gm)].map((match) => match[1])) {
+  assert.match(action, /^[^@]+@[0-9a-f]{40}$/, `${action} must be pinned`);
+}
+const scanScript = read('scripts/security-scan.py');
+for (const flag of ['--strict', '--error', '--metrics=off', '--disable-version-check']) assert.ok(scanScript.includes(flag));
+assert.match(scanScript, /negative-control\.json/);
+assert.match(scanScript, /result\.returncode != 1/);
 
 const candidateScript = read('scripts/verify-release-candidate.sh');
 assert.match(candidateScript, /status --porcelain --untracked-files=all/);

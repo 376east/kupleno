@@ -52,6 +52,7 @@ async function marketContext(source: Source) {
   if (source !== 'yandex') return { marketTabId: tab.id };
   const result = await browser.scripting.executeScript({ target: { tabId: tab.id }, func: () => {
     const html = document.documentElement.innerHTML.replace(/&quot;/g, '"').replace(/&amp;/g, '&');
+    // nosemgrep: detect-non-literal-regexp -- read is scoped to this injected function and called only with fixed header names below.
     const read = (key: string) => html.match(new RegExp(`"${key}"\\s*:\\s*"([^"\\r\\n]{1,2000})"`))?.[1] || '';
     return { sk: read('sk'), version: read('-version') || read('version'), marketFrontGlue: read('marketFrontGlue'), pageId: read('page') || 'market:orders', retpath: location.href };
   } });

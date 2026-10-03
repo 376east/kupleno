@@ -1519,6 +1519,7 @@
   function extractYandexHeaderValue(html, key) {
     const text = decodeHtmlEntities(html);
     const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // nosemgrep: detect-non-literal-regexp -- key is regex-escaped immediately above; only a literal header name enters the pattern.
     return text.match(new RegExp(`"${escaped}"\\s*:\\s*"([^"]+)"`))?.[1] || '';
   }
 

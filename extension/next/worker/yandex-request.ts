@@ -25,6 +25,7 @@ export async function yandexRequest(input: unknown, body: unknown, tabId?: numbe
   const executions = await withDeadline(browser.scripting.executeScript({ target: { tabId: tabId! }, world: 'MAIN', args: [resolver, body], func: async (resolver: string, body: string) => {
     if (location.origin !== 'https://market.yandex.ru') return { status: 403, text: '', error: 'Страница магазина изменилась.' };
     const html = document.documentElement.innerHTML.replace(/&quot;/g, '"').replace(/&amp;/g, '&');
+    // nosemgrep: detect-non-literal-regexp -- read is scoped to this injected function and called only with fixed header names below.
     const read = (key: string) => html.match(new RegExp(`"${key}"\\s*:\\s*"([^"\\r\\n]{1,2000})"`))?.[1] || '';
     const headers: Record<string, string> = { accept: '*/*', 'content-type': 'application/json', 'x-market-apphost-target': 'WEB', 'x-market-core-service': '<UNKNOWN>', 'x-market-page-id': read('page') || 'market:orders', 'x-requested-with': 'XMLHttpRequest', 'x-retpath-y': 'https://market.yandex.ru/my/orders?filter=COMPLETED' };
     const sk = read('sk'), version = read('-version') || read('version'), glue = read('marketFrontGlue');

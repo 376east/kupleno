@@ -798,6 +798,7 @@ async function fetchYandexResolve(tabId, headers, params, path, pauseMs = 0) {
 
         function headerValue(html, key) {
           const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          // nosemgrep: detect-non-literal-regexp -- key is regex-escaped immediately above; only a literal header name enters the pattern.
           return decodeHtml(html).match(new RegExp(`"${escaped}"\\s*:\\s*"([^"]+)"`))?.[1] || '';
         }
 
