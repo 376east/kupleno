@@ -3,7 +3,7 @@
 ![Версия: 0.21.0 preview](https://img.shields.io/badge/0.21.0-preview-7053d6)
 ![Стек: React + WXT](https://img.shields.io/badge/React-WXT-202127)
 ![Хранение: IndexedDB](https://img.shields.io/badge/local--first-IndexedDB-7053d6)
-[![Preview CI](https://github.com/malyarq/kupleno/actions/workflows/preview.yml/badge.svg?branch=main)](https://github.com/malyarq/kupleno/actions/workflows/preview.yml)
+[Проверки CI (нужен доступ к репозиторию)](https://github.com/malyarq/kupleno/actions/workflows/preview.yml)
 
 Личный журнал покупок с Ozon, Wildberries и Яндекс Маркета. Чтобы видеть расходы, находить нужную вещь и не терять возвраты и чеки. Данные хранятся в браузере; сервер продукта и аккаунт в «Куплено» не нужны. [Как устроено хранение](docs/PREVIEW.md#данные).
 
