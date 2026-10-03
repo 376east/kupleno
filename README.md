@@ -46,7 +46,7 @@ npm run preview:check
 ## Что внутри
 
 ```mermaid
-flowchart LR
+flowchart TB
   M[Магазины и чеки] --> W[Фоновый обработчик и вкладка магазина]
   W --> P[Локальный разбор PDF и HTML]
   P --> J[Результат сбора]
