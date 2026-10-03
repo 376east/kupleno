@@ -1,0 +1,407 @@
+import { moneyMinor } from './domain.mjs';
+
+const DEFAULT_DB_NAME = 'kupleno-storage-v2';
+const DB_VERSION = 1;
+const MAX_ROWS = 100000;
+const MAX_JSON_DEPTH = 20;
+const MAX_JSON_NODES = 3000000;
+const MAX_JSON_BYTES = 64 * 1024 * 1024;
+const HISTORY_LIMIT = 12;
+
+const STORE = Object.freeze({
+  current: 'current',
+  history: 'history',
+  meta: 'meta'
+});
+const CURRENT_KEY = 'state';
+const META_EPOCH = 'epoch';
+const META_REVISION = 'revision';
+const DANGEROUS_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
+
+function storageError(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
+
+function own(object, key) {
+  return Object.prototype.hasOwnProperty.call(object, key);
+}
+
+function isPlainObject(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function validateJson(value, path = '$', depth = 0, seen = { count: 0 }) {
+  seen.count += 1;
+  if (seen.count > MAX_JSON_NODES) {
+    throw storageError('INVALID_JSON', 'Слишком большой JSON-документ.');
+  }
+  if (depth > MAX_JSON_DEPTH) {
+    throw storageError('INVALID_JSON', 'JSON-документ слишком глубоко вложен.');
+  }
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return;
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) throw storageError('INVALID_JSON', `Некорректное число в ${path}.`);
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (let index = 0; index < value.length; index += 1) {
+      validateJson(value[index], `${path}[${index}]`, depth + 1, seen);
+    }
+    return;
+  }
+  if (!isPlainObject(value)) {
+    throw storageError('INVALID_JSON', `Недопустимое значение в ${path}.`);
+  }
+  for (const key of Object.keys(value)) {
+    if (DANGEROUS_KEYS.has(key)) {
+      throw storageError('UNSAFE_KEY', `Недопустимый ключ ${key}.`);
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor || typeof descriptor.get === 'function' || typeof descriptor.set === 'function') {
+      throw storageError('INVALID_JSON', `Недопустимое свойство ${path}.${key}.`);
+    }
+    validateJson(value[key], `${path}.${key}`, depth + 1, seen);
+  }
+}
+
+function cloneJson(value) {
+  validateJson(value);
+  let serialized;
+  try {
+    serialized = JSON.stringify(value);
+  } catch (error) {
+    throw storageError('INVALID_JSON', `JSON нельзя сохранить: ${error.message}`);
+  }
+  if (typeof serialized !== 'string') throw storageError('INVALID_JSON', 'Некорректный JSON-документ.');
+  if (new TextEncoder().encode(serialized).byteLength > MAX_JSON_BYTES) {
+    throw storageError('DATA_TOO_LARGE', 'Данные превышают допустимый размер.');
+  }
+  return JSON.parse(serialized);
+}
+
+function validateDate(value, path) {
+  const day = typeof value === 'string' ? value.slice(0, 10) : '';
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || !Number.isFinite(Date.parse(value)) || new Date(`${day}T00:00:00Z`).toISOString().slice(0, 10) !== day) {
+    throw storageError('INVALID_DATE', `Некорректная дата в ${path}.`);
+  }
+}
+
+function validateAmount(value, path) {
+  if ((typeof value !== 'number' && typeof value !== 'string') || moneyMinor(value) === null) {
+    throw storageError('INVALID_AMOUNT', `Некорректная сумма в ${path}.`);
+  }
+}
+
+function validateSettings(settings) {
+  for (const key of ['overrides', 'budgets', 'monthClosures', 'recurringDecisions', 'anomalyDismissals']) {
+    if (own(settings, key) && !isPlainObject(settings[key])) throw storageError('INVALID_SETTINGS', `Некорректные настройки: ${key}.`);
+  }
+  for (const key of ['profiles', 'customRules', 'refundClaims', 'warranties']) {
+    if (own(settings, key) && (!Array.isArray(settings[key]) || settings[key].some(item => !isPlainObject(item)))) {
+      throw storageError('INVALID_SETTINGS', `Некорректный список настроек: ${key}.`);
+    }
+  }
+  const ids = new Set();
+  for (const profile of settings.profiles || []) {
+    if (typeof profile.id !== 'string' || !profile.id.trim() || typeof profile.name !== 'string' || ids.has(profile.id)) {
+      throw storageError('INVALID_SETTINGS', 'В копии повреждены профили.');
+    }
+    ids.add(profile.id);
+  }
+  for (const patch of Object.values(settings.overrides || {})) {
+    if (!isPlainObject(patch)) throw storageError('INVALID_SETTINGS', 'В копии повреждены ручные изменения.');
+    for (const key of ['category', 'profile', 'note']) {
+      if (own(patch, key) && typeof patch[key] !== 'string') throw storageError('INVALID_SETTINGS', `Некорректное ручное поле: ${key}.`);
+    }
+    if (own(patch, 'excluded') && typeof patch.excluded !== 'boolean') throw storageError('INVALID_SETTINGS', 'Некорректная отметка исключения покупки.');
+  }
+  for (const rule of settings.customRules || []) {
+    for (const key of ['keywords', 'negativeKeywords', 'sources', 'tokens']) {
+      if (own(rule, key) && (!Array.isArray(rule[key]) || rule[key].some(value => typeof value !== 'string'))) throw storageError('INVALID_SETTINGS', `Некорректное поле правила: ${key}.`);
+    }
+  }
+}
+
+function validateState(state) {
+  if (!isPlainObject(state) || !Array.isArray(state.rows) || !isPlainObject(state.settings) || !isPlainObject(state.metadata)) {
+    throw storageError('INVALID_STATE', 'Состояние должно содержать rows, settings и metadata.');
+  }
+  if (state.rows.length > MAX_ROWS) throw storageError('TOO_MANY_ROWS', 'Слишком много покупок.');
+  validateJson(state);
+  validateSettings(state.settings);
+  const rowIds = new Set();
+  state.rows.forEach((row, index) => {
+    if (!isPlainObject(row)) throw storageError('INVALID_ROW', `Некорректная покупка ${index + 1}.`);
+    if (typeof row.rowId !== 'string' || !row.rowId.trim() || rowIds.has(row.rowId)) {
+      throw storageError('INVALID_ROW', `У покупки ${index + 1} нет rowId.`);
+    }
+    rowIds.add(row.rowId);
+    if (typeof row.title !== 'string' || typeof row.source !== 'string' || !row.source.trim()) {
+      throw storageError('INVALID_ROW', `У покупки ${index + 1} повреждено название или магазин.`);
+    }
+    validateDate(row.date, `rows[${index}].date`);
+    validateAmount(row.amount, `rows[${index}].amount`);
+  });
+  return cloneJson(state);
+}
+
+function emptyState() {
+  return { rows: [], settings: {}, metadata: {} };
+}
+
+function assertExpectedVersion(options) {
+  if (!isPlainObject(options) || !own(options, 'expectedRevision') || !own(options, 'expectedEpoch')) {
+    throw storageError('EXPECTED_VERSION_REQUIRED', 'Нужны expectedRevision и expectedEpoch.');
+  }
+  const { expectedRevision, expectedEpoch } = options;
+  if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0 || !Number.isSafeInteger(expectedEpoch) || expectedEpoch < 0) {
+    throw storageError('INVALID_EXPECTED_VERSION', 'Некорректные expectedRevision или expectedEpoch.');
+  }
+  return { expectedRevision, expectedEpoch };
+}
+
+function assertCurrentVersion(actual, expected) {
+  if (actual.epoch !== expected.expectedEpoch) {
+    throw storageError('STALE_DATA_EPOCH', 'Данные были очищены в другой вкладке.');
+  }
+  if (actual.revision !== expected.expectedRevision) {
+    throw storageError('STALE_SNAPSHOT_REVISION', 'Данные изменились в другой вкладке.');
+  }
+}
+
+function requestResult(request) {
+  return new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || storageError('INDEXEDDB_ERROR', 'Ошибка IndexedDB.'));
+  });
+}
+
+function transactionDone(transaction) {
+  return new Promise((resolve, reject) => {
+    transaction.oncomplete = () => resolve();
+    transaction.onabort = () => reject(transaction.error || storageError('INDEXEDDB_ERROR', 'Транзакция IndexedDB отменена.'));
+    transaction.onerror = () => reject(transaction.error || storageError('INDEXEDDB_ERROR', 'Ошибка транзакции IndexedDB.'));
+  });
+}
+
+function openDatabase(indexedDB, dbName) {
+  if (!indexedDB || typeof indexedDB.open !== 'function') {
+    throw storageError('INDEXEDDB_UNAVAILABLE', 'IndexedDB недоступен.');
+  }
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(dbName, DB_VERSION);
+    request.onupgradeneeded = () => {
+      const database = request.result;
+      if (!database.objectStoreNames.contains(STORE.current)) database.createObjectStore(STORE.current, { keyPath: 'key' });
+      if (!database.objectStoreNames.contains(STORE.history)) database.createObjectStore(STORE.history, { keyPath: 'id' });
+      if (!database.objectStoreNames.contains(STORE.meta)) database.createObjectStore(STORE.meta, { keyPath: 'key' });
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || storageError('INDEXEDDB_ERROR', 'Не удалось открыть IndexedDB.'));
+  });
+}
+
+async function versionFromMeta(metaStore) {
+  const [epochRecord, revisionRecord] = await Promise.all([
+    requestResult(metaStore.get(META_EPOCH)),
+    requestResult(metaStore.get(META_REVISION))
+  ]);
+  return {
+    epoch: Number.isSafeInteger(epochRecord?.value) && epochRecord.value >= 0 ? epochRecord.value : 0,
+    revision: Number.isSafeInteger(revisionRecord?.value) && revisionRecord.value >= 0 ? revisionRecord.value : 0
+  };
+}
+
+function makeHistoryId() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+async function trimHistory(historyStore) {
+  const records = await requestResult(historyStore.getAll());
+  records.sort((left, right) => right.revision - left.revision || String(right.createdAt).localeCompare(String(left.createdAt)));
+  for (const record of records.slice(HISTORY_LIMIT)) historyStore.delete(record.id);
+}
+
+function historyItem(record) {
+  return {
+    id: record.id,
+    createdAt: record.createdAt,
+    rows: record.rows.length,
+    revision: record.revision
+  };
+}
+
+function envelope(state, revision, epoch) {
+  return { state: cloneJson(state), revision, epoch };
+}
+
+async function readCurrent(database) {
+  const transaction = database.transaction([STORE.current, STORE.meta], 'readonly');
+  const current = requestResult(transaction.objectStore(STORE.current).get(CURRENT_KEY));
+  const version = versionFromMeta(transaction.objectStore(STORE.meta));
+  const [currentRecord, currentVersion] = await Promise.all([current, version]);
+  if (!currentRecord) return null;
+  return envelope(validateState(currentRecord.state), currentVersion.revision, currentVersion.epoch);
+}
+
+async function openExistingLegacy(indexedDB) {
+  if (typeof indexedDB.databases !== 'function') {
+    throw storageError('LEGACY_READ_UNAVAILABLE', 'Этот браузер не умеет безопасно проверить старое хранилище.');
+  }
+  const databases = await indexedDB.databases();
+  if (!databases.some((database) => database.name === 'kupleno-storage-v1')) return null;
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open('kupleno-storage-v1');
+    request.onupgradeneeded = () => {
+      request.transaction.abort();
+      reject(storageError('LEGACY_READ_UNAVAILABLE', 'Старое хранилище изменилось во время чтения.'));
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || storageError('LEGACY_READ_FAILED', 'Не удалось прочитать старое хранилище.'));
+  });
+}
+
+export function serializeBackup(state) {
+  const safeState = validateState(state);
+  const exportedAt = new Date().toISOString();
+  return JSON.stringify({
+    format: 'kupleno-backup',
+    version: 2,
+    exportedAt,
+    createdAt: exportedAt,
+    state: safeState
+  });
+}
+
+export function parseBackup(text) {
+  if (typeof text !== 'string') throw storageError('INVALID_BACKUP', 'Резервная копия должна быть текстом.');
+  if (new TextEncoder().encode(text).byteLength > MAX_JSON_BYTES) {
+    throw storageError('DATA_TOO_LARGE', 'Резервная копия превышает допустимый размер.');
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (error) {
+    throw storageError('INVALID_BACKUP', `Не удалось прочитать резервную копию: ${error.message}`);
+  }
+  if (!isPlainObject(parsed) || parsed.format !== 'kupleno-backup' || (parsed.version !== 1 && parsed.version !== 2)) {
+    throw storageError('UNSUPPORTED_BACKUP', 'Неподдерживаемый формат резервной копии.');
+  }
+  if (own(parsed, 'exportedAt')) validateDate(parsed.exportedAt, 'exportedAt');
+  if (own(parsed, 'createdAt')) validateDate(parsed.createdAt, 'createdAt');
+  const state = parsed.version === 2 && own(parsed, 'state')
+    ? parsed.state
+    : { rows: parsed.rows, settings: parsed.settings, metadata: parsed.metadata };
+  return {
+    format: 'kupleno-backup',
+    version: parsed.version,
+    exportedAt: parsed.exportedAt,
+    createdAt: parsed.createdAt,
+    state: validateState(state)
+  };
+}
+
+export function createStore({ indexedDB = globalThis.indexedDB, dbName = DEFAULT_DB_NAME } = {}) {
+  if (typeof dbName !== 'string' || !dbName.trim()) throw storageError('INVALID_DB_NAME', 'Некорректное имя базы данных.');
+  let databasePromise;
+  const database = () => {
+    if (!databasePromise) databasePromise = openDatabase(indexedDB, dbName);
+    return databasePromise;
+  };
+
+  async function writeCurrent(state, expected, { nextEpoch = null, clearHistory = false } = {}) {
+    const safeState = validateState(state);
+    const db = await database();
+    const transaction = db.transaction([STORE.current, STORE.history, STORE.meta], 'readwrite');
+    const completed = transactionDone(transaction);
+    const currentStore = transaction.objectStore(STORE.current);
+    const historyStore = transaction.objectStore(STORE.history);
+    const metaStore = transaction.objectStore(STORE.meta);
+    const actual = await versionFromMeta(metaStore);
+    assertCurrentVersion(actual, expected);
+    const revision = actual.revision + 1;
+    const epoch = nextEpoch === null ? actual.epoch : nextEpoch;
+    const createdAt = new Date().toISOString();
+    currentStore.put({ key: CURRENT_KEY, state: safeState, revision, epoch, createdAt });
+    if (clearHistory) {
+      historyStore.clear();
+    } else {
+      historyStore.put({ id: makeHistoryId(), createdAt, rows: safeState.rows, state: safeState, revision });
+      await trimHistory(historyStore);
+    }
+    metaStore.put({ key: META_EPOCH, value: epoch });
+    metaStore.put({ key: META_REVISION, value: revision });
+    await completed;
+    return envelope(safeState, revision, epoch);
+  }
+
+  return Object.freeze({
+    async read() {
+      return readCurrent(await database());
+    },
+
+    async write(state, options) {
+      return writeCurrent(state, assertExpectedVersion(options));
+    },
+
+    async history() {
+      const db = await database();
+      const transaction = db.transaction(STORE.history, 'readonly');
+      const records = await requestResult(transaction.objectStore(STORE.history).getAll());
+      return records
+        .sort((left, right) => right.revision - left.revision || String(right.createdAt).localeCompare(String(left.createdAt)))
+        .map(historyItem);
+    },
+
+    async restore(id, options) {
+      const expected = assertExpectedVersion(options);
+      if (typeof id !== 'string' || !id) throw storageError('INVALID_HISTORY_ID', 'Некорректный идентификатор истории.');
+      const db = await database();
+      const transaction = db.transaction(STORE.history, 'readonly');
+      const record = await requestResult(transaction.objectStore(STORE.history).get(id));
+      if (!record) throw storageError('HISTORY_NOT_FOUND', 'Снимок истории не найден.');
+      return writeCurrent(record.state, expected);
+    },
+
+    async clear(options) {
+      const expected = assertExpectedVersion(options);
+      const db = await database();
+      const readTransaction = db.transaction(STORE.meta, 'readonly');
+      const actual = await versionFromMeta(readTransaction.objectStore(STORE.meta));
+      return writeCurrent(emptyState(), expected, { nextEpoch: actual.epoch + 1, clearHistory: true });
+    },
+
+    async readLegacy() {
+      const legacyDatabase = await openExistingLegacy(indexedDB);
+      if (!legacyDatabase) return null;
+      try {
+        if (!legacyDatabase.objectStoreNames.contains('meta') || !legacyDatabase.objectStoreNames.contains('snapshots')) {
+          throw storageError('LEGACY_READ_FAILED', 'Структура старого хранилища не поддерживается.');
+        }
+        const transaction = legacyDatabase.transaction(['meta', 'snapshots'], 'readonly');
+        const metaStore = transaction.objectStore('meta');
+        const latest = await requestResult(metaStore.get('latestSnapshotId'));
+        const [epoch, revision] = await Promise.all([
+          requestResult(metaStore.get('dataEpoch')),
+          requestResult(metaStore.get('snapshotRevision'))
+        ]);
+        const snapshot = latest?.value ? await requestResult(transaction.objectStore('snapshots').get(latest.value)) : null;
+        if (!snapshot) return null;
+        return {
+          id: snapshot.id,
+          createdAt: snapshot.createdAt,
+          state: validateState({ rows: snapshot.rows, settings: snapshot.settings, metadata: snapshot.metadata }),
+          revision: Number.isSafeInteger(revision?.value) && revision.value >= 0 ? revision.value : 0,
+          epoch: Number.isSafeInteger(epoch?.value) && epoch.value >= 0 ? epoch.value : 0
+        };
+      } finally {
+        legacyDatabase.close();
+      }
+    }
+  });
+}

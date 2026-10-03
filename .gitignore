@@ -2,3 +2,18 @@
 *.zip
 dist/
 node_modules/
+
+# Local state, credentials and recording intermediates
+.env
+.env.*
+!.env.example
+work/
+outputs/
+*.sqlite*
+*.db
+*.log
+*.mp3
+*.webm
+kupleno-backup-*.json
+__pycache__/
+.venv/
