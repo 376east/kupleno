@@ -32,6 +32,10 @@ async function main() {
   const errors = [];
   try {
     const worker = context.serviceWorkers()[0] || await context.waitForEvent('serviceworker');
+    const manifest = await worker.evaluate(() => chrome.runtime.getManifest());
+    const { version } = require('../extension/next/package.json');
+    assert.equal(manifest.version, version);
+    assert.equal(manifest.version_name, `${version} preview`);
     const id = new URL(worker.url()).host;
     const page = await context.newPage();
     page.on('pageerror', error => errors.push(error.message));

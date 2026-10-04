@@ -1,12 +1,14 @@
 import { defineConfig } from 'wxt';
 import { storeOrigins } from './collection';
+import { version } from './package.json';
 
 export default defineConfig({
   modules: ['@wxt-dev/module-react'],
   imports: false,
   manifest: {
     name: 'Куплено — новая версия',
-    version_name: '0.21.0 preview',
+    version,
+    version_name: `${version} preview`,
     description: 'Покупки и возвраты в одном месте. Локальная проверка новой версии.',
     minimum_chrome_version: '116',
     icons: { 16: 'icons/icon-16.png', 32: 'icons/icon-32.png', 48: 'icons/icon-48.png', 128: 'icons/icon-128.png' },

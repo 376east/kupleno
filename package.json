@@ -11,7 +11,7 @@
     "verify": "sh scripts/verify.sh",
     "verify:reproducible": "sh scripts/check-reproducible.sh",
     "verify:release": "sh scripts/verify-release-candidate.sh",
-    "preview:check": "npm --prefix extension/next run typecheck && npm --prefix extension/next test && npm --prefix extension/next run build && node scripts/check-doc-links.js",
+    "preview:check": "npm --prefix extension/next run typecheck && npm --prefix extension/next test && npm --prefix extension/next run build && node scripts/check-preview-version.cjs && node scripts/check-doc-links.js",
     "preview:browser": "node scripts/next-browser-smoke.cjs && node scripts/next-collection-smoke.cjs",
     "preview:design": "node scripts/next-design-demo.cjs"
   },

@@ -1,6 +1,8 @@
-# Предпросмотр 0.21.12: карта для нового агента
+# Предпросмотр 0.21.13: карта для нового агента
 
 Статус: самостоятельная MV3-сборка, работающая локально в Chromium. Серверной части нет. Версия и зависимости зафиксированы в [package.json](../extension/next/package.json) и [lockfile](../extension/next/package-lock.json). Старые документы в этой папке описывают 0.19.2, если явно не сказано иное.
+
+Оба поля версии установленного расширения берутся из package.json: `version` и `version_name` с пометкой preview. Проверка готового manifest входит в `preview:check`; браузерный сценарий сверяет версию через `chrome.runtime.getManifest()`. [Конфигурация](../extension/next/wxt.config.ts), [проверка сборки](../scripts/check-preview-version.cjs), [проверка установки](../scripts/next-browser-smoke.cjs).
 
 ## Запуск
 
