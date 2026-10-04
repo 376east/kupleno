@@ -119,6 +119,17 @@ function validateSettings(settings) {
     }
     if (own(patch, 'excluded') && typeof patch.excluded !== 'boolean') throw storageError('INVALID_SETTINGS', 'Некорректная отметка исключения покупки.');
   }
+  for (const [key, budget] of Object.entries(settings.budgets || {})) {
+    // Older flat limits and future JSON fields are not monthly plans consumed by the UI.
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(key.split('\u0001').at(-1))) continue;
+    if (!isPlainObject(budget)) throw storageError('INVALID_SETTINGS', 'Некорректный месячный бюджет.');
+    if (own(budget, 'categories') && !isPlainObject(budget.categories)) throw storageError('INVALID_SETTINGS', 'Некорректные категории бюджета.');
+    const amounts = [...Object.values(budget.categories || {})];
+    if (budget.total != null) amounts.push(budget.total);
+    if (amounts.some(amount => typeof amount !== 'number' || moneyMinor(amount) === null || amount < 0)) {
+      throw storageError('INVALID_SETTINGS', 'Некорректная сумма бюджета.');
+    }
+  }
   for (const rule of settings.customRules || []) {
     for (const key of ['keywords', 'negativeKeywords', 'sources', 'tokens']) {
       if (own(rule, key) && (!Array.isArray(rule[key]) || rule[key].some(value => typeof value !== 'string'))) throw storageError('INVALID_SETTINGS', `Некорректное поле правила: ${key}.`);

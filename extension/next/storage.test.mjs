@@ -84,6 +84,27 @@ test('valid legacy and current rules preserve unknown fields and numeric strings
     { rows: sample.rows, settings: sample.settings, metadata: sample.metadata });
 });
 
+test('monthly budgets reject corrupt amounts and containers in v1/v2', () => {
+  const invalid = [true, [], { total: true }, { total: '100' }, { total: -1 },
+    { categories: [] }, { categories: { Еда: 'broken' } }, { categories: { Еда: -1 } }, { categories: { Еда: null } }];
+  for (const budget of invalid) for (const version of [1, 2]) {
+    const sample = { ...state, settings: { budgets: { 'work\u00012026-10': budget } } };
+    const backup = version === 1 ? { format: 'kupleno-backup', version, ...sample }
+      : { format: 'kupleno-backup', version, state: sample };
+    assert.throws(() => parseBackup(JSON.stringify(backup)), error => error.code === 'INVALID_SETTINGS', JSON.stringify(budget));
+  }
+});
+
+test('budget validation retains legacy flat limits, absent total and unknown fields', () => {
+  const sample = { ...state, settings: { budgets: {
+    Еда: 3000, future: ['keep'],
+    '2026-10': { total: null, categories: { Еда: 100.01 }, future: { keep: true } },
+    'personal\u00012026-11': { categories: {} }, '2026-12': { total: 0 }
+  } } };
+  assert.deepEqual(parseBackup(serializeBackup(sample)).state, sample);
+  assert.deepEqual(parseBackup(JSON.stringify({ format: 'kupleno-backup', version: 1, ...sample })).state.settings, sample.settings);
+});
+
 test('IndexedDB store keeps epochs, history and legacy database read-only', async (t) => {
   const source = await readFile(new URL('./storage.mjs', import.meta.url), 'utf8');
   const domain = await readFile(new URL('./domain.mjs', import.meta.url), 'utf8');
@@ -149,10 +170,12 @@ test('IndexedDB store keeps epochs, history and legacy database read-only', asyn
       if (legacySnapshot.state.rows[0].amount !== '001.50') fail('Legacy amount was changed');
       const first = await store.write(sampleState, { expectedRevision: 0, expectedEpoch: 0 });
       if (first.revision !== 1 || first.epoch !== 0) fail('First write version is wrong');
-      const invalid = { ...sampleState, settings: { customRules: [{ category: {} }] } };
-      await expectCode(store.write(invalid, { expectedRevision: 1, expectedEpoch: 0 }), 'INVALID_SETTINGS');
-      if (JSON.stringify(await store.read()) !== JSON.stringify(first)) fail('Rejected settings changed the current state');
-      if ((await store.history()).length !== 1) fail('Rejected settings changed history');
+      for (const settings of [{ customRules: [{ category: {} }] }, { budgets: { '2026-10': { total: true } } }]) {
+        const invalid = { ...sampleState, settings };
+        await expectCode(store.write(invalid, { expectedRevision: 1, expectedEpoch: 0 }), 'INVALID_SETTINGS');
+        if (JSON.stringify(await store.read()) !== JSON.stringify(first)) fail('Rejected settings changed the current state');
+        if ((await store.history()).length !== 1) fail('Rejected settings changed history');
+      }
       await expectCode(store.write(sampleState, { expectedRevision: 0, expectedEpoch: 0 }), 'STALE_SNAPSHOT_REVISION');
       const secondState = { ...sampleState, metadata: { ...sampleState.metadata, changed: true } };
       const second = await store.write(secondState, { expectedRevision: 1, expectedEpoch: 0 });
