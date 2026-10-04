@@ -83,3 +83,35 @@ test('missing receipt URL does not discard subsequent receipts of the same order
   assert.equal(result.stats.failedOrders, 1);
   assert.match(result.warnings.join(' '), /не предоставил ссылку/);
 });
+
+test('unsafe or malformed receipt URL does not discard valid neighbours', async () => {
+  for (const fiscalUrl of ['not a URL', 'https://example.com/private-check']) {
+    const result = await collectYandex({ fetch: async input => {
+      const url = new URL(String(input));
+      if (url.pathname === '/my/orders') return new Response('<a href="/my/order/123456">Order</a>');
+      if (url.hostname === 'check.yandex.ru') return new Response(receipt);
+      return envelope({ result: ['bad', 'valid'], collections: { orderReceipt: {
+        bad: { fiscalUrl }, valid: { fiscalUrl: 'https://check.yandex.ru/valid', createdAt: 1767225600 }
+      } } });
+    } });
+    assert.equal(result.rows.length, 1);
+    assert.equal(result.stats.failedOrders, 1);
+    assert.ok(result.warnings.length > 0);
+    assert.ok(!result.warnings.join(' ').includes('private-check'));
+  }
+});
+
+test('API page promising more orders without a token is explicitly incomplete', async () => {
+  const result = await collectYandex({ fetch: async input => {
+    const url = new URL(String(input));
+    if (url.pathname === '/my/orders') return new Response('');
+    if (url.searchParams.get('r')?.includes('resolveConsolidationOrders')) {
+      return envelope({ result: 'list', collections: { orderConsolidationResult: { list: { ordersGroupsIds: [123456], hasNext: true } } } });
+    }
+    if (url.hostname === 'check.yandex.ru') return new Response(receipt);
+    return envelope({ result: ['r'], collections: { orderReceipt: { r: { fiscalUrl: 'https://check.yandex.ru/r', createdAt: 1767225600 } } } });
+  } });
+  assert.equal(result.rows.length, 1);
+  assert.equal(result.stats.incomplete, true);
+  assert.match(result.warnings.join(' '), /следующей страницы/);
+});

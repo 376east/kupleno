@@ -79,6 +79,10 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
     for (const id of array(page.ordersGroupsIds || page.orderGroupIds)) if (/^\d+$/.test(String(id))) orderIds.add(String(id));
     cap(orderIds.size);
     token = typeof page.pageToken === 'string' ? page.pageToken : '';
+    if (page.hasNext === true && !token) {
+      incomplete = true;
+      warnings.push('Яндекс Маркет: не найден указатель следующей страницы заказов.');
+    }
     requestPage = page.hasNext !== false && !!token;
     await options.onProgress?.({ done: pages, total: 0, message: `Яндекс Маркет: найдено ${orderIds.size} заказов.` });
   }
@@ -95,7 +99,13 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
         for (const receiptId of data.result) {
           const receipt = object(collection[String(receiptId)]);
           if (typeof receipt.fiscalUrl !== 'string' || !receipt.fiscalUrl.trim()) { invalidReceipt = true; rememberFailure(new Error('Магазин не предоставил ссылку на часть чеков.')); continue; }
-          const url = safeReceipt(receipt.fiscalUrl);
+          let url: string;
+          try { url = safeReceipt(receipt.fiscalUrl); }
+          catch {
+            invalidReceipt = true;
+            rememberFailure(new Error('Магазин предоставил некорректную ссылку на часть чеков.'));
+            continue;
+          }
           const created = typeof receipt.createdAt === 'number' ? new Date(receipt.createdAt < 1e12 ? receipt.createdAt * 1000 : receipt.createdAt) : null;
           receipts.set(url, { id: String(receipt.id || receiptId), url, orderId, type: String(receipt.type || ''), date: created && Number.isFinite(created.valueOf()) ? created.toISOString() : undefined });
           found = true; cap(receipts.size);
