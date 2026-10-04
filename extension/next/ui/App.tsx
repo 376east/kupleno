@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { createStore, parseBackup, serializeBackup } from '../storage.mjs';
+import { createStore, parseBackup, serializeBackup, type Recovery } from '../storage.mjs';
 import { effectiveRows, editOperations, identifyRows, settingsWithDefaults } from '../preferences.mjs';
 import { SOURCES, categoryTotals, filterRows, formatMoney, isRefund, largePurchases, moneyMinor, monthlyTotals, receiptUrl, summarize } from '../domain.mjs';
 import type { Envelope, Purchase, Snapshot, State } from '../model';
@@ -39,6 +39,7 @@ const dateLabel = (value: string) => /^\d{4}-\d{2}-\d{2}/.test(value) ? value.sl
 
 export function App() {
   const [envelope, setEnvelope] = useState<Envelope | null>(null);
+  const [recovery, setRecovery] = useState<Recovery | null>(null);
   const [page, setPage] = useState(currentPage);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -56,7 +57,12 @@ export function App() {
 
   useEffect(() => {
     let active = true;
-    initialize().then(value => { if (active) setEnvelope(value); }).catch(e => { if (active) setError(errorText(e)); });
+    initialize().then(value => { if (active) setEnvelope(value); }).catch(async e => {
+      if (!active) return;
+      setError(errorText(e));
+      try { const value = await store.readRecovery(); if (active) setRecovery(value); }
+      catch (failed) { if (active) setError(errorText(failed)); }
+    });
     const onHash = () => { if (location.hash === '#content') return; setPage(currentPage()); setSelected(null); };
     window.addEventListener('hashchange', onHash);
     const sync = new BroadcastChannel('kupleno-next-state');
@@ -70,17 +76,18 @@ export function App() {
   useEffect(() => { document.documentElement.dataset.theme = theme; localStorage.setItem('kupleno-next-theme', theme); }, [theme]);
   useEffect(() => { if (!notice) return; const timer = setTimeout(() => setNotice(''), 9000); return () => clearTimeout(timer); }, [notice]);
   const state = envelope?.state;
+  const version = envelope || recovery;
   const rows = useMemo(() => state ? effectiveRows(state) : [], [state]);
   const settings = useMemo(() => settingsWithDefaults(state?.settings), [state]);
   const visible = useMemo(() => filterRows(rows, filters), [rows, filters]);
   const activePurchase = rows.find(row => row.rowId === selected);
 
   async function save(next: State) {
-    if (!envelope || writing.current) throw new Error('Дождитесь завершения сохранения.');
+    if (!version || writing.current) throw new Error('Дождитесь завершения сохранения.');
     writing.current = true; setBusy(true); setError('');
     try {
-      const value = await store.write(next, { expectedRevision: envelope.revision, expectedEpoch: envelope.epoch });
-      setEnvelope(value); channel.current?.postMessage(value.revision); setNotice('Изменения сохранены');
+      const value = await store.write(next, { expectedRevision: version.revision, expectedEpoch: version.epoch });
+      setEnvelope(value); setRecovery(null); channel.current?.postMessage(value.revision); setNotice('Изменения сохранены');
     } finally { writing.current = false; setBusy(false); }
   }
   async function run(action: () => Promise<unknown>) { try { await action(); } catch (e) { setError(errorText(e)); } }
@@ -88,7 +95,7 @@ export function App() {
     if (!file) return;
     if (file.size > 64 * 1024 * 1024) throw new Error('Копия больше 64 МБ. Выберите другой файл.');
     if (file.name.toLowerCase().endsWith('.csv')) {
-      if (!state) throw new Error('Дождитесь загрузки истории.');
+      if (!state) throw new Error('Для восстановления выберите резервную копию JSON.');
       const imported = parsePurchasesCsv(await file.text(), settings.dataProfile);
       const known = new Set(state.rows.map(row => row.rowId));
       setImportKind('csv');
@@ -99,7 +106,10 @@ export function App() {
     const parsed = parseBackup(await file.text());
     setPendingImport({ ...parsed.state, rows: identifyRows(parsed.state.rows) });
   }
-  const refresh = () => run(async () => { setEnvelope(await store.read() || empty()); setSelected(null); setError(''); setNotice('Данные обновлены'); });
+  const refresh = () => run(async () => {
+    try { setEnvelope(await store.read() || empty()); setRecovery(null); setSelected(null); setError(''); setNotice('Данные обновлены'); }
+    catch (e) { const value = await store.readRecovery(); setRecovery(value); setEnvelope(null); setSelected(null); throw e; }
+  });
 
   return <>
     <a className="skip" href="#content">К содержимому</a>
@@ -110,9 +120,9 @@ export function App() {
         <div className="sidebar-bottom"><div className="sidebar-note">Ваша история покупок.<br />Хранится на этом устройстве.</div></div>
       </aside>
       <main className="main" id="content">
-        <header className="topbar"><span className="topbar-note">Локально. Только для вас.</span><div className="topbar-actions"><button className="icon-button secondary" aria-label={theme === 'dark' ? 'Включить светлую тему' : 'Включить тёмную тему'} onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}><Icon name={theme === 'dark' ? 'sun' : 'moon'} /></button><button className="secondary" disabled={!state || busy} onClick={() => input.current?.click()}>Загрузить историю</button></div></header>
+        <header className="topbar"><span className="topbar-note">Локально. Только для вас.</span><div className="topbar-actions"><button className="icon-button secondary" aria-label={theme === 'dark' ? 'Включить светлую тему' : 'Включить тёмную тему'} onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}><Icon name={theme === 'dark' ? 'sun' : 'moon'} /></button><button className="secondary" disabled={!version || busy} onClick={() => input.current?.click()}>Загрузить историю</button></div></header>
         {error && <div className="callout" role="alert"><strong>Действие не завершено</strong><p>{error}</p><div className="row-actions"><button onClick={() => void refresh()}>Обновить данные</button><button className="quiet" onClick={() => setError('')}>Скрыть</button></div></div>}
-        {!state ? <div className="boot" role="status"><h1>Открываем покупки</h1><p>Читаем локальную историю.</p></div> : <div className="page">
+        {!state ? recovery ? <section className="panel stack"><h1>Восстановить историю</h1><p>Сохранённые данные не прошли проверку. Они остаются на устройстве. Сначала скачайте исходную копию, затем выберите исправную резервную копию или прежнее сохранение.</p><div className="row-actions"><button className="secondary" disabled={!recovery.backup} onClick={() => recovery.backup && download('kupleno-original-recovery.json', recovery.backup)}>Скачать исходные данные</button><button className="secondary" disabled={busy} onClick={() => void run(async () => setHistory(await store.history()))}>История изменений</button></div><p className="note-line">Исходная копия может содержать повреждённые настройки. Не отправляйте её посторонним. Восстановление изменит всю историю только после вашего подтверждения.</p></section> : <div className="boot" role="status"><h1>{error ? 'История не открылась' : 'Открываем покупки'}</h1><p>{error ? 'Попробуйте обновить данные. Сохранённая история остаётся на устройстве.' : 'Читаем локальную историю.'}</p></div> : <div className="page">
           {!rows.length && page === 'overview' ? <Welcome onImport={() => input.current?.click()} onLegacy={() => void run(async () => {
             const legacy = await store.readLegacy();
             if (!legacy) throw new Error('В этом расширении нет старой базы. Загрузите резервную копию из установленной версии.');
@@ -132,11 +142,11 @@ export function App() {
     </div>
     {bulk && state && <BulkEdit state={state} ids={bulk} save={save} onClose={() => setBulk(null)} />}
     {activePurchase && state && <PurchaseEditor state={state} onRecordSave={next => run(async () => { await save(next); setSelected(null); })} error={error} key={activePurchase.rowId} row={activePurchase} profiles={settings.profiles} busy={busy} onClose={() => setSelected(null)} onSave={patch => run(async () => { await save(editOperations(state, [activePurchase.rowId], patch)); setSelected(null); })} />}
-    {pendingImport && <Dialog error={error} title="Загрузить историю покупок" onClose={() => !busy && setPendingImport(null)}><p>{importKind === 'csv' ? `После добавления таблицы в истории будет ${pendingImport.rows.length} операций. Операции с уже известными идентификаторами не добавляются повторно.` : `В копии ${pendingImport.rows.length} операций. Вместе с ними перенесутся сохранённые настройки и ручные изменения.`}</p>{importKind === 'backup' && !!state?.rows.length && <div className="callout">Текущая история этой новой версии будет заменена. Предыдущее состояние останется в истории изменений.</div>}<div className="form-footer"><button className="secondary" disabled={busy} onClick={() => setPendingImport(null)}>Отмена</button><button className="primary" disabled={busy} onClick={() => void run(async () => { await save(pendingImport); setPendingImport(null); setFilters({}); location.hash = 'overview'; })}>{busy ? 'Сохраняем…' : 'Загрузить историю'}</button></div></Dialog>}
-    {history && envelope && <Dialog error={error} title="История изменений" onClose={() => !busy && setHistory(null)}>{history.length ? history.map(item => <div className="setting-row" key={item.id}><div><strong>{new Date(item.createdAt).toLocaleString('ru-RU')}</strong><small>{item.rows} операций · сохранение {item.revision}</small></div><button disabled={busy || item.revision === envelope.revision} onClick={() => void run(async () => {
+    {pendingImport && <Dialog error={error} title="Загрузить историю покупок" onClose={() => !busy && setPendingImport(null)}><p>{importKind === 'csv' ? `После добавления таблицы в истории будет ${pendingImport.rows.length} операций. Операции с уже известными идентификаторами не добавляются повторно.` : `В копии ${pendingImport.rows.length} операций. Вместе с ними перенесутся сохранённые настройки и ручные изменения.`}</p>{recovery ? <div className="callout">Исправная копия заменит всю текущую историю. Перед подтверждением скачайте исходные данные на экране восстановления.</div> : importKind === 'backup' && !!state?.rows.length && <div className="callout">Текущая история этой новой версии будет заменена. Предыдущее состояние останется в истории изменений.</div>}<div className="form-footer"><button className="secondary" disabled={busy} onClick={() => setPendingImport(null)}>Отмена</button><button className="primary" disabled={busy} onClick={() => void run(async () => { await save(pendingImport); setPendingImport(null); setFilters({}); location.hash = 'overview'; })}>{busy ? 'Сохраняем…' : 'Загрузить историю'}</button></div></Dialog>}
+    {history && version && <Dialog error={error} title="История изменений" onClose={() => !busy && setHistory(null)}>{recovery && <p>Выбранное сохранение заменит всю текущую историю. Сначала скачайте исходные данные; повреждённые снимки не будут восстановлены.</p>}{history.length ? history.map(item => <div className="setting-row" key={item.id}><div><strong>{new Date(item.createdAt).toLocaleString('ru-RU')}</strong><small>{item.rows} операций · сохранение {item.revision}</small></div><button disabled={busy || (!recovery && item.revision === version.revision)} onClick={() => void run(async () => {
       if (writing.current) return;
       writing.current = true; setBusy(true);
-      try { setEnvelope(await store.restore(item.id, { expectedRevision: envelope.revision, expectedEpoch: envelope.epoch })); channel.current?.postMessage('restore'); setHistory(null); setNotice('Состояние восстановлено'); } finally { writing.current = false; setBusy(false); }
+      try { setEnvelope(await store.restore(item.id, { expectedRevision: version.revision, expectedEpoch: version.epoch })); setRecovery(null); setError(''); channel.current?.postMessage('restore'); setHistory(null); setNotice('Состояние восстановлено'); } finally { writing.current = false; setBusy(false); }
     })}>Восстановить</button></div>) : <p>Сохранений пока нет.</p>}</Dialog>}
     {notice && <div className="notice" role="status">{notice}</div>}
   </>;

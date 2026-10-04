@@ -387,6 +387,30 @@ export function createStore({ indexedDB = globalThis.indexedDB, dbName = DEFAULT
       return readCurrent(await database());
     },
 
+    async readRecovery() {
+      const db = await database();
+      const tx = db.transaction([STORE.current, STORE.meta], 'readonly');
+      const [record, version] = await Promise.all([
+        requestResult(tx.objectStore(STORE.current).get(CURRENT_KEY)),
+        versionFromMeta(tx.objectStore(STORE.meta))
+      ]);
+      // Only a downloadable JSON string leaves this path; invalid state never enters normal screens.
+      let rawState = record?.state;
+      if (!record) {
+        const legacy = await openExistingLegacy(indexedDB);
+        if (legacy) try {
+          if (legacy.objectStoreNames.contains('meta') && legacy.objectStoreNames.contains('snapshots')) {
+            const legacyTx = legacy.transaction(['meta', 'snapshots'], 'readonly');
+            const latest = await requestResult(legacyTx.objectStore('meta').get('latestSnapshotId'));
+            const snapshot = latest?.value ? await requestResult(legacyTx.objectStore('snapshots').get(latest.value)) : null;
+            if (snapshot) rawState = { rows: snapshot.rows, settings: snapshot.settings, metadata: snapshot.metadata };
+          }
+        } finally { legacy.close(); }
+      }
+      const backup = rawState ? JSON.stringify({ format: 'kupleno-backup', version: 2, state: rawState }) : null;
+      return { ...version, backup };
+    },
+
     async write(state, options) {
       return writeCurrent(state, assertExpectedVersion(options));
     },

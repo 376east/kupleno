@@ -58,6 +58,18 @@ const products=[['Кроссовки для города','Одежда',7490],[
  await shot(`profile-merge-${width}-${theme}`);
  await page.keyboard.press('Escape');await dialog.waitFor({state:'hidden'});
  }
+ await page.evaluate(async()=>{
+ const db=await new Promise(resolve=>{const r=indexedDB.open('kupleno-storage-v2');r.onsuccess=()=>resolve(r.result);});
+ try{const tx=db.transaction('current','readwrite'),store=tx.objectStore('current');const record=await new Promise(resolve=>{const r=store.get('state');r.onsuccess=()=>resolve(r.result);});record.state.settings.customRules=[{category:{broken:true}}];store.put(record);await new Promise((resolve,reject)=>{tx.oncomplete=resolve;tx.onabort=()=>reject(tx.error);});}finally{db.close();}
+ });
+ await page.reload();await page.getByRole('heading',{name:'Восстановить историю',exact:true}).waitFor();
+ for(const theme of ['light','dark'])for(const width of [390,1440]){
+ if(await page.locator('html').getAttribute('data-theme')!==theme)await page.getByRole('button',{name:theme==='dark'?'Включить тёмную тему':'Включить светлую тему',exact:true}).click();
+ await page.setViewportSize({width,height:width===390?844:1000});await page.evaluate(()=>window.scrollTo(0,0));
+ assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true,'Recovery overflow');
+ await shot(`recovery-${width}-${theme}`);
+ }
+ await page.locator('input[type=file]').first().setInputFiles({name:'valid.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify(fixture))});await page.getByRole('dialog').getByRole('button',{name:'Загрузить историю',exact:true}).click();await page.getByRole('heading',{name:'Обзор',exact:true}).waitFor();
  }
  await page.setViewportSize({width:1440,height:1000});await page.getByRole('link',{name:'Обзор',exact:true}).click();
  // Clear the search set in purchases; overview shares the same filters by design.

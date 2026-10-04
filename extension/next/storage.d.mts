@@ -1,6 +1,8 @@
 import type { State, Envelope, Expected, Snapshot } from './model';
+export interface Recovery { revision: number; epoch: number; backup: string | null }
 export function createStore(options?: { indexedDB?: IDBFactory; dbName?: string }): {
   read(): Promise<Envelope | null>;
+  readRecovery(): Promise<Recovery>;
   write(state: State, expected: Expected): Promise<Envelope>;
   history(): Promise<Snapshot[]>;
   restore(id: string, expected: Expected): Promise<Envelope>;

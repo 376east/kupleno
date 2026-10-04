@@ -15,6 +15,7 @@
 - Месячные бюджеты проверяются до импорта/записи: контейнеры и неотрицательные числовые суммы, с сохранением старых плоских лимитов и `total: null`. [Регрессии](extension/next/storage.test.mjs), [задача](https://github.com/malyarq/kupleno/issues/8).
 - Объединение профилей требует подтверждения с назначением переноса и предупреждением об удаляемых планах. Отмена/Escape не меняют базу. Сами бюджеты и итоги пока не объединяются. [UI](extension/next/ui/Preferences.tsx), [браузер](scripts/next-browser-smoke.cjs), [задача](https://github.com/malyarq/kupleno/issues/9).
 - Возврат не засчитывается дважды при повторном ID операции внутри ожидания или одинаковых ID ожиданий. Повреждённые привязки отклоняются до записи. [Регрессии](extension/next/lifecycle.test.ts), [задача](https://github.com/malyarq/kupleno/issues/10).
+- Отказ чтения повреждённых настроек открывает восстановление с исходным JSON и импортом/валидной историей; защита от записи устаревшей вкладки сохраняется. [UI](extension/next/ui/App.tsx), [regression](extension/next/storage.test.mjs), [задача](https://github.com/malyarq/kupleno/issues/11).
 
 ## Архитектурные решения и компромиссы
 

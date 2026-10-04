@@ -234,6 +234,38 @@ async function main() {
     assert.deepEqual(mergedProfiles[0][0].state.settings.budgets, {});
     assert.deepEqual(mergedProfiles[0][0].state.settings.monthClosures, {});
     await page.getByRole('button', { name: 'Закрыть', exact: true }).click();
+    const corruptCurrent = () => page.evaluate(async () => {
+      const db = await new Promise(resolve => { const r = indexedDB.open('kupleno-storage-v2'); r.onsuccess = () => resolve(r.result); });
+      try {
+        const tx = db.transaction('current', 'readwrite');
+        const store = tx.objectStore('current');
+        const record = await new Promise(resolve => { const r = store.get('state'); r.onsuccess = () => resolve(r.result); });
+        record.state.settings.customRules = [{ category: { broken: true } }];
+        store.put(record);
+        await new Promise((resolve, reject) => { tx.oncomplete = resolve; tx.onabort = () => reject(tx.error); });
+        return record.state;
+      } finally { db.close(); }
+    });
+    const corrupt = await corruptCurrent();
+    await page.reload();
+    await page.getByRole('heading', { name: 'Восстановить историю', exact: true }).waitFor();
+    const beforeRecovery = await savedState();
+    const [rawDownload] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Скачать исходные данные', exact: true }).click()]);
+    assert.deepEqual(JSON.parse(await fs.readFile(await rawDownload.path(), 'utf8')).state, corrupt, 'Recovery download must preserve original fields');
+    await page.locator('input[type=file]').setInputFiles({ name: 'valid.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(backup)) });
+    await page.getByRole('button', { name: 'Отмена', exact: true }).click();
+    assert.deepEqual(await savedState(), beforeRecovery, 'Cancelling recovery must not write');
+    await page.getByRole('button', { name: 'История изменений', exact: true }).click();
+    await page.getByRole('dialog').getByRole('button', { name: 'Восстановить', exact: true }).first().click();
+    await page.getByRole('heading', { name: 'Настройки', exact: true }).waitFor();
+    assert.deepEqual((await savedState())[0][0].state, mergedProfiles[0][0].state, 'Valid snapshot must restore normal UI');
+    await corruptCurrent();
+    await page.getByRole('button', { name: 'Обновить', exact: true }).click();
+    await page.getByRole('heading', { name: 'Восстановить историю', exact: true }).waitFor();
+    await page.locator('input[type=file]').setInputFiles({ name: 'valid.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(backup)) });
+    await page.getByRole('dialog').getByRole('button', { name: 'Загрузить историю', exact: true }).click();
+    await page.getByRole('heading', { name: 'Обзор', exact: true }).waitFor();
+    assert.deepEqual((await savedState())[0][0].state.rows, backup.rows, 'Valid backup must restore normal UI');
     assert.deepEqual(errors, []);
     console.log('PASS: installed MV3 build; import; focused search; receipt link; PDF worker under CSP; edit; restart; export preservation; restore; expected return; warranty; budget; month closure; light/dark/mobile.');
   } finally {

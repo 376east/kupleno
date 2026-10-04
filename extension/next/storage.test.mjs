@@ -175,6 +175,8 @@ test('IndexedDB store keeps epochs, history and legacy database read-only', asyn
 
       const store = createStore({ dbName });
       if (await store.read()) fail('A new database must not have a current state');
+      const legacyRecovery = await store.readRecovery();
+      if (legacyRecovery.revision !== 0 || JSON.parse(legacyRecovery.backup).state.rows[0].amount !== '001.50') fail('Legacy recovery must keep raw data and use target database version');
       const legacySnapshot = await store.readLegacy();
       if (legacySnapshot.epoch !== 9 || legacySnapshot.revision !== 6) fail('Legacy version was not read');
       if (legacySnapshot.state.rows[0].amount !== '001.50') fail('Legacy amount was changed');
@@ -198,6 +200,29 @@ test('IndexedDB store keeps epochs, history and legacy database read-only', asyn
       if (cleared.revision !== 4 || cleared.epoch !== 1 || cleared.state.rows.length !== 0) fail('Clear failed');
       await expectCode(store.write(sampleState, { expectedRevision: 3, expectedEpoch: 0 }), 'STALE_DATA_EPOCH');
       if ((await store.history()).length !== 0) fail('Clear did not remove history');
+      await store.write(sampleState, { expectedRevision: 4, expectedEpoch: 1 });
+      const corrupt = { ...sampleState, settings: { customRules: [{ category: {} }] } };
+      const db = await new Promise((resolve, reject) => {
+        const request = indexedDB.open(dbName); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
+      });
+      try {
+        const tx = db.transaction('current', 'readwrite');
+        tx.objectStore('current').put({ key: 'state', state: corrupt });
+        await new Promise((resolve, reject) => { tx.oncomplete = resolve; tx.onabort = () => reject(tx.error); });
+      } finally { db.close(); }
+      await expectCode(store.read(), 'INVALID_SETTINGS');
+      const recovery = await store.readRecovery();
+      if (JSON.stringify(JSON.parse(recovery.backup).state) !== JSON.stringify(corrupt)) fail('Recovery export changed original fields');
+      if (recovery.revision !== 5 || recovery.epoch !== 1) fail('Recovery version is wrong');
+      await expectCode(store.write(corrupt, { expectedRevision: 5, expectedEpoch: 1 }), 'INVALID_SETTINGS');
+      const repaired = await store.write(sampleState, { expectedRevision: 5, expectedEpoch: 1 });
+      if (repaired.revision !== 6) fail('Recovery write did not increment version');
+      await expectCode(store.write(sampleState, { expectedRevision: recovery.revision, expectedEpoch: recovery.epoch }), 'STALE_SNAPSHOT_REVISION');
+      const validHistory = (await store.history()).find(item => item.revision === 5);
+      const historyRecovery = await store.restore(validHistory.id, { expectedRevision: 6, expectedEpoch: 1 });
+      if (historyRecovery.revision !== 7 || JSON.stringify(historyRecovery.state) !== JSON.stringify(sampleState)) fail('Recovery from valid history failed');
+      await store.clear({ expectedRevision: 7, expectedEpoch: 1 });
+      await expectCode(store.write(sampleState, { expectedRevision: recovery.revision, expectedEpoch: recovery.epoch }), 'STALE_DATA_EPOCH');
     }, { sampleState: state });
   } finally {
     await page.close();
