@@ -269,6 +269,21 @@ async function main() {
     await page.getByRole('dialog').getByRole('button', { name: 'Загрузить историю', exact: true }).click();
     await page.getByRole('heading', { name: 'Обзор', exact: true }).waitFor();
     assert.deepEqual((await savedState())[0][0].state.rows, backup.rows, 'Valid backup must restore normal UI');
+    const emptyProfiles = { ...backup, settings: { ...backup.settings, profiles: [], future: { keep: true } } };
+    await page.locator('input[type=file]').setInputFiles({ name: 'empty-profiles.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(emptyProfiles)) });
+    await page.getByRole('dialog').getByRole('button', { name: 'Загрузить историю', exact: true }).click();
+    await page.getByRole('heading', { name: 'Обзор', exact: true }).waitFor();
+    await page.getByRole('link', { name: 'Покупки', exact: true }).click();
+    await page.getByRole('button', { name: 'Лампа для чтения', exact: true }).waitFor();
+    await page.reload();
+    await page.getByRole('button', { name: 'Лампа для чтения', exact: true }).waitFor();
+    await page.getByRole('link', { name: 'Настройки', exact: true }).click();
+    await page.getByRole('button', { name: 'Настроить профили', exact: true }).click();
+    await page.getByRole('dialog').locator('strong').filter({ hasText: /^Личные покупки$/ }).waitFor();
+    await page.getByRole('button', { name: 'Закрыть', exact: true }).click();
+    const importedEmptyProfiles = (await savedState())[0][0].state;
+    assert.deepEqual(importedEmptyProfiles.rows, emptyProfiles.rows);
+    assert.deepEqual(importedEmptyProfiles.settings, emptyProfiles.settings, 'Fallback must not rewrite imported settings');
     assert.deepEqual(errors, []);
     console.log('PASS: installed MV3 build; import; focused search; receipt link; PDF worker under CSP; edit; restart; export preservation; restore; expected return; warranty; budget; month closure; light/dark/mobile.');
   } finally {

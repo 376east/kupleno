@@ -36,9 +36,9 @@ export function identifyRows(rows) {
 export function settingsWithDefaults(settings = {}) {
   const profiles = settings.profiles?.length ? settings.profiles : [{ id: 'personal', name: 'Личные покупки' }];
   return {
-    profiles, activeProfile: 'all', dataProfile: profiles[0].id,
+    activeProfile: 'all', dataProfile: profiles[0].id,
     overrides: {}, customRules: [], budgets: {}, refundClaims: [], warranties: [],
-    monthClosures: {}, recurringDecisions: {}, anomalyDismissals: {}, ...settings
+    monthClosures: {}, recurringDecisions: {}, anomalyDismissals: {}, ...settings, profiles
   };
 }
 

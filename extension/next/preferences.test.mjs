@@ -1,11 +1,22 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createRequire } from 'node:module';
-import { rowId, identifyRows, effectiveRows, editOperations, removeProfile } from './preferences.mjs';
+import { rowId, identifyRows, effectiveRows, editOperations, removeProfile, settingsWithDefaults } from './preferences.mjs';
 const require = createRequire(import.meta.url);
 require('../preferences.js');
 const legacy = globalThis.KuplenoPreferences;
 const row = { source: 'ozon', title: 'Кофе', amount: '109.99', date: '2026-01-01 12:30', item_index: '1', marketplace_id: 'receipt-a', currency: 'RUB', type: 'purchase' };
+
+test('пустой список профилей получает fallback без изменения исходных данных', () => {
+  const source = { rows: [row], settings: { profiles: [], future: { keep: true } }, metadata: {} };
+  const before = structuredClone(source);
+  const settings = settingsWithDefaults(source.settings);
+  assert.deepEqual(settings.profiles, [{ id: 'personal', name: 'Личные покупки' }]);
+  assert.equal(settings.dataProfile, 'personal');
+  assert.equal(effectiveRows(source)[0].profile, 'personal');
+  assert.deepEqual(settings.future, source.settings.future);
+  assert.deepEqual(source, before);
+});
 
 test('идентичность строк и суффиксы совместимы со старой версией', () => {
   for (const sample of [row, { ...row, type: 'refund', amount: '-50.00' }, { ...row, title: 'Наушники — чёрные', source: 'wildberries' }]) {
