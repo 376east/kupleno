@@ -105,6 +105,16 @@ test('budget validation retains legacy flat limits, absent total and unknown fie
   assert.deepEqual(parseBackup(JSON.stringify({ format: 'kupleno-backup', version: 1, ...sample })).state.settings, sample.settings);
 });
 
+test('refund link validation rejects corrupt lists but preserves valid sparse legacy records', () => {
+  for (const manualMatchRowIds of ['refund', 42, null, ['refund', 'refund'], [''], [false]]) {
+    const sample = { ...state, settings: { refundClaims: [{ manualMatchRowIds }] } };
+    assert.throws(() => parseBackup(JSON.stringify({ format: 'kupleno-backup', version: 2, state: sample })), error => error.code === 'INVALID_SETTINGS');
+  }
+  const sample = { ...state, settings: { refundClaims: [{ id: 'legacy', future: { keep: true } }, { id: 'current', manualMatchRowIds: ['refund-a', 'refund-b'] }] } };
+  assert.deepEqual(parseBackup(serializeBackup(sample)).state, sample);
+  assert.throws(() => serializeBackup({ ...state, settings: { refundClaims: [{ id: 'same' }, { id: 'same' }] } }), error => error.code === 'INVALID_SETTINGS');
+});
+
 test('IndexedDB store keeps epochs, history and legacy database read-only', async (t) => {
   const source = await readFile(new URL('./storage.mjs', import.meta.url), 'utf8');
   const domain = await readFile(new URL('./domain.mjs', import.meta.url), 'utf8');
@@ -170,7 +180,7 @@ test('IndexedDB store keeps epochs, history and legacy database read-only', asyn
       if (legacySnapshot.state.rows[0].amount !== '001.50') fail('Legacy amount was changed');
       const first = await store.write(sampleState, { expectedRevision: 0, expectedEpoch: 0 });
       if (first.revision !== 1 || first.epoch !== 0) fail('First write version is wrong');
-      for (const settings of [{ customRules: [{ category: {} }] }, { budgets: { '2026-10': { total: true } } }]) {
+      for (const settings of [{ customRules: [{ category: {} }] }, { budgets: { '2026-10': { total: true } } }, { refundClaims: [{ manualMatchRowIds: ['refund', 'refund'] }] }]) {
         const invalid = { ...sampleState, settings };
         await expectCode(store.write(invalid, { expectedRevision: 1, expectedEpoch: 0 }), 'INVALID_SETTINGS');
         if (JSON.stringify(await store.read()) !== JSON.stringify(first)) fail('Rejected settings changed the current state');

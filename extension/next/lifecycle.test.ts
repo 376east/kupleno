@@ -27,3 +27,21 @@ test('duplicate manual links are rejected and warranty dates are classified', ()
   assert.throws(() => upsertClaim(state, claim('new', { manualMatchRowIds: ['refund'] })), /уже привязан/);
   assert.equal(archiveStatus({ id: 'doc', title: 'Гарантия', kind: 'warranty', expiresAt: '2026-09-20' }, '2026-09-01'), 'expiring');
 });
+
+test('one refund repeated inside a claim cannot pay the expected amount twice', () => {
+  const refunds = [row('refund', { amount: '-100.00', type: 'refund' })];
+  const duplicate = claim('manual', { expectedAmount: 200, manualMatchRowIds: ['refund', 'refund'] });
+  const result = reconcileClaims([duplicate], refunds)[0]!;
+  assert.equal(result.status, 'disputed');
+  assert.equal(result.received, 0);
+  assert.equal(result.outstanding, 20000);
+  assert.ok(result.problem);
+  assert.throws(() => upsertClaim({ rows: refunds, settings: {}, metadata: {} }, duplicate), /несколько раз/);
+});
+
+test('claims sharing an id cannot both receive the same manually linked refund', () => {
+  const refunds = [row('refund', { amount: '-100.00', type: 'refund' })];
+  const duplicate = claim('same', { manualMatchRowIds: ['refund'] });
+  const result = reconcileClaims([duplicate, { ...duplicate }], refunds);
+  assert.ok(result.every(item => item.status === 'disputed' && item.received === 0 && item.problem));
+});

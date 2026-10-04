@@ -83,15 +83,16 @@ export function upsertClaim(state: State, claim: Claim): State {
 }
 export function reconcileClaims(input: Claim[], rows: Purchase[], now = today()) {
   const refunds = rows.filter(row => isRefund(row) && !row.excluded && (row.currency || 'RUB') === 'RUB');
-  const used = new Set<string>(), reserved = new Map<string, string>();
-  const collision = new Set<string>();
-  for (const claim of input) for (const id of claim.manualMatchRowIds || []) {
+  const used = new Set<string>(), reserved = new Map<string, number>();
+  const collision = new Set<number>();
+  input.forEach((claim, index) => { for (const id of claim.manualMatchRowIds || []) {
     const previous = reserved.get(id);
-    if (previous && previous !== claim.id) { collision.add(previous); collision.add(claim.id); }
-    reserved.set(id, claim.id);
-  }
-  return input.map(claim => {
-    let problem = collision.has(claim.id) ? 'Одна операция привязана к нескольким ожиданиям.' : '';
+    if (previous !== undefined && previous !== index) { collision.add(previous); collision.add(index); }
+    reserved.set(id, index);
+  } });
+  return input.map((claim, index) => {
+    const repeated = new Set(claim.manualMatchRowIds || []).size !== (claim.manualMatchRowIds || []).length;
+    let problem = repeated ? 'Одна операция указана несколько раз.' : collision.has(index) ? 'Одна операция привязана к нескольким ожиданиям.' : '';
     const expected = moneyMinor(claim.expectedAmount) || 0;
     const compatible = (row: Purchase) => (!claim.profile || row.profile === claim.profile) && (!claim.source || row.source === claim.source) && row.date.slice(0,10) >= (claim.purchaseDate || claim.requestedAt);
     const manual = (claim.manualMatchRowIds || []).map(id => refunds.find(row => row.rowId === id));

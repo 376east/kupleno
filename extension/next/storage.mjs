@@ -119,6 +119,18 @@ function validateSettings(settings) {
     }
     if (own(patch, 'excluded') && typeof patch.excluded !== 'boolean') throw storageError('INVALID_SETTINGS', 'Некорректная отметка исключения покупки.');
   }
+  const claimIds = new Set();
+  for (const claim of settings.refundClaims || []) {
+    if (own(claim, 'id')) {
+      if (typeof claim.id !== 'string' || !claim.id.trim() || claimIds.has(claim.id)) throw storageError('INVALID_SETTINGS', 'Некорректный или повторный идентификатор ожидаемого возврата.');
+      claimIds.add(claim.id);
+    }
+    if (!own(claim, 'manualMatchRowIds')) continue;
+    const ids = claim.manualMatchRowIds;
+    if (!Array.isArray(ids) || ids.some(id => typeof id !== 'string' || !id.trim()) || new Set(ids).size !== ids.length) {
+      throw storageError('INVALID_SETTINGS', 'Некорректные привязки ожидаемого возврата.');
+    }
+  }
   for (const [key, budget] of Object.entries(settings.budgets || {})) {
     // Older flat limits and future JSON fields are not monthly plans consumed by the UI.
     if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(key.split('\u0001').at(-1))) continue;

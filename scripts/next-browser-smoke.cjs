@@ -80,7 +80,8 @@ async function main() {
     const beforeInvalidImport = await savedState();
     for (const [settings, message] of [
       [{ customRules: [{ category: {} }] }, 'Некорректное поле правила: category.'],
-      [{ budgets: { '2026-10': { total: true } } }, 'Некорректная сумма бюджета.']
+      [{ budgets: { '2026-10': { total: true } } }, 'Некорректная сумма бюджета.'],
+      [{ refundClaims: [{ manualMatchRowIds: ['refund', 'refund'] }] }, 'Некорректные привязки ожидаемого возврата.']
     ]) for (const version of [1, 2]) {
       const invalidState = { rows: backup.rows, settings, metadata: {} };
       const invalid = version === 1 ? { format: 'kupleno-backup', version, ...invalidState }
