@@ -115,6 +115,34 @@ test('refund link validation rejects corrupt lists but preserves valid sparse le
   assert.throws(() => serializeBackup({ ...state, settings: { refundClaims: [{ id: 'same' }, { id: 'same' }] } }), error => error.code === 'INVALID_SETTINGS');
 });
 
+test('import rejects malformed consumed refund and document fields', () => {
+  for (const key of ['refundClaims', 'warranties']) for (const record of [
+    { title: {} }, { note: [] }, { source: 42 }, { profile: false }, { rowId: {} }
+  ]) for (const version of [1, 2]) {
+    const sample = { ...state, settings: { [key]: [record] } };
+    const backup = version === 1 ? { format: 'kupleno-backup', version, ...sample }
+      : { format: 'kupleno-backup', version, state: sample };
+    assert.throws(() => parseBackup(JSON.stringify(backup)), error => error.code === 'INVALID_SETTINGS');
+  }
+  for (const settings of [
+    { refundClaims: [{ expectedAmount: {} }] }, { refundClaims: [{ expectedAmount: 0 }] },
+    { refundClaims: [{ requestedAt: '2026-02-30' }] }, { refundClaims: [{ requestedAt: '2026-10-05', dueDate: '2026-10-04' }] },
+    { warranties: [{ expiresAt: 'tomorrow' }] }, { warranties: [{ issuedAt: '2026-10-05', expiresAt: '2026-10-04' }] },
+    { warranties: [{ url: {} }] }, { warranties: [{ kind: [] }] },
+    { warranties: [{ id: '' }] }, { warranties: [{ id: null }] },
+    { warranties: [{ id: 'same', rowId: 'purchase-a' }, { id: 'same', rowId: 'purchase-b' }] }
+  ]) assert.throws(() => serializeBackup({ ...state, settings }), error => error.code === 'INVALID_SETTINGS');
+});
+
+test('sparse legacy records and nullable fields preserve unknown data', () => {
+  const sample = { ...state, settings: {
+    refundClaims: [{ future: { keep: true } }, { id: 'claim', title: 'Книга', expectedAmount: '100.01', requestedAt: '2026-10-05', dueDate: '2026-10-20', note: null, purchaseDate: null, manualMatchRowIds: [] }],
+    warranties: [{ future: { keep: true } }, { id: 'saved', note: 'Сохранить' }, { id: 'doc', title: 'Гарантия', kind: 'warranty', issuedAt: '2026-10-05', expiresAt: null, rowId: null, marketplace_id: null, source: null, profile: null, url: null, future: ['keep'] }]
+  } };
+  assert.deepEqual(parseBackup(serializeBackup(sample)).state, sample);
+  assert.deepEqual(parseBackup(JSON.stringify({ format: 'kupleno-backup', version: 1, ...sample })).state.settings, sample.settings);
+});
+
 test('IndexedDB store keeps epochs, history and legacy database read-only', async (t) => {
   const source = await readFile(new URL('./storage.mjs', import.meta.url), 'utf8');
   const domain = await readFile(new URL('./domain.mjs', import.meta.url), 'utf8');

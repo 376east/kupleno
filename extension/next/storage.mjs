@@ -96,6 +96,12 @@ function validateAmount(value, path) {
   }
 }
 
+function validateSettingDay(value) {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) throw storageError('INVALID_SETTINGS', 'Некорректная дата в настройках.');
+  try { validateDate(value, 'settings'); }
+  catch { throw storageError('INVALID_SETTINGS', 'Некорректная дата в настройках.'); }
+}
+
 function validateSettings(settings) {
   for (const key of ['overrides', 'budgets', 'monthClosures', 'recurringDecisions', 'anomalyDismissals']) {
     if (own(settings, key) && !isPlainObject(settings[key])) throw storageError('INVALID_SETTINGS', `Некорректные настройки: ${key}.`);
@@ -120,6 +126,28 @@ function validateSettings(settings) {
     if (own(patch, 'excluded') && typeof patch.excluded !== 'boolean') throw storageError('INVALID_SETTINGS', 'Некорректная отметка исключения покупки.');
   }
   const claimIds = new Set();
+  const documentIds = new Set();
+  for (const key of ['refundClaims', 'warranties']) for (const record of settings[key] || []) {
+    if (own(record, 'title') && typeof record.title !== 'string') throw storageError('INVALID_SETTINGS', 'Некорректное название возврата или документа.');
+    for (const field of ['rowId', 'marketplace_id', 'source', 'profile', 'note']) {
+      if (record[field] != null && typeof record[field] !== 'string') throw storageError('INVALID_SETTINGS', `Некорректное поле возврата или документа: ${field}.`);
+    }
+    const dates = key === 'refundClaims' ? ['requestedAt', 'dueDate', 'purchaseDate', 'confirmedAt'] : ['issuedAt', 'expiresAt', 'addedAt'];
+    for (const field of dates) if (record[field] != null) validateSettingDay(record[field]);
+    if (key === 'refundClaims') {
+      if (own(record, 'expectedAmount') && ((typeof record.expectedAmount !== 'number' && typeof record.expectedAmount !== 'string') || moneyMinor(record.expectedAmount) === null || moneyMinor(record.expectedAmount) <= 0)) throw storageError('INVALID_SETTINGS', 'Некорректная ожидаемая сумма возврата.');
+      if (record.status != null && typeof record.status !== 'string') throw storageError('INVALID_SETTINGS', 'Некорректный статус ожидаемого возврата.');
+      if (record.requestedAt && record.dueDate && record.dueDate < record.requestedAt) throw storageError('INVALID_SETTINGS', 'Срок возврата раньше даты обращения.');
+    } else {
+      if (own(record, 'id')) {
+        if (typeof record.id !== 'string' || !record.id.trim() || documentIds.has(record.id)) throw storageError('INVALID_SETTINGS', 'Некорректный или повторный идентификатор документа.');
+        documentIds.add(record.id);
+      }
+      if (record.url != null && typeof record.url !== 'string') throw storageError('INVALID_SETTINGS', 'Некорректное поле документа: url.');
+      if (own(record, 'kind') && !['receipt', 'warranty'].includes(record.kind)) throw storageError('INVALID_SETTINGS', 'Некорректный вид документа.');
+      if (record.issuedAt && record.expiresAt && record.expiresAt < record.issuedAt) throw storageError('INVALID_SETTINGS', 'Срок гарантии раньше даты выдачи.');
+    }
+  }
   for (const claim of settings.refundClaims || []) {
     if (own(claim, 'id')) {
       if (typeof claim.id !== 'string' || !claim.id.trim() || claimIds.has(claim.id)) throw storageError('INVALID_SETTINGS', 'Некорректный или повторный идентификатор ожидаемого возврата.');

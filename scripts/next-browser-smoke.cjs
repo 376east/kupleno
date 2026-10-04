@@ -81,7 +81,10 @@ async function main() {
     for (const [settings, message] of [
       [{ customRules: [{ category: {} }] }, 'Некорректное поле правила: category.'],
       [{ budgets: { '2026-10': { total: true } } }, 'Некорректная сумма бюджета.'],
-      [{ refundClaims: [{ manualMatchRowIds: ['refund', 'refund'] }] }, 'Некорректные привязки ожидаемого возврата.']
+      [{ refundClaims: [{ manualMatchRowIds: ['refund', 'refund'] }] }, 'Некорректные привязки ожидаемого возврата.'],
+      [{ warranties: [{ title: {} }] }, 'Некорректное название возврата или документа.'],
+      [{ refundClaims: [{ expectedAmount: 0 }] }, 'Некорректная ожидаемая сумма возврата.'],
+      [{ warranties: [{ id: 'same', rowId: 'purchase-a' }, { id: 'same', rowId: 'purchase-b' }] }, 'Некорректный или повторный идентификатор документа.']
     ]) for (const version of [1, 2]) {
       const invalidState = { rows: backup.rows, settings, metadata: {} };
       const invalid = version === 1 ? { format: 'kupleno-backup', version, ...invalidState }
