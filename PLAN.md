@@ -21,6 +21,7 @@
 - Отсутствующая сумма сохранённого месяца показана явно, без подстановки нуля; месяц можно открыть для повторной проверки. [Браузер](scripts/next-browser-smoke.cjs), [задача](https://github.com/malyarq/kupleno/issues/14).
 - Расхождение текущего и сохранённого итогов месяца показано с текущей суммой; просмотр не переписывает сохранение. [Браузер](scripts/next-browser-smoke.cjs), [задача](https://github.com/malyarq/kupleno/issues/16).
 - Проверены значения отметок анализа, чтобы повреждённая копия не скрывала предупреждения. [Регрессии](extension/next/storage.test.mjs), [задача](https://github.com/malyarq/kupleno/issues/17).
+- Проверены типы дополнительных полей покупок и отметки исключения; nullable и неизвестные поля сохраняются. [Регрессии](extension/next/storage.test.mjs), [задача](https://github.com/malyarq/kupleno/issues/18).
 
 ## Архитектурные решения и компромиссы
 

@@ -217,6 +217,10 @@ function validateState(state) {
     }
     validateDate(row.date, `rows[${index}].date`);
     validateAmount(row.amount, `rows[${index}].amount`);
+    for (const field of ['category', 'note', 'profile', 'currency', 'type', 'parse_quality']) {
+      if (row[field] != null && typeof row[field] !== 'string') throw storageError('INVALID_ROW', `Некорректное поле покупки: ${field}.`);
+    }
+    if (row.excluded != null && typeof row.excluded !== 'boolean') throw storageError('INVALID_ROW', 'Некорректная отметка исключения покупки.');
   });
   return cloneJson(state);
 }

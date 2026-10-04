@@ -46,6 +46,22 @@ test('v1 backup remains readable without changing purchase fields', () => {
   });
 });
 
+test('purchase fields reject UI-breaking types and misleading exclusion flags', () => {
+  for (const patch of [{ category: {} }, { note: [] }, { profile: 1 }, { currency: false }, { type: {} }, { parse_quality: [] }, { excluded: 'false' }]) for (const version of [1, 2]) {
+    const sample = { ...state, rows: [{ ...state.rows[0], ...patch }] };
+    const backup = version === 1 ? { format: 'kupleno-backup', version, ...sample } : { format: 'kupleno-backup', version, state: sample };
+    assert.throws(() => parseBackup(JSON.stringify(backup)), error => error.code === 'INVALID_ROW');
+  }
+  for (const patch of [
+    { category: null, note: null, profile: null, currency: null, type: null, parse_quality: null, excluded: null },
+    { category: 'Новая категория', note: '', profile: 'future', currency: 'future', type: 'future', parse_quality: 'future', excluded: false }
+  ]) {
+    const sample = { ...state, rows: [{ ...state.rows[0], ...patch, future: { keep: true } }] };
+    assert.deepEqual(parseBackup(serializeBackup(sample)).state, sample);
+    assert.deepEqual(parseBackup(JSON.stringify({ format: 'kupleno-backup', version: 1, ...sample })).state.rows, sample.rows);
+  }
+});
+
 test('backup rejects dangerous JSON keys', () => {
   assert.throws(
     () => parseBackup('{"format":"kupleno-backup","version":2,"state":{"rows":[],"settings":{"__proto__":{}},"metadata":{}}}'),

@@ -97,6 +97,15 @@ async function main() {
       assert.deepEqual(await savedState(), beforeInvalidImport, 'Rejected import must retain current data, history and revision');
       await page.getByRole('button', { name: 'Скрыть', exact: true }).click();
     }
+    for (const [patch, message] of [[{ category: {} }, 'Некорректное поле покупки: category.'], [{ excluded: 'false' }, 'Некорректная отметка исключения покупки.']]) for (const version of [1, 2]) {
+      const invalidState = { rows: [{ ...backup.rows[0], ...patch }], settings: backup.settings, metadata: {} };
+      const invalid = version === 1 ? { format: 'kupleno-backup', version, ...invalidState } : { format: 'kupleno-backup', version, state: invalidState };
+      await page.locator('input[type=file]').setInputFiles({ name: 'invalid-row.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(invalid)) });
+      await page.getByRole('alert').getByText(message, { exact: true }).waitFor();
+      assert.equal(await page.getByRole('dialog').count(), 0);
+      assert.deepEqual(await savedState(), beforeInvalidImport, 'Rejected purchase field must retain data/history/version');
+      await page.getByRole('button', { name: 'Скрыть', exact: true }).click();
+    }
     await page.locator('input[type=file]').setInputFiles({ name: 'backup.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(backup)) });
     await page.getByRole('dialog').getByRole('button', { name: 'Загрузить историю', exact: true }).click();
     await page.getByRole('heading', { name: 'Обзор', exact: true }).waitFor();
