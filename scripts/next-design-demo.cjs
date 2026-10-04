@@ -43,7 +43,7 @@ const products=[['Кроссовки для города','Одежда',7490],[
  }
  if(!record){await page.setViewportSize({width:320,height:780});await page.getByRole('link',{name:'Контроль',exact:true}).click();assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true,'320px control overflow');}
  if(!record){
- const profilesFixture={...fixture,rows:fixture.rows.map(row=>({...row,profile:'work'})),settings:{...fixture.settings,profiles:[{id:'personal',name:'Личные'},{id:'work',name:'Работа'}],budgets:{'work\u00012026-10':{total:5000}},monthClosures:{'work\u00012026-09':{status:'closed'},'all\u00012026-09':{status:'closed',totals:null}}}};
+ const profilesFixture={...fixture,rows:fixture.rows.map(row=>({...row,profile:'work'})),settings:{...fixture.settings,profiles:[{id:'personal',name:'Личные'},{id:'work',name:'Работа'}],budgets:{'work\u00012026-10':{total:5000}},monthClosures:{'work\u00012026-09':{status:'closed'},'all\u00012026-09':{status:'closed',totals:null},'all\u00012026-08':{status:'closed',totals:{netSpend:100}}}}};
  await page.locator('input[type=file]').first().setInputFiles({name:'profiles.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify(profilesFixture))});
  await page.getByRole('dialog').getByRole('button',{name:'Загрузить историю',exact:true}).click();
  await page.getByRole('link',{name:'Настройки',exact:true}).click();
@@ -67,6 +67,14 @@ const products=[['Кроссовки для города','Одежда',7490],[
  await page.getByText('Сумма сохранённого итога недоступна.',{exact:false}).waitFor();
  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true,'Missing month total overflow');
  await shot(`missing-month-total-${width}-${theme}`);
+ }
+ await page.getByLabel('Месяц',{exact:true}).fill('2026-08');
+ for(const theme of ['light','dark'])for(const width of [390,1440]){
+ if(await page.locator('html').getAttribute('data-theme')!==theme)await page.getByRole('button',{name:theme==='dark'?'Включить тёмную тему':'Включить светлую тему',exact:true}).click();
+ await page.setViewportSize({width,height:width===390?844:1000});
+ await page.getByText('Текущий итог отличается:',{exact:false}).waitFor();
+ assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true,'Changed month total overflow');
+ await shot(`changed-month-total-${width}-${theme}`);
  }
  await page.evaluate(async()=>{
  const db=await new Promise(resolve=>{const r=indexedDB.open('kupleno-storage-v2');r.onsuccess=()=>resolve(r.result);});

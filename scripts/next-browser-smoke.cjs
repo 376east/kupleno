@@ -284,7 +284,7 @@ async function main() {
     const importedEmptyProfiles = (await savedState())[0][0].state;
     assert.deepEqual(importedEmptyProfiles.rows, emptyProfiles.rows);
     assert.deepEqual(importedEmptyProfiles.settings, emptyProfiles.settings, 'Fallback must not rewrite imported settings');
-    for (const netSpend of [null, 0, -100]) {
+    for (const netSpend of [null, 0, -100, 199.99]) {
       const closedMonth = { ...backup, settings: { ...backup.settings, monthClosures: { 'all\u00012026-09': { status: 'closed', totals: netSpend === null ? null : { netSpend } } } } };
       await page.locator('input[type=file]').setInputFiles({ name: 'closed-month.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(closedMonth)) });
       await page.getByRole('dialog').getByRole('button', { name: 'Загрузить историю', exact: true }).click();
@@ -298,7 +298,13 @@ async function main() {
         await summary.getByRole('button', { name: 'Открыть месяц для проверки', exact: true }).click();
         await summary.getByRole('button', { name: 'Сохранить итог месяца', exact: true }).waitFor();
       } else {
-        assert.equal((await summary.locator('strong').innerText()).replace(/\s/g, ''), netSpend === 0 ? '0,00₽' : '-100,00₽');
+        assert.equal((await summary.locator('strong').innerText()).replace(/\s/g, ''), netSpend === 0 ? '0,00₽' : netSpend === -100 ? '-100,00₽' : '199,99₽');
+        if (netSpend === 199.99) {
+          assert.doesNotMatch(await summary.innerText(), /Текущий итог отличается/);
+        } else {
+          assert.match((await summary.innerText()).replace(/\s/g, ' '), /Текущий итог отличается: 199,99 ₽/);
+          assert.deepEqual((await savedState())[0][0].state.settings.monthClosures, closedMonth.settings.monthClosures, 'Viewing changed totals must preserve the saved snapshot');
+        }
       }
     }
     assert.deepEqual(errors, []);
