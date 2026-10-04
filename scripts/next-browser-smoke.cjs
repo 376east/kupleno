@@ -284,6 +284,23 @@ async function main() {
     const importedEmptyProfiles = (await savedState())[0][0].state;
     assert.deepEqual(importedEmptyProfiles.rows, emptyProfiles.rows);
     assert.deepEqual(importedEmptyProfiles.settings, emptyProfiles.settings, 'Fallback must not rewrite imported settings');
+    for (const netSpend of [null, 0, -100]) {
+      const closedMonth = { ...backup, settings: { ...backup.settings, monthClosures: { 'all\u00012026-09': { status: 'closed', totals: netSpend === null ? null : { netSpend } } } } };
+      await page.locator('input[type=file]').setInputFiles({ name: 'closed-month.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(closedMonth)) });
+      await page.getByRole('dialog').getByRole('button', { name: 'Загрузить историю', exact: true }).click();
+      await page.getByRole('link', { name: 'Контроль', exact: true }).click();
+      await page.getByRole('link', { name: 'Бюджет', exact: true }).click();
+      await page.getByLabel('Месяц', { exact: true }).fill('2026-09');
+      const summary = page.locator('section').filter({ has: page.getByRole('heading', { name: 'Итог месяца', exact: true }) });
+      if (netSpend === null) {
+        assert.match(await summary.innerText(), /Сумма сохранённого итога недоступна/);
+        assert.equal(await summary.locator('strong').count(), 0, 'Missing saved amount must not be shown as zero');
+        await summary.getByRole('button', { name: 'Открыть месяц для проверки', exact: true }).click();
+        await summary.getByRole('button', { name: 'Сохранить итог месяца', exact: true }).waitFor();
+      } else {
+        assert.equal((await summary.locator('strong').innerText()).replace(/\s/g, ''), netSpend === 0 ? '0,00₽' : '-100,00₽');
+      }
+    }
     assert.deepEqual(errors, []);
     console.log('PASS: installed MV3 build; import; focused search; receipt link; PDF worker under CSP; edit; restart; export preservation; restore; expected return; warranty; budget; month closure; light/dark/mobile.');
   } finally {
