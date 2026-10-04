@@ -60,6 +60,30 @@ test('backup rejects corrupt settings and duplicate identities before saving', (
   assert.throws(() => serializeBackup({ ...state, rows: [...state.rows, ...state.rows] }), error => error.code === 'INVALID_ROW');
 });
 
+test('import rejects malformed rule fields in both backup formats', () => {
+  const invalid = [
+    { category: { label: 'Еда' } }, { profile: [] }, { source: 42 }, { source: ['ozon', {}] },
+    { keyword: [] }, { enabled: 'false' }, { priority: 'high' }, { amountMin: 'broken' },
+    { amountMax: -1 }, { amountMin: '20', amountMax: '10' }, { match: 'contains' }
+  ];
+  for (const rule of invalid) for (const version of [1, 2]) {
+    const sample = { ...state, settings: { customRules: [rule] } };
+    const backup = version === 1 ? { format: 'kupleno-backup', version, ...sample }
+      : { format: 'kupleno-backup', version, state: sample };
+    assert.throws(() => parseBackup(JSON.stringify(backup)), error => error.code === 'INVALID_SETTINGS', JSON.stringify(rule));
+  }
+});
+
+test('valid legacy and current rules preserve unknown fields and numeric strings', () => {
+  const sample = { ...state, settings: { customRules: [
+    { keyword: 'кофе', source: ['ozon', 'wb'], category: 'Еда', priority: '10', amountMin: '0', amountMax: '100.00', future: { keep: true } },
+    { tokens: ['книга'], sources: ['yandex'], match: 'all', enabled: false, profile: 'personal', category: '', negativeKeywords: ['подарок'] }
+  ] } };
+  assert.deepEqual(parseBackup(serializeBackup(sample)).state, sample);
+  assert.deepEqual(parseBackup(JSON.stringify({ format: 'kupleno-backup', version: 1, ...sample })).state,
+    { rows: sample.rows, settings: sample.settings, metadata: sample.metadata });
+});
+
 test('IndexedDB store keeps epochs, history and legacy database read-only', async (t) => {
   const source = await readFile(new URL('./storage.mjs', import.meta.url), 'utf8');
   const domain = await readFile(new URL('./domain.mjs', import.meta.url), 'utf8');
@@ -125,6 +149,10 @@ test('IndexedDB store keeps epochs, history and legacy database read-only', asyn
       if (legacySnapshot.state.rows[0].amount !== '001.50') fail('Legacy amount was changed');
       const first = await store.write(sampleState, { expectedRevision: 0, expectedEpoch: 0 });
       if (first.revision !== 1 || first.epoch !== 0) fail('First write version is wrong');
+      const invalid = { ...sampleState, settings: { customRules: [{ category: {} }] } };
+      await expectCode(store.write(invalid, { expectedRevision: 1, expectedEpoch: 0 }), 'INVALID_SETTINGS');
+      if (JSON.stringify(await store.read()) !== JSON.stringify(first)) fail('Rejected settings changed the current state');
+      if ((await store.history()).length !== 1) fail('Rejected settings changed history');
       await expectCode(store.write(sampleState, { expectedRevision: 0, expectedEpoch: 0 }), 'STALE_SNAPSHOT_REVISION');
       const secondState = { ...sampleState, metadata: { ...sampleState.metadata, changed: true } };
       const second = await store.write(secondState, { expectedRevision: 1, expectedEpoch: 0 });

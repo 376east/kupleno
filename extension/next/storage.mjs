@@ -123,6 +123,25 @@ function validateSettings(settings) {
     for (const key of ['keywords', 'negativeKeywords', 'sources', 'tokens']) {
       if (own(rule, key) && (!Array.isArray(rule[key]) || rule[key].some(value => typeof value !== 'string'))) throw storageError('INVALID_SETTINGS', `Некорректное поле правила: ${key}.`);
     }
+    for (const key of ['id', 'category', 'profile', 'keyword', 'token', 'contains', 'match']) {
+      if (own(rule, key) && typeof rule[key] !== 'string') throw storageError('INVALID_SETTINGS', `Некорректное поле правила: ${key}.`);
+    }
+    if (own(rule, 'source') && typeof rule.source !== 'string' && (!Array.isArray(rule.source) || rule.source.some(value => typeof value !== 'string'))) {
+      throw storageError('INVALID_SETTINGS', 'Некорректное поле правила: source.');
+    }
+    if (own(rule, 'enabled') && typeof rule.enabled !== 'boolean') throw storageError('INVALID_SETTINGS', 'Некорректное поле правила: enabled.');
+    if (own(rule, 'match') && !['any', 'all', 'exact'].includes(rule.match)) throw storageError('INVALID_SETTINGS', 'Неизвестный способ совпадения правила.');
+    if (own(rule, 'priority') && ((typeof rule.priority !== 'number' && typeof rule.priority !== 'string') || !String(rule.priority).trim() || !Number.isFinite(Number(rule.priority)))) {
+      throw storageError('INVALID_SETTINGS', 'Некорректный приоритет правила.');
+    }
+    for (const key of ['amountMin', 'amountMax']) {
+      if (rule[key] == null) continue;
+      const amount = moneyMinor(rule[key]);
+      if ((typeof rule[key] !== 'number' && typeof rule[key] !== 'string') || amount === null || amount < 0) throw storageError('INVALID_SETTINGS', `Некорректная сумма правила: ${key}.`);
+    }
+    if (rule.amountMin != null && rule.amountMax != null && moneyMinor(rule.amountMin) > moneyMinor(rule.amountMax)) {
+      throw storageError('INVALID_SETTINGS', 'Минимальная сумма правила больше максимальной.');
+    }
   }
 }
 

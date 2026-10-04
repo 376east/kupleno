@@ -69,6 +69,25 @@ async function main() {
       const result = await new Promise(resolve => { const r = db.transaction('snapshots').objectStore('snapshots').get('legacy-fixture'); r.onsuccess = () => resolve(r.result); }); db.close(); return result;
     });
     assert.deepEqual(unchanged, legacy, 'Automatic migration must leave the legacy database untouched');
+    const savedState = () => page.evaluate(async () => {
+      const db = await new Promise(resolve => { const r = indexedDB.open('kupleno-storage-v2'); r.onsuccess = () => resolve(r.result); });
+      try {
+        const tx = db.transaction(['current', 'history', 'meta']);
+        const read = name => new Promise(resolve => { const r = tx.objectStore(name).getAll(); r.onsuccess = () => resolve(r.result); });
+        return await Promise.all(['current', 'history', 'meta'].map(read));
+      } finally { db.close(); }
+    });
+    const beforeInvalidImport = await savedState();
+    for (const version of [1, 2]) {
+      const invalidState = { rows: backup.rows, settings: { customRules: [{ category: {} }] }, metadata: {} };
+      const invalid = version === 1 ? { format: 'kupleno-backup', version, ...invalidState }
+        : { format: 'kupleno-backup', version, state: invalidState };
+      await page.locator('input[type=file]').setInputFiles({ name: 'invalid.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(invalid)) });
+      await page.getByRole('alert').getByText('Некорректное поле правила: category.', { exact: true }).waitFor();
+      assert.equal(await page.getByRole('dialog').count(), 0, 'Invalid import must not offer confirmation');
+      assert.deepEqual(await savedState(), beforeInvalidImport, 'Rejected import must retain current data, history and revision');
+      await page.getByRole('button', { name: 'Скрыть', exact: true }).click();
+    }
     await page.locator('input[type=file]').setInputFiles({ name: 'backup.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(backup)) });
     await page.getByRole('dialog').getByRole('button', { name: 'Загрузить историю', exact: true }).click();
     await page.getByRole('heading', { name: 'Обзор', exact: true }).waitFor();
