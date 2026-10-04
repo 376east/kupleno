@@ -42,6 +42,23 @@ const products=[['Кроссовки для города','Одежда',7490],[
  }
  }
  if(!record){await page.setViewportSize({width:320,height:780});await page.getByRole('link',{name:'Контроль',exact:true}).click();assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true,'320px control overflow');}
+ if(!record){
+ const profilesFixture={...fixture,rows:fixture.rows.map(row=>({...row,profile:'work'})),settings:{...fixture.settings,profiles:[{id:'personal',name:'Личные'},{id:'work',name:'Работа'}],budgets:{'work\u00012026-10':{total:5000}},monthClosures:{'work\u00012026-09':{status:'closed'}}}};
+ await page.locator('input[type=file]').first().setInputFiles({name:'profiles.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify(profilesFixture))});
+ await page.getByRole('dialog').getByRole('button',{name:'Загрузить историю',exact:true}).click();
+ await page.getByRole('link',{name:'Настройки',exact:true}).click();
+ for(const theme of ['light','dark']) for(const width of [390,1440]){
+ if(await page.locator('html').getAttribute('data-theme')!==theme)await page.getByRole('button',{name:theme==='dark'?'Включить тёмную тему':'Включить светлую тему',exact:true}).click();
+ await page.setViewportSize({width,height:width===390?844:1000});
+ await page.getByRole('button',{name:'Настроить профили',exact:true}).click();
+ await page.getByRole('dialog').locator('.setting-row').filter({has:page.getByText('Работа',{exact:true})}).getByRole('button',{name:'Объединить с другим',exact:true}).click();
+ const dialog=page.getByRole('dialog',{name:'Объединить профили?',exact:true});await dialog.waitFor();
+ const bounds=await dialog.boundingBox();assert.ok(bounds.x>=0&&bounds.x+bounds.width<=width+1,'Profile confirmation must fit viewport');
+ assert.equal(await dialog.evaluate(el=>el.scrollWidth<=el.clientWidth),true,'Profile confirmation content must not overflow');
+ await shot(`profile-merge-${width}-${theme}`);
+ await page.keyboard.press('Escape');await dialog.waitFor({state:'hidden'});
+ }
+ }
  await page.setViewportSize({width:1440,height:1000});await page.getByRole('link',{name:'Обзор',exact:true}).click();
  // Clear the search set in purchases; overview shares the same filters by design.
  await page.locator('.overview-filters summary').click();await page.getByRole('searchbox').fill('');await page.locator('.overview-filters summary').click();

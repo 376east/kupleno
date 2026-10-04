@@ -200,6 +200,39 @@ async function main() {
     await ozonPanel.getByText('История ещё не загружена',{exact:true}).waitFor();
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'No horizontal page overflow on mobile');
     if (out) await page.screenshot({ path: path.join(out, 'next-mobile.png'), fullPage: true });
+    const profileFixture = { ...backup, settings: {
+      ...backup.settings, profiles: [{ id: 'personal', name: 'Личные' }, { id: 'work', name: 'Работа' }],
+      budgets: { 'work\u00012026-10': { total: 5000 } },
+      monthClosures: { 'work\u00012026-09': { status: 'closed', totals: { netSpend: 100 } } }
+    }, rows: backup.rows.map(row => ({ ...row, profile: 'work' })) };
+    await page.locator('input[type=file]').setInputFiles({ name: 'profiles.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(profileFixture)) });
+    await page.getByRole('dialog').getByRole('button', { name: 'Загрузить историю', exact: true }).click();
+    await page.getByRole('link', { name: 'Настройки', exact: true }).click();
+    await page.getByRole('button', { name: 'Настроить профили', exact: true }).click();
+    const beforeProfileMerge = await savedState();
+    const mergeWork = () => page.getByRole('dialog').locator('.setting-row').filter({ has: page.getByText('Работа', { exact: true }) }).getByRole('button', { name: 'Объединить с другим', exact: true }).click();
+    await mergeWork();
+    await page.getByRole('dialog', { name: 'Объединить профили?', exact: true }).waitFor();
+    assert.match(await page.getByRole('dialog').innerText(), /Бюджеты: 1.*сохранённые итоги месяцев: 1/);
+    assert.deepEqual(await savedState(), beforeProfileMerge, 'Opening confirmation must not change profiles');
+    assert.equal(await page.getByRole('button', { name: 'Отмена', exact: true }).evaluate(el => el === document.activeElement), true, 'Confirmation must initially focus cancellation');
+    await page.getByRole('button', { name: 'Отмена', exact: true }).press('Enter');
+    await page.getByRole('dialog', { name: 'Профили покупок', exact: true }).waitFor();
+    assert.deepEqual(await savedState(), beforeProfileMerge, 'Cancel must retain profiles and plans');
+    await mergeWork();
+    await page.keyboard.press('Escape');
+    await page.getByRole('dialog').waitFor({ state: 'hidden' });
+    assert.deepEqual(await savedState(), beforeProfileMerge, 'Escape must retain profiles and plans');
+    await page.getByRole('button', { name: 'Настроить профили', exact: true }).click();
+    await mergeWork();
+    await page.getByRole('button', { name: 'Объединить профили', exact: true }).click();
+    await page.getByRole('dialog', { name: 'Профили покупок', exact: true }).waitFor();
+    const mergedProfiles = await savedState();
+    assert.equal(mergedProfiles[0][0].state.settings.profiles.length, 1);
+    assert.ok(mergedProfiles[0][0].state.rows.every(row => row.profile === 'personal'));
+    assert.deepEqual(mergedProfiles[0][0].state.settings.budgets, {});
+    assert.deepEqual(mergedProfiles[0][0].state.settings.monthClosures, {});
+    await page.getByRole('button', { name: 'Закрыть', exact: true }).click();
     assert.deepEqual(errors, []);
     console.log('PASS: installed MV3 build; import; focused search; receipt link; PDF worker under CSP; edit; restart; export preservation; restore; expected return; warranty; budget; month closure; light/dark/mobile.');
   } finally {
