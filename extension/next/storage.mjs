@@ -111,6 +111,8 @@ function validateSettings(settings) {
       throw storageError('INVALID_SETTINGS', `Некорректный список настроек: ${key}.`);
     }
   }
+  if (Object.values(settings.anomalyDismissals || {}).some(value => typeof value !== 'boolean')) throw storageError('INVALID_SETTINGS', 'Некорректные отметки проверки покупок.');
+  if (Object.values(settings.recurringDecisions || {}).some(value => !['confirmed', 'ignored'].includes(value))) throw storageError('INVALID_SETTINGS', 'Некорректные решения по регулярным покупкам.');
   const ids = new Set();
   for (const profile of settings.profiles || []) {
     if (typeof profile.id !== 'string' || !profile.id.trim() || typeof profile.name !== 'string' || ids.has(profile.id)) {

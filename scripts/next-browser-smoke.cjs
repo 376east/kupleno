@@ -81,6 +81,8 @@ async function main() {
     for (const [settings, message] of [
       [{ customRules: [{ category: {} }] }, 'Некорректное поле правила: category.'],
       [{ budgets: { '2026-10': { total: true } } }, 'Некорректная сумма бюджета.'],
+      [{ anomalyDismissals: { sample: 'false' } }, 'Некорректные отметки проверки покупок.'],
+      [{ recurringDecisions: { sample: true } }, 'Некорректные решения по регулярным покупкам.'],
       [{ refundClaims: [{ manualMatchRowIds: ['refund', 'refund'] }] }, 'Некорректные привязки ожидаемого возврата.'],
       [{ warranties: [{ title: {} }] }, 'Некорректное название возврата или документа.'],
       [{ refundClaims: [{ expectedAmount: 0 }] }, 'Некорректная ожидаемая сумма возврата.'],

@@ -84,6 +84,21 @@ test('valid legacy and current rules preserve unknown fields and numeric strings
     { rows: sample.rows, settings: sample.settings, metadata: sample.metadata });
 });
 
+test('analysis decisions reject misleading values in both backup formats', () => {
+  for (const settings of [
+    { anomalyDismissals: { sample: 'false' } }, { anomalyDismissals: { sample: {} } },
+    { anomalyDismissals: { sample: null } }, { anomalyDismissals: { sample: 1 } },
+    { recurringDecisions: { sample: true } }, { recurringDecisions: { sample: {} } },
+    { recurringDecisions: { sample: 'maybe' } }, { recurringDecisions: { sample: null } }
+  ]) for (const version of [1, 2]) {
+    const sample = { ...state, settings };
+    const backup = version === 1 ? { format: 'kupleno-backup', version, ...sample } : { format: 'kupleno-backup', version, state: sample };
+    assert.throws(() => parseBackup(JSON.stringify(backup)), error => error.code === 'INVALID_SETTINGS');
+  }
+  const sample = { ...state, settings: { anomalyDismissals: { checked: true, unchecked: false }, recurringDecisions: { accepted: 'confirmed', hidden: 'ignored' }, future: { keep: true } } };
+  assert.deepEqual(parseBackup(serializeBackup(sample)).state, sample);
+});
+
 test('monthly budgets reject corrupt amounts and containers in v1/v2', () => {
   const invalid = [true, [], { total: true }, { total: '100' }, { total: -1 },
     { categories: [] }, { categories: { Еда: 'broken' } }, { categories: { Еда: -1 } }, { categories: { Еда: null } }];
