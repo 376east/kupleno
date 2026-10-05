@@ -23,6 +23,7 @@
 - Проверены значения отметок анализа, чтобы повреждённая копия не скрывала предупреждения. [Регрессии](extension/next/storage.test.mjs), [задача](https://github.com/malyarq/kupleno/issues/17).
 - Проверены типы дополнительных полей покупок и отметки исключения; nullable и неизвестные поля сохраняются. [Регрессии](extension/next/storage.test.mjs), [задача](https://github.com/malyarq/kupleno/issues/18).
 - Версия production manifest берётся из package.json; сборка и браузерная установка проверяют совпадение обеих версий. [Конфигурация](extension/next/wxt.config.ts), [проверка](scripts/check-preview-version.cjs), [задача](https://github.com/malyarq/kupleno/issues/19).
+- Сохранённые итоги месяцев проверяются до импорта/записи: объект записи и итогов, статус open/closed и доступная сумма netSpend. Старые записи без суммы, отрицательные итоги возвратов и неизвестные поля сохраняются. Остальные поля снимка и выбор профиля ещё требуют проверки. [Регрессии](extension/next/storage.test.mjs), [браузерный отказ импорта](scripts/next-browser-smoke.cjs).
 
 ## Архитектурные решения и компромиссы
 

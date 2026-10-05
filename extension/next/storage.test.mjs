@@ -136,6 +136,30 @@ test('budget validation retains legacy flat limits, absent total and unknown fie
   assert.deepEqual(parseBackup(JSON.stringify({ format: 'kupleno-backup', version: 1, ...sample })).state.settings, sample.settings);
 });
 
+test('month closures reject UI-breaking containers, statuses and amounts before import or write', () => {
+  const invalid = [true, [], 'closed', null, { status: 'clsoed' }, { status: true }, { status: null },
+    { totals: [] }, { totals: 100 }, { totals: { netSpend: true } }, { totals: { netSpend: {} } },
+    { totals: { netSpend: 'broken' } }];
+  for (const closure of invalid) {
+    const sample = { ...state, settings: { monthClosures: { 'all\u00012026-09': closure } } };
+    assert.throws(() => serializeBackup(sample), error => error.code === 'INVALID_SETTINGS');
+    for (const version of [1, 2]) {
+      const backup = version === 1 ? { format: 'kupleno-backup', version, ...sample }
+        : { format: 'kupleno-backup', version, state: sample };
+      assert.throws(() => parseBackup(JSON.stringify(backup)), error => error.code === 'INVALID_SETTINGS', JSON.stringify(closure));
+    }
+  }
+});
+
+test('month closures preserve sparse legacy totals, refunds and future fields', () => {
+  for (const totals of [undefined, null, {}, { netSpend: null }, { netSpend: 0 }, { netSpend: -100 }, { netSpend: '199.99', future: true }]) {
+    const closure = { status: 'closed', future: { keep: true }, ...(totals === undefined ? {} : { totals }) };
+    const sample = { ...state, settings: { monthClosures: { 'all\u00012026-09': closure, future: ['keep'] } } };
+    assert.deepEqual(parseBackup(serializeBackup(sample)).state, sample);
+    assert.deepEqual(parseBackup(JSON.stringify({ format: 'kupleno-backup', version: 1, ...sample })).state.settings, sample.settings);
+  }
+});
+
 test('refund link validation rejects corrupt lists but preserves valid sparse legacy records', () => {
   for (const manualMatchRowIds of ['refund', 42, null, ['refund', 'refund'], [''], [false]]) {
     const sample = { ...state, settings: { refundClaims: [{ manualMatchRowIds }] } };
@@ -241,7 +265,7 @@ test('IndexedDB store keeps epochs, history and legacy database read-only', asyn
       if (legacySnapshot.state.rows[0].amount !== '001.50') fail('Legacy amount was changed');
       const first = await store.write(sampleState, { expectedRevision: 0, expectedEpoch: 0 });
       if (first.revision !== 1 || first.epoch !== 0) fail('First write version is wrong');
-      for (const settings of [{ customRules: [{ category: {} }] }, { budgets: { '2026-10': { total: true } } }, { refundClaims: [{ manualMatchRowIds: ['refund', 'refund'] }] }]) {
+      for (const settings of [{ customRules: [{ category: {} }] }, { budgets: { '2026-10': { total: true } } }, { refundClaims: [{ manualMatchRowIds: ['refund', 'refund'] }] }, { monthClosures: { 'all\u00012026-09': { status: 'clsoed' } } }, { monthClosures: { 'all\u00012026-09': { status: 'closed', totals: { netSpend: true } } } }]) {
         const invalid = { ...sampleState, settings };
         await expectCode(store.write(invalid, { expectedRevision: 1, expectedEpoch: 0 }), 'INVALID_SETTINGS');
         if (JSON.stringify(await store.read()) !== JSON.stringify(first)) fail('Rejected settings changed the current state');

@@ -172,6 +172,17 @@ function validateSettings(settings) {
       throw storageError('INVALID_SETTINGS', 'Некорректная сумма бюджета.');
     }
   }
+  for (const [key, closure] of Object.entries(settings.monthClosures || {})) {
+    // Validate only month records read by Control; preserve unrelated future fields.
+    if (!/^[^\u0001]+\u0001\d{4}-(0[1-9]|1[0-2])$/.test(key)) continue;
+    if (!isPlainObject(closure)) throw storageError('INVALID_SETTINGS', 'Некорректный сохранённый итог месяца.');
+    if (own(closure, 'status') && !['open', 'closed'].includes(closure.status)) throw storageError('INVALID_SETTINGS', 'Некорректный статус сохранённого месяца.');
+    if (closure.totals == null) continue;
+    if (!isPlainObject(closure.totals)) throw storageError('INVALID_SETTINGS', 'Некорректный сохранённый итог месяца.');
+    if (closure.totals.netSpend != null && ((typeof closure.totals.netSpend !== 'number' && typeof closure.totals.netSpend !== 'string') || moneyMinor(closure.totals.netSpend) === null)) {
+      throw storageError('INVALID_SETTINGS', 'Некорректная сумма сохранённого месяца.');
+    }
+  }
   for (const rule of settings.customRules || []) {
     for (const key of ['keywords', 'negativeKeywords', 'sources', 'tokens']) {
       if (own(rule, key) && (!Array.isArray(rule[key]) || rule[key].some(value => typeof value !== 'string'))) throw storageError('INVALID_SETTINGS', `Некорректное поле правила: ${key}.`);
