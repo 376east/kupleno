@@ -120,6 +120,14 @@ function validateSettings(settings) {
     }
     ids.add(profile.id);
   }
+  const availableProfiles = ids.size ? ids : new Set(['personal']);
+  for (const key of ['activeProfile', 'dataProfile']) {
+    if (!own(settings, key)) continue;
+    const id = settings[key];
+    if (typeof id !== 'string' || !(availableProfiles.has(id) || (key === 'activeProfile' && id === 'all'))) {
+      throw storageError('INVALID_SETTINGS', `Некорректный выбранный профиль: ${key}.`);
+    }
+  }
   for (const patch of Object.values(settings.overrides || {})) {
     if (!isPlainObject(patch)) throw storageError('INVALID_SETTINGS', 'В копии повреждены ручные изменения.');
     for (const key of ['category', 'profile', 'note']) {

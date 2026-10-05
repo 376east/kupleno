@@ -76,6 +76,23 @@ test('backup rejects corrupt settings and duplicate identities before saving', (
   assert.throws(() => serializeBackup({ ...state, rows: [...state.rows, ...state.rows] }), error => error.code === 'INVALID_ROW');
 });
 
+test('selected profiles must refer to available profiles before import or write', () => {
+  for (const key of ['activeProfile', 'dataProfile']) for (const value of [null, true, {}, [], '', 'deleted', ...(key === 'dataProfile' ? ['all'] : [])]) {
+    const sample = { ...state, settings: { profiles: [{ id: 'work', name: 'Работа' }], [key]: value } };
+    assert.throws(() => serializeBackup(sample), error => error.code === 'INVALID_SETTINGS');
+    for (const version of [1, 2]) {
+      const backup = version === 1 ? { format: 'kupleno-backup', version, ...sample } : { format: 'kupleno-backup', version, state: sample };
+      assert.throws(() => parseBackup(JSON.stringify(backup)), error => error.code === 'INVALID_SETTINGS');
+    }
+  }
+  for (const settings of [{}, { profiles: [] }, { profiles: [], dataProfile: 'personal', activeProfile: 'all' },
+    { dataProfile: 'personal', activeProfile: 'personal' }, { profiles: [{ id: 'work', name: 'Работа' }], dataProfile: 'work', activeProfile: 'work', future: true }]) {
+    const sample = { ...state, settings };
+    assert.deepEqual(parseBackup(serializeBackup(sample)).state, sample);
+    assert.deepEqual(parseBackup(JSON.stringify({ format: 'kupleno-backup', version: 1, ...sample })).state.settings, settings);
+  }
+});
+
 test('import rejects malformed rule fields in both backup formats', () => {
   const invalid = [
     { category: { label: 'Еда' } }, { profile: [] }, { source: 42 }, { source: ['ozon', {}] },
@@ -265,7 +282,13 @@ test('IndexedDB store keeps epochs, history and legacy database read-only', asyn
       if (legacySnapshot.state.rows[0].amount !== '001.50') fail('Legacy amount was changed');
       const first = await store.write(sampleState, { expectedRevision: 0, expectedEpoch: 0 });
       if (first.revision !== 1 || first.epoch !== 0) fail('First write version is wrong');
-      for (const settings of [{ customRules: [{ category: {} }] }, { budgets: { '2026-10': { total: true } } }, { refundClaims: [{ manualMatchRowIds: ['refund', 'refund'] }] }, { monthClosures: { 'all\u00012026-09': { status: 'clsoed' } } }, { monthClosures: { 'all\u00012026-09': { status: 'closed', totals: { netSpend: true } } } }]) {
+      for (const settings of [
+        { customRules: [{ category: {} }] }, { budgets: { '2026-10': { total: true } } },
+        { refundClaims: [{ manualMatchRowIds: ['refund', 'refund'] }] },
+        { monthClosures: { 'all\u00012026-09': { status: 'clsoed' } } },
+        { monthClosures: { 'all\u00012026-09': { status: 'closed', totals: { netSpend: true } } } },
+        { dataProfile: 'deleted' }, { dataProfile: {} }, { activeProfile: 'deleted' }
+      ]) {
         const invalid = { ...sampleState, settings };
         await expectCode(store.write(invalid, { expectedRevision: 1, expectedEpoch: 0 }), 'INVALID_SETTINGS');
         if (JSON.stringify(await store.read()) !== JSON.stringify(first)) fail('Rejected settings changed the current state');
