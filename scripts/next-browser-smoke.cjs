@@ -90,6 +90,7 @@ async function main() {
       [{ dataProfile: 'deleted' }, 'Некорректный выбранный профиль: dataProfile.'],
       [{ dataProfile: {} }, 'Некорректный выбранный профиль: dataProfile.'],
       [{ activeProfile: 'deleted' }, 'Некорректный выбранный профиль: activeProfile.'],
+      [{ profiles: [{ id: 'p'.repeat(121), name: 'Длинный ID' }], dataProfile: 'p'.repeat(121) }, 'Идентификатор профиля для сбора длиннее 120 символов.'],
       [{ refundClaims: [{ manualMatchRowIds: ['refund', 'refund'] }] }, 'Некорректные привязки ожидаемого возврата.'],
       [{ warranties: [{ title: {} }] }, 'Некорректное название возврата или документа.'],
       [{ refundClaims: [{ expectedAmount: 0 }] }, 'Некорректная ожидаемая сумма возврата.'],

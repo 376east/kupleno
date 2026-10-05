@@ -93,6 +93,20 @@ test('selected profiles must refer to available profiles before import or write'
   }
 });
 
+test('selected collection profile respects the worker ID length boundary', () => {
+  for (const length of [120, 121]) {
+    const id = 'p'.repeat(length);
+    const sample = { ...state, settings: { profiles: [{ id, name: 'Длинный ID' }], dataProfile: id } };
+    for (const version of [1, 2]) {
+      const backup = version === 1 ? { format: 'kupleno-backup', version, ...sample } : { format: 'kupleno-backup', version, state: sample };
+      if (length === 120) assert.deepEqual(parseBackup(JSON.stringify(backup)).state.settings, sample.settings);
+      else assert.throws(() => parseBackup(JSON.stringify(backup)), error => error.code === 'INVALID_SETTINGS');
+    }
+    if (length === 120) assert.deepEqual(parseBackup(serializeBackup(sample)).state, sample);
+    else assert.throws(() => serializeBackup(sample), error => error.code === 'INVALID_SETTINGS');
+  }
+});
+
 test('import rejects malformed rule fields in both backup formats', () => {
   const invalid = [
     { category: { label: 'Еда' } }, { profile: [] }, { source: 42 }, { source: ['ozon', {}] },

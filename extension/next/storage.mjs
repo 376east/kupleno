@@ -127,6 +127,7 @@ function validateSettings(settings) {
     if (typeof id !== 'string' || !(availableProfiles.has(id) || (key === 'activeProfile' && id === 'all'))) {
       throw storageError('INVALID_SETTINGS', `Некорректный выбранный профиль: ${key}.`);
     }
+    if (key === 'dataProfile' && id.length > 120) throw storageError('INVALID_SETTINGS', 'Идентификатор профиля для сбора длиннее 120 символов.');
   }
   for (const patch of Object.values(settings.overrides || {})) {
     if (!isPlainObject(patch)) throw storageError('INVALID_SETTINGS', 'В копии повреждены ручные изменения.');
