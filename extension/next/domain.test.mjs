@@ -34,6 +34,17 @@ test('равная сумма и название не являются иден
   assert.equal(summarize(merged).net, 20000);
 });
 
+test('старое имя WB не удваивает прочитанный чек при повторном сборе', () => {
+  const original = [row('legacy', { source: 'wb', marketplace_id: 'receipt' }), row('unvisited', { source: 'wb' }), row('work', { source: 'wb', profile: 'work', marketplace_id: 'receipt' })];
+  const incoming = [row('current', { marketplace_id: 'receipt', amount: '99.00' })];
+  const merged = mergeCollection(original, incoming, { source: 'wildberries' });
+  assert.deepEqual(merged.map(item => item.rowId), ['unvisited', 'work', 'current']);
+  assert.equal(summarize(merged).net, 29900);
+  assert.deepEqual(mergeCollection(merged, incoming, { source: 'wildberries' }), merged);
+  assert.deepEqual(mergeCollection(original, [], { source: 'wildberries', processedReceipts: ['receipt'] }).map(item => item.rowId), ['unvisited', 'work']);
+  assert.equal(original[0].source, 'wb');
+});
+
 test('повторный сбор удаляет сверенную предоплату, сохраняя непрочитанные чеки и другой профиль', () => {
   const original = [row('pre', { receipt_url: 'https://receipt.wb.ru/pre' }), row('failed'), row('work', { profile: 'work', receipt_url: 'https://receipt.wb.ru/pre' })];
   const merged = mergeCollection(original, [row('final')], { source: 'wildberries', processedReceipts: ['https://receipt.wb.ru/pre', 'final'] });

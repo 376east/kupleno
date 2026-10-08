@@ -4,7 +4,7 @@ export function moneyMinor(value: unknown): number | null;
 export function moneyDecimal(value: number): string;
 export function formatMoney(value: number): string;
 export function currencyOf(row: Purchase): string;
-export function sourceOf(row: Purchase): string;
+export function sourceOf(row: Partial<Purchase>): string;
 export function normalizedText(value: unknown): string;
 export function isRefund(row: Purchase): boolean;
 export function receiptUrl(row: Purchase, archive?: Record<string, { url: string }>): string;

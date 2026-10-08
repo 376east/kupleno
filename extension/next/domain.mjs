@@ -21,7 +21,10 @@ export function moneyDecimal(minor) {
 const moneyFormatter = new Intl.NumberFormat('ru-RU', { style: 'currency', currency: 'RUB', maximumFractionDigits: 2 });
 export const formatMoney = (minor) => moneyFormatter.format(minor / 100);
 export const currencyOf = (row) => String(row.currency || 'RUB').toUpperCase();
-export const sourceOf = (row) => row.source || row.marketplace || '';
+export const sourceOf = (row) => {
+  const source = row.source || row.marketplace || '';
+  return source === 'wb' ? 'wildberries' : source;
+};
 export const normalizedText = (value) => String(value ?? '').toLocaleLowerCase('ru-RU').replace(/ё/g, 'е').replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
 export const isRefund = (row) => row.type === 'refund' || row.is_return === '1' || moneyMinor(row.amount) < 0;
 

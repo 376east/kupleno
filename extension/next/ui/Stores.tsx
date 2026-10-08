@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { browser } from 'wxt/browser';
-import { SOURCES, mergeCollection, sourceHealth } from '../domain.mjs';
+import { SOURCES, mergeCollection, sourceHealth, sourceOf } from '../domain.mjs';
 import { storeOrigins, type Command, type Job, type JobResponse } from '../collection';
 import { identifyRows, settingsWithDefaults } from '../preferences.mjs';
 import type { Purchase, State, Source } from '../model';
@@ -89,7 +89,7 @@ export function Stores({ state, rows, save, onSelect }: { state: State; rows: Pu
     {success && <div className="callout" role="status">{success}</div>}
     {failure && !errorSource && job?.status !== 'failed' && <div className="callout" role="alert">{failure}</div>}
     {Object.entries(SOURCES).map(([source, info]) => {
-      const purchases = rows.filter(row => row.source === source);
+      const purchases = rows.filter(row => sourceOf(row) === source);
       const unread = purchases.filter(row => row.parse_quality === 'fallback');
       const active = job?.source === source ? job : null;
       const health = sourceHealth(source, state.metadata);

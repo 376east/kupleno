@@ -45,7 +45,7 @@ async function main() {
       format: 'kupleno-backup', version: 1, createdAt: '2026-09-14T12:00:00.000Z',
       rows: [
         { rowId: 'lamp', date: '2026-08-14', source: 'ozon', title: 'Лампа для чтения', amount: '2590.00', currency: 'RUB', type: 'purchase', receipt_url: 'https://example.test/receipt', category: 'Дом', profile: 'personal' },
-        { rowId: 'book', date: '2026-07-09', source: 'wildberries', title: 'Книга о фотографии', amount: '1490.00', currency: 'RUB', type: 'purchase', category: 'Книги', profile: 'personal' },
+        { rowId: 'book', date: '2026-07-09', source: 'wb', title: 'Книга о фотографии', amount: '1490.00', currency: 'RUB', type: 'purchase', category: 'Книги', profile: 'personal' },
         { rowId: 'refund', date: '2026-08-15', source: 'ozon', title: 'Возврат за лампу', amount: '-590.00', currency: 'RUB', type: 'refund', profile: 'personal' },
         { rowId: 'unread', date: '2026-09-01', source: 'yandex', title: 'PDF не разобран', amount: '199.99', currency: 'RUB', type: 'purchase', parse_quality: 'fallback', profile: 'personal' },
       ],
@@ -128,6 +128,11 @@ async function main() {
     await page.getByRole('heading', { name: 'Обзор', exact: true }).waitFor();
     await page.getByRole('link', { name: 'Покупки', exact: true }).click();
     const search = page.getByRole('searchbox');
+    await page.getByRole('combobox', { name: 'Магазин', exact: true }).selectOption('wildberries');
+    await page.getByRole('button', { name: 'Книга о фотографии', exact: true }).waitFor();
+    assert.equal(await page.getByRole('button', { name: 'Лампа для чтения', exact: true }).count(), 0);
+    assert.equal((await savedState())[0][0].state.rows.find(row => row.rowId === 'book').source, 'wb', 'Filtering must not rewrite legacy source names');
+    await page.getByRole('combobox', { name: 'Магазин', exact: true }).selectOption('');
     await search.pressSequentially('Лампа');
     assert.equal(await search.inputValue(), 'Лампа');
     assert.equal(await search.evaluate(el => el === document.activeElement), true, 'Typing must retain focus');
