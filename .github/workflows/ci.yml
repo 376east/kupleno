@@ -1,0 +1,120 @@
+name: CI
+'on':
+  push:
+    branches:
+      - main
+  pull_request: {}
+  schedule:
+    - cron: 17 4 * * 1
+  workflow_dispatch:
+    inputs:
+      keep_artifacts:
+        description: Save diagnostic builds and scan reports (uses Actions storage)
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  verify:
+    name: Tests and reproducible CI build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version-file: .nvmrc
+      - name: Install locked test tools
+        run: npm ci
+      - name: Install test Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Run complete verification
+        run: npm run verify
+      - name: Prove byte-for-byte reproducibility
+        run: npm run verify:reproducible
+      - name: Upload non-release CI build
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: kupleno-ci-build-${{ github.sha }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.keep_artifacts
+    if: github.event_name != 'schedule'
+  preview:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '24'
+      - run: npm ci
+      - run: npm --prefix extension/next ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run preview:check
+      - run: npm run preview:browser
+      - run: npm run preview:design
+        env:
+          KUPLENO_DESIGN_OUTPUT: ${{ runner.temp }}/kupleno-design
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: kupleno-preview-${{ github.sha }}
+          path: extension/next/.output/chrome-mv3/
+          if-no-files-found: error
+          retention-days: 7
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.keep_artifacts
+    if: github.event_name != 'schedule'
+  semgrep:
+    name: Semgrep CE
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Checkout reviewed rules
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: semgrep/semgrep-rules
+          ref: a84ff9cc2453ca91d581380de4b8b3f272f6f4be
+          path: .security-rules
+          persist-credentials: false
+          sparse-checkout: |
+            javascript/browser/security
+            javascript/lang/security
+            typescript/react/security
+      - name: Install pinned scanner
+        run: python3 -m pip install semgrep==1.179.0
+      - name: Scan production code and verify negative control
+        run: python3 scripts/security-scan.py --rules .security-rules --output security-results
+      - name: Show scan reports in logs
+        if: always()
+        shell: bash
+        run: |
+          for report in security-results/*.json; do
+            if [ -f "$report" ]; then
+              echo "::group::$report"
+              cat "$report"
+              echo "::endgroup::"
+            fi
+          done
+      - name: Keep local scan reports
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.keep_artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: semgrep-reports
+          path: security-results/*.json
+          if-no-files-found: error
+          retention-days: 14

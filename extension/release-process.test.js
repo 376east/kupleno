@@ -13,8 +13,7 @@ const requiredFiles = [
   '.github/ISSUE_TEMPLATE/config.yml',
   '.github/ISSUE_TEMPLATE/bug_report.yml',
   '.github/ISSUE_TEMPLATE/feature_request.yml',
-  '.github/workflows/codeql.yml',
-  '.github/workflows/verify-release.yml',
+  '.github/workflows/ci.yml',
   '.github/workflows/release-candidate.yml',
   'package-lock.json',
   'CHANGELOG.md',
@@ -72,7 +71,7 @@ for (const relative of trackedTextFiles) {
   assert.doesNotMatch(read(relative), legacyBrandPattern, `${relative} contains an obsolete product name`);
 }
 
-for (const workflow of ['.github/workflows/verify-release.yml', '.github/workflows/release-candidate.yml']) {
+for (const workflow of ['.github/workflows/ci.yml', '.github/workflows/release-candidate.yml']) {
   const source = read(workflow);
   const uses = [...source.matchAll(/^\s*uses:\s*([^\s#]+)/gm)].map((match) => match[1]);
   assert.ok(uses.length > 0, `${workflow} must use pinned actions`);
@@ -106,33 +105,30 @@ for (const asset of ['kupleno-extension.zip', 'SHA256SUMS', 'provenance.txt', 'r
   assert.ok(candidateWorkflow.includes(`dist/${asset}`), `${asset} must be published from dist/`);
 }
 
-const verifyWorkflow = read('.github/workflows/verify-release.yml');
-assert.match(verifyWorkflow, /permissions:\n\s+contents: read/);
-assert.match(verifyWorkflow, /push:\n\s+branches: \[main\]/);
-assert.doesNotMatch(verifyWorkflow, /pull_request:|statuses:\s*write|Куплено verification/);
-assert.doesNotMatch(verifyWorkflow, /contents:\s*write|gh release|softprops\/action-gh-release/i);
-
-const codeqlWorkflow = read('.github/workflows/codeql.yml');
-assert.doesNotMatch(codeqlWorkflow, /push:|schedule:/);
-assert.match(codeqlWorkflow, /actions: read/);
-assert.match(codeqlWorkflow, /workflow_dispatch:/);
-assert.match(codeqlWorkflow, /security-events: write/);
-assert.match(codeqlWorkflow, /languages: javascript-typescript/);
-for (const action of [...codeqlWorkflow.matchAll(/^\s*uses:\s*([^\s#]+)/gm)].map((match) => match[1])) {
-  assert.match(action, /^[^@]+@[0-9a-f]{40}$/, `${action} must be pinned to a full commit SHA`);
+const ciWorkflow = read('.github/workflows/ci.yml');
+assert.match(ciWorkflow, /^name: CI/m);
+assert.match(ciWorkflow, /permissions:\n\s+contents: read/);
+assert.match(ciWorkflow, /push:\n\s+branches:\n\s+- main/);
+assert.match(ciWorkflow, /pull_request:/);
+assert.match(ciWorkflow, /workflow_dispatch:/);
+assert.match(ciWorkflow, /schedule:/);
+assert.match(ciWorkflow, /cancel-in-progress: true/);
+assert.doesNotMatch(ciWorkflow, /collab\/|continue-on-error|contents:\s*write|security-events:\s*write|gh release/i);
+for (const command of ['npm run verify', 'npm run verify:reproducible', 'npm run preview:check',
+  'npm run preview:browser', 'npm run preview:design', 'python3 scripts/security-scan.py']) {
+  assert.ok(ciWorkflow.includes(command), `${command} must remain a CI gate`);
 }
-
-const securityWorkflow = read('.github/workflows/security.yml');
-assert.match(securityWorkflow, /push:\n\s+branches: \[main\]/);
-assert.match(securityWorkflow, /pull_request:/);
-assert.match(securityWorkflow, /schedule:/);
-assert.match(securityWorkflow, /semgrep==1\.179\.0/);
-assert.match(securityWorkflow, /ref: [0-9a-f]{40}/);
-assert.match(securityWorkflow, /python3 scripts\/security-scan\.py/);
-assert.doesNotMatch(securityWorkflow, /continue-on-error|contents: write|security-events: write/);
-for (const action of [...securityWorkflow.matchAll(/^\s*uses:\s*([^\s#]+)/gm)].map((match) => match[1])) {
+for (const job of ['verify', 'preview', 'semgrep']) assert.ok(ciWorkflow.includes(`  ${job}:`));
+assert.equal((ciWorkflow.match(/if: github.event_name != 'schedule'/g) || []).length, 2);
+assert.equal((ciWorkflow.match(/if: always\(\) && github.event_name == 'workflow_dispatch' && inputs.keep_artifacts/g) || []).length, 3);
+assert.match(ciWorkflow, /keep_artifacts:[\s\S]+?type: boolean\n\s+default: false/);
+assert.match(ciWorkflow, /semgrep==1\.179\.0/);
+assert.match(ciWorkflow, /ref: [0-9a-f]{40}/);
+assert.match(ciWorkflow, /Show scan reports in logs/);
+for (const action of [...ciWorkflow.matchAll(/(?:uses:|^- uses:)\s*([^\s#]+)/gm)].map((match) => match[1])) {
   assert.match(action, /^[^@]+@[0-9a-f]{40}$/, `${action} must be pinned`);
 }
+
 const scanScript = read('scripts/security-scan.py');
 for (const flag of ['--strict', '--error', '--metrics=off', '--disable-version-check']) assert.ok(scanScript.includes(flag));
 assert.match(scanScript, /negative-control\.json/);

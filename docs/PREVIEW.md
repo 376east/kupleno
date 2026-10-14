@@ -68,7 +68,7 @@ npm run preview:browser
 - `npm run preview:check`: типы, unit-тесты, production build и ссылки документов. [Команды](../package.json).
 - `npm run preview:browser`: настоящий unpacked MV3 в отдельном Chromium, импорт, поиск, редактирование, PDF worker, повторное открытие, backup/restore, возврат, гарантия, бюджет; отдельный проход worker/offscreen с искусственными ответами магазинов. Это не авторизованные аккаунты. [UI test](../scripts/next-browser-smoke.cjs), [collection test](../scripts/next-collection-smoke.cjs).
 - `KUPLENO_DESIGN_OUTPUT` + `npm run preview:design`: synthetic history, светлая/тёмная темы, поиск, карточка, пять разделов на 390 px, Control на 320 px. Полного аудита скринридером нет. [Сценарий](../scripts/next-design-demo.cjs).
-- CI запускает эти проверки на ветках и PR. Полное декодирование MP4 и границы реплик проверяет сценарий озвучки. [Workflow](../.github/workflows/preview.yml), [озвучка](../scripts/demo-voice.py).
+- CI запускает эти проверки после push в `main`, на PR и вручную; push в рабочую ветку отдельно CI не запускает. Полное декодирование MP4 и границы реплик проверяет сценарий озвучки. [Workflow](../.github/workflows/ci.yml), [озвучка](../scripts/demo-voice.py).
 
 Импорт отклоняет повреждённые поля правил категорий и месячных бюджетов до записи; допустимые неизвестные JSON-поля сохраняются. У бюджета разрешён отсутствующий или `null` общий лимит; старые плоские лимиты не преобразуются. Проверка отказа записи и импорта без изменения базы: [storage tests](../extension/next/storage.test.mjs), [UI scenario](../scripts/next-browser-smoke.cjs).
 

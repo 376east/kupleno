@@ -2,7 +2,7 @@
 
 Локальный журнал покупок, возвратов и чеков Ozon, Wildberries и Яндекс Маркета.
 
-<p><a href="PLAN.md"><img src="https://img.shields.io/badge/%D0%A1%D1%82%D0%B0%D1%82%D1%83%D1%81-%D0%B2%20%D1%80%D0%B0%D0%B7%D1%80%D0%B0%D0%B1%D0%BE%D1%82%D0%BA%D0%B5-orange?style=flat&amp;labelColor=555" alt="Статус: в разработке"></a> <a href="extension/next/package.json"><img src="https://img.shields.io/badge/%D0%92%D0%B5%D1%80%D1%81%D0%B8%D1%8F-0.22.0%20preview-blue?style=flat&amp;labelColor=555" alt="Версия: 0.22.0 preview"></a> <a href="docs/PREVIEW.md"><img src="https://img.shields.io/badge/%D0%A1%D1%82%D0%B5%D0%BA-React%20%2B%20WXT-blue?style=flat&amp;labelColor=555" alt="Стек: React + WXT"></a> <a href="assets/demo/kupleno-demo.mp4"><img src="https://img.shields.io/badge/%D0%94%D0%B5%D0%BC%D0%BE-43%20%D1%81%D0%B5%D0%BA%D1%83%D0%BD%D0%B4%D1%8B-blue?style=flat&amp;labelColor=555" alt="Демо: 43 секунды"></a> <a href="LICENSE"><img src="https://img.shields.io/badge/%D0%9B%D0%B8%D1%86%D0%B5%D0%BD%D0%B7%D0%B8%D1%8F-MIT-blue?style=flat&amp;labelColor=555" alt="Лицензия: MIT"></a> <a href="https://github.com/malyarq/kupleno/actions/workflows/preview.yml"><img src="https://github.com/malyarq/kupleno/actions/workflows/preview.yml/badge.svg" alt="Preview CI"></a></p>
+<p><a href="PLAN.md"><img src="https://img.shields.io/badge/%D0%A1%D1%82%D0%B0%D1%82%D1%83%D1%81-%D0%B2%20%D1%80%D0%B0%D0%B7%D1%80%D0%B0%D0%B1%D0%BE%D1%82%D0%BA%D0%B5-orange?style=flat&amp;labelColor=555" alt="Статус: в разработке"></a> <a href="extension/next/package.json"><img src="https://img.shields.io/badge/%D0%92%D0%B5%D1%80%D1%81%D0%B8%D1%8F-0.22.0%20preview-blue?style=flat&amp;labelColor=555" alt="Версия: 0.22.0 preview"></a> <a href="docs/PREVIEW.md"><img src="https://img.shields.io/badge/%D0%A1%D1%82%D0%B5%D0%BA-React%20%2B%20WXT-blue?style=flat&amp;labelColor=555" alt="Стек: React + WXT"></a> <a href="assets/demo/kupleno-demo.mp4"><img src="https://img.shields.io/badge/%D0%94%D0%B5%D0%BC%D0%BE-43%20%D1%81%D0%B5%D0%BA%D1%83%D0%BD%D0%B4%D1%8B-blue?style=flat&amp;labelColor=555" alt="Демо: 43 секунды"></a> <a href="LICENSE"><img src="https://img.shields.io/badge/%D0%9B%D0%B8%D1%86%D0%B5%D0%BD%D0%B7%D0%B8%D1%8F-MIT-blue?style=flat&amp;labelColor=555" alt="Лицензия: MIT"></a> <a href="https://github.com/malyarq/kupleno/actions/workflows/ci.yml"><img src="https://github.com/malyarq/kupleno/actions/workflows/ci.yml/badge.svg" alt="CI"></a></p>
 
 **[Демо](assets/demo/kupleno-demo.mp4) · [Запуск](#запуск) · [Архитектура](#архитектура) · [План](PLAN.md) · [Для агента](AGENTS.md)**
 
@@ -76,7 +76,7 @@ flowchart TB
 
 Перед задачей обновите ветки, посмотрите открытые PR/issues, зафиксируйте владельца и границы файлов. Небольшие проверенные изменения коммитьте и отправляйте в отдельную рабочую ветку. Не переписывайте чужую историю. Полные правила - в [AGENTS.md](AGENTS.md).
 
-[Проверки CI](https://github.com/malyarq/kupleno/actions/workflows/preview.yml) доступны участникам репозитория. Команды и охват - в [документации проверок](docs/PREVIEW.md#проверки-и-пробелы).
+[Проверки CI](https://github.com/malyarq/kupleno/actions/workflows/ci.yml) доступны участникам репозитория. Команды и охват - в [документации проверок](docs/PREVIEW.md#проверки-и-пробелы).
 
 [Как записать демо и озвучку](docs/DEMO.md). В опубликованном ролике только вымышленные покупки; личные копии базы не входят в репозиторий.
 

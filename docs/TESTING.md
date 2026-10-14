@@ -45,7 +45,7 @@ cp dist/browser-smoke/first-run-desktop.png assets/screenshots/overview.png
 cp dist/browser-smoke/example-desktop.png assets/screenshots/analytics.png
 ```
 
-CodeQL выполняется в GitHub после push в `main`, раз в неделю и вручную. Локальный `verify` проверяет структуру workflow и закрепление действий полными SHA, но не выдаёт локальный запуск за пройденный CodeQL.
+[CI](../.github/workflows/ci.yml) выполняет Verify, Preview и Semgrep CE после push в `main`, на PR и вручную. Еженедельно запускается только Semgrep с отрицательным контролем. Локальная проверка не подтверждает результат удалённого скана. Обычные прогоны сохраняют результаты в логах; ручной параметр `keep_artifacts` дополнительно сохраняет сборки на 7 дней и отчёты скана на 14 дней. Загрузка артефактов остаётся обязательной при выборе этого параметра.
 
 Бюджеты release gate:
 
