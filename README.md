@@ -2,9 +2,9 @@
 
 Локальный журнал покупок, возвратов и чеков Ozon, Wildberries и Яндекс Маркета.
 
-<p><a href="PLAN.md"><img src="https://img.shields.io/badge/%D0%A1%D1%82%D0%B0%D1%82%D1%83%D1%81-%D0%B2%20%D1%80%D0%B0%D0%B7%D1%80%D0%B0%D0%B1%D0%BE%D1%82%D0%BA%D0%B5-orange?style=flat&amp;labelColor=555" alt="Статус: в разработке"></a> <a href="extension/next/package.json"><img src="https://img.shields.io/badge/%D0%92%D0%B5%D1%80%D1%81%D0%B8%D1%8F-0.22.0%20preview-blue?style=flat&amp;labelColor=555" alt="Версия: 0.22.0 preview"></a> <a href="docs/PREVIEW.md"><img src="https://img.shields.io/badge/%D0%A1%D1%82%D0%B5%D0%BA-React%20%2B%20WXT-blue?style=flat&amp;labelColor=555" alt="Стек: React + WXT"></a> <a href="assets/demo/kupleno-demo.mp4"><img src="https://img.shields.io/badge/%D0%94%D0%B5%D0%BC%D0%BE-43%20%D1%81%D0%B5%D0%BA%D1%83%D0%BD%D0%B4%D1%8B-blue?style=flat&amp;labelColor=555" alt="Демо: 43 секунды"></a> <a href="LICENSE"><img src="https://img.shields.io/badge/%D0%9B%D0%B8%D1%86%D0%B5%D0%BD%D0%B7%D0%B8%D1%8F-MIT-blue?style=flat&amp;labelColor=555" alt="Лицензия: MIT"></a> <a href="https://github.com/malyarq/kupleno/actions/workflows/ci.yml"><img src="https://github.com/malyarq/kupleno/actions/workflows/ci.yml/badge.svg" alt="CI"></a></p>
+<p><a href="PLAN.md"><img src="https://img.shields.io/badge/%D0%A1%D1%82%D0%B0%D1%82%D1%83%D1%81-%D0%B2%20%D1%80%D0%B0%D0%B7%D1%80%D0%B0%D0%B1%D0%BE%D1%82%D0%BA%D0%B5-orange?style=flat&amp;labelColor=555" alt="Статус: в разработке"></a> <a href="extension/next/package.json"><img src="https://img.shields.io/badge/%D0%92%D0%B5%D1%80%D1%81%D0%B8%D1%8F-0.22.0%20preview-blue?style=flat&amp;labelColor=555" alt="Версия: 0.22.0 preview"></a> <a href="docs/PREVIEW.md"><img src="https://img.shields.io/badge/%D0%A1%D1%82%D0%B5%D0%BA-React%20%2B%20WXT-blue?style=flat&amp;labelColor=555" alt="Стек: React + WXT"></a> <a href="assets/demo/kupleno-demo.mp4"><img src="https://img.shields.io/badge/%D0%94%D0%B5%D0%BC%D0%BE-43%20%D1%81%D0%B5%D0%BA%D1%83%D0%BD%D0%B4%D1%8B-blue?style=flat&amp;labelColor=555" alt="Демо: 43 секунды"></a> <a href="LICENSE"><img src="https://img.shields.io/badge/%D0%9B%D0%B8%D1%86%D0%B5%D0%BD%D0%B7%D0%B8%D1%8F-MIT-blue?style=flat&amp;labelColor=555" alt="Лицензия: MIT"></a></p>
 
-**[Демо](assets/demo/kupleno-demo.mp4) · [Запуск](#запуск) · [Архитектура](#архитектура) · [План](PLAN.md) · [Для агента](AGENTS.md)**
+**[Демо](assets/demo/kupleno-demo.mp4) · [Запуск](#запуск) · [Архитектура](#архитектура) · [План](PLAN.md) · [Документация](docs/README.md) · [Правила разработки](AGENTS.md)**
 
 ## Как выглядит
 
@@ -66,7 +66,7 @@ flowchart TB
 Основная ветка `main` содержит новый предпросмотр **0.22.0**. Старый опубликованный код сохранён тегом [archive/pre-021-20261004](https://github.com/malyarq/kupleno/tree/archive/pre-021-20261004). [Точный откат](docs/PREVIEW.md#откат-основной-ветки).
 
 - `extension/next` - новый предпросмотр [0.22.0](extension/next/package.json). Его проверяют команды `preview:*`.
-- `extension` без `next` - архивная реализация. Текущая версия исходников: `0.19.2` (только архив). Её версия хранится в [manifest](extension/manifest.json), а команды `verify:*` и старый выпуск ZIP относятся именно к ней. [Архивная документация](docs/README.md).
+- `extension` без `next` - архивная реализация. Текущая версия исходников: `0.19.2` (только архив). Её версия хранится в [manifest](extension/manifest.json), а команды `verify:*` и старый выпуск ZIP относятся именно к ней. [Архивная документация](docs/README.md#архив-0192).
 
 Не собирайте новый продукт старым упаковщиком: он намеренно берёт только файлы прежней версии. Публикация кода предпросмотра не означает новый стабильный Release или выпуск в магазине расширений.
 

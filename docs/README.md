@@ -1,6 +1,17 @@
-# Документация прежней версии Куплено
+# Документация Куплено
 
-Этот раздел описывает реализацию `extension` 0.19.2. Для `extension/next` 0.21.0 начни с [PREVIEW.md](PREVIEW.md), [PLAN.md](../PLAN.md) и [AGENTS.md](../AGENTS.md).
+## Предпросмотр 0.22.0
+
+Актуальный код находится в `extension/next`. Версия: [package.json](../extension/next/package.json).
+
+- [Запуск, данные и проверки](PREVIEW.md)
+- [Демо на вымышленных покупках](DEMO.md)
+- [План разработки](../PLAN.md)
+- [Правила разработки](../AGENTS.md)
+
+## Архив 0.19.2
+
+Документы ниже описывают прежнюю реализацию `extension`. Её упаковщик не включает предпросмотр 0.22.0. [Список файлов сборки](../scripts/package-extension.sh).
 
 - [Контракт продукта и критерии готовности](PRODUCT.md)
 - [Архитектура и границы доверия](ARCHITECTURE.md)
@@ -13,4 +24,4 @@
 - [Конфиденциальность](../PRIVACY.md)
 - [История изменений](../CHANGELOG.md)
 
-Источник версии — `extension/manifest.json`. `package.json`, README и текущий раздел CHANGELOG обязаны совпадать с ним; это проверяется автоматически.
+Версия архивной реализации хранится в [extension/manifest.json](../extension/manifest.json). Её совпадение с корневым `package.json` и разделом CHANGELOG проверяет [тест релизного процесса](../extension/release-process.test.js).
