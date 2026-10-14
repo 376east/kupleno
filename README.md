@@ -2,24 +2,24 @@
 
 Локальный журнал покупок, возвратов и чеков Ozon, Wildberries и Яндекс Маркета.
 
-<p><a href="PLAN.md"><img src="https://img.shields.io/badge/%D0%A1%D1%82%D0%B0%D1%82%D1%83%D1%81-%D0%B2%20%D1%80%D0%B0%D0%B7%D1%80%D0%B0%D0%B1%D0%BE%D1%82%D0%BA%D0%B5-orange?style=flat&amp;labelColor=555" alt="Статус: в разработке"></a> <a href="extension/next/package.json"><img src="https://img.shields.io/badge/%D0%92%D0%B5%D1%80%D1%81%D0%B8%D1%8F-0.21.13%20preview-blue?style=flat&amp;labelColor=555" alt="Версия: 0.21.13 preview"></a> <a href="docs/PREVIEW.md"><img src="https://img.shields.io/badge/%D0%A1%D1%82%D0%B5%D0%BA-React%20%2B%20WXT-blue?style=flat&amp;labelColor=555" alt="Стек: React + WXT"></a> <a href="assets/demo/kupleno-0.21-voice.mp4"><img src="https://img.shields.io/badge/%D0%94%D0%B5%D0%BC%D0%BE-57%20%D1%81%D0%B5%D0%BA%D1%83%D0%BD%D0%B4-blue?style=flat&amp;labelColor=555" alt="Демо: 57 секунд"></a> <a href="LICENSE"><img src="https://img.shields.io/badge/%D0%9B%D0%B8%D1%86%D0%B5%D0%BD%D0%B7%D0%B8%D1%8F-MIT-blue?style=flat&amp;labelColor=555" alt="Лицензия: MIT"></a> <a href="https://github.com/malyarq/kupleno/actions/workflows/preview.yml"><img src="https://github.com/malyarq/kupleno/actions/workflows/preview.yml/badge.svg" alt="Preview CI"></a></p>
+<p><a href="PLAN.md"><img src="https://img.shields.io/badge/%D0%A1%D1%82%D0%B0%D1%82%D1%83%D1%81-%D0%B2%20%D1%80%D0%B0%D0%B7%D1%80%D0%B0%D0%B1%D0%BE%D1%82%D0%BA%D0%B5-orange?style=flat&amp;labelColor=555" alt="Статус: в разработке"></a> <a href="extension/next/package.json"><img src="https://img.shields.io/badge/%D0%92%D0%B5%D1%80%D1%81%D0%B8%D1%8F-0.22.0%20preview-blue?style=flat&amp;labelColor=555" alt="Версия: 0.22.0 preview"></a> <a href="docs/PREVIEW.md"><img src="https://img.shields.io/badge/%D0%A1%D1%82%D0%B5%D0%BA-React%20%2B%20WXT-blue?style=flat&amp;labelColor=555" alt="Стек: React + WXT"></a> <a href="assets/demo/kupleno-demo.mp4"><img src="https://img.shields.io/badge/%D0%94%D0%B5%D0%BC%D0%BE-43%20%D1%81%D0%B5%D0%BA%D1%83%D0%BD%D0%B4%D1%8B-blue?style=flat&amp;labelColor=555" alt="Демо: 43 секунды"></a> <a href="LICENSE"><img src="https://img.shields.io/badge/%D0%9B%D0%B8%D1%86%D0%B5%D0%BD%D0%B7%D0%B8%D1%8F-MIT-blue?style=flat&amp;labelColor=555" alt="Лицензия: MIT"></a> <a href="https://github.com/malyarq/kupleno/actions/workflows/preview.yml"><img src="https://github.com/malyarq/kupleno/actions/workflows/preview.yml/badge.svg" alt="Preview CI"></a></p>
 
-**[Демо](assets/demo/kupleno-0.21-voice.mp4) · [Запуск](#запуск) · [Архитектура](#архитектура) · [План](PLAN.md) · [Для агента](AGENTS.md)**
+**[Демо](assets/demo/kupleno-demo.mp4) · [Запуск](#запуск) · [Архитектура](#архитектура) · [План](PLAN.md) · [Для агента](AGENTS.md)**
 
 ## Как выглядит
 
-<img src="assets/demo/overview-dark.png" width="760" alt="Куплено 0.21.0: обзор расходов в тёмной теме на вымышленных покупках">
+<img src="assets/demo/overview-light.png" width="760" alt="Куплено 0.22.0: обзор расходов в светлой теме на вымышленных покупках">
 
 *Обзор: расходы с учётом возвратов, месяцы и крупные покупки.*
 
 <details>
-<summary>Ещё два экрана: светлая тема и карточка покупки</summary>
+<summary>Ещё два экрана: тёмная тема и карточка покупки</summary>
 
-<img src="assets/demo/overview-light.png" width="760" alt="Куплено 0.21.0: светлая тема, месяцы и категории">
+<img src="assets/demo/overview-dark.png" width="760" alt="Куплено 0.22.0: тёмная тема, месяцы и категории">
 
-*Тот же обзор в светлой теме. Фильтры раскрываются на месте.*
+*Тот же обзор в тёмной теме. Фильтры раскрываются на месте.*
 
-<img src="assets/demo/purchase-dark.png" width="760" alt="Куплено 0.21.0: заметка, категория, гарантия и возврат в карточке покупки">
+<img src="assets/demo/purchase-dark.png" width="760" alt="Куплено 0.22.0: заметка, категория, гарантия и возврат в карточке покупки">
 
 *Карточка вещи: заметка, категория, гарантия и ожидание возврата. На всех экранах вымышленные данные из [сценария](scripts/next-design-demo.cjs).*
 
@@ -63,9 +63,9 @@ flowchart TB
 
 ## Статус и ограничения
 
-Основная ветка `main` содержит новый предпросмотр **0.21.13**. Старый опубликованный код сохранён тегом [archive/pre-021-20261004](https://github.com/malyarq/kupleno/tree/archive/pre-021-20261004). [Точный откат](docs/PREVIEW.md#откат-основной-ветки).
+Основная ветка `main` содержит новый предпросмотр **0.22.0**. Старый опубликованный код сохранён тегом [archive/pre-021-20261004](https://github.com/malyarq/kupleno/tree/archive/pre-021-20261004). [Точный откат](docs/PREVIEW.md#откат-основной-ветки).
 
-- `extension/next` - новый предпросмотр [0.21.13](extension/next/package.json). Его проверяют команды `preview:*`.
+- `extension/next` - новый предпросмотр [0.22.0](extension/next/package.json). Его проверяют команды `preview:*`.
 - `extension` без `next` - архивная реализация. Текущая версия исходников: `0.19.2` (только архив). Её версия хранится в [manifest](extension/manifest.json), а команды `verify:*` и старый выпуск ZIP относятся именно к ней. [Архивная документация](docs/README.md).
 
 Не собирайте новый продукт старым упаковщиком: он намеренно берёт только файлы прежней версии. Публикация кода предпросмотра не означает новый стабильный Release или выпуск в магазине расширений.
