@@ -30,3 +30,4 @@ jobs:
           name: kupleno-preview-${{ github.sha }}
           path: extension/next/.output/chrome-mv3/
           if-no-files-found: error
+          retention-days: 7
