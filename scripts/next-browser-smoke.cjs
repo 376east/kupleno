@@ -40,7 +40,7 @@ async function main() {
     const page = await context.newPage();
     page.on('pageerror', error => errors.push(error.message));
     await page.goto(`chrome-extension://${id}/app.html`);
-    await page.getByRole('heading', { name: /Покупки складываются/ }).waitFor();
+    await page.getByRole('heading', { name: 'История покупок', exact: true }).waitFor();
     const backup = {
       format: 'kupleno-backup', version: 1, createdAt: '2026-09-14T12:00:00.000Z',
       rows: [
@@ -144,10 +144,10 @@ async function main() {
     await page.getByLabel('Заметка').fill('На рабочем столе');
     await page.getByLabel('Категория', { exact: true }).fill('Освещение');
     await page.getByRole('button', { name: 'Сохранить', exact: true }).click();
-    await page.getByText('Освещение · На рабочем столе', { exact: true }).waitFor();
+    await page.locator('.purchase-meta').filter({ hasText: 'Освещение · На рабочем столе' }).waitFor();
     await page.reload();
     await page.getByRole('button', { name: 'Лампа для чтения', exact: true }).waitFor();
-    await page.getByText('Освещение · На рабочем столе', { exact: true }).waitFor();
+    await page.locator('.purchase-meta').filter({ hasText: 'Освещение · На рабочем столе' }).waitFor();
     await page.getByRole('link', { name: 'Настройки', exact: true }).click();
     const [download] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Скачать копию', exact: true }).click()]);
     const exported = JSON.parse(await fs.readFile(await download.path(), 'utf8'));
@@ -204,12 +204,12 @@ async function main() {
     await page.getByRole('button', { name: 'Изменить выбранные (1)', exact: true }).click();
     await page.getByRole('dialog').getByLabel('Категория', { exact: true }).fill('Подарки');
     await page.getByRole('button', { name: 'Применить к выбранным', exact: true }).click();
-    await page.getByText('Подарки', { exact: true }).waitFor();
+    await page.locator('.purchase-meta').filter({ hasText: 'Подарки' }).waitFor();
     await page.getByRole('link', { name: 'Контроль', exact: true }).click();
     await page.getByRole('link', { name: 'Проверка покупок', exact: true }).click();
     await page.getByRole('heading', { name: 'Проверка покупок', exact: true }).waitFor();
     await page.getByRole('combobox', { name: /^Что посмотреть/ }).selectOption('prices');
-    await page.getByText('Подходящих покупок пока нет.', { exact: true }).waitFor();
+    await page.getByText('Подходящих операций нет. Измените поиск или выберите другой вид проверки.', { exact: true }).waitFor();
     assert.equal(controlled.settings.refundClaims.length, 1);
     assert.equal(controlled.settings.warranties.length, 2);
     assert.equal(controlled.settings.budgets['2026-08'].total, 3000);
@@ -226,13 +226,13 @@ async function main() {
     const ozonPanel=page.locator('.store-panel').filter({has:page.getByRole('heading',{name:'Ozon',exact:true})});
     await ozonPanel.getByRole('button',{name:'Удалить историю',exact:true}).click();
     await page.getByRole('dialog').getByRole('button',{name:'Закрыть',exact:true}).click();
-    assert.match(await ozonPanel.innerText(),/2 операций/);
+    assert.match(await ozonPanel.innerText(),/2 операции/);
     await ozonPanel.getByRole('button',{name:'Удалить историю',exact:true}).click();
     await page.getByRole('dialog').getByRole('button',{name:'Удалить историю',exact:true}).click();
     await page.getByText('История магазина удалена',{exact:true}).waitFor();
     await ozonPanel.getByText('История ещё не загружена',{exact:true}).waitFor();
     const wbPanel=page.locator('.store-panel').filter({has:page.getByRole('heading',{name:'Wildberries',exact:true})});
-    assert.match(await wbPanel.innerText(),/1 операций/);
+    assert.match(await wbPanel.innerText(),/1 операция/);
     await page.reload();
     await ozonPanel.getByText('История ещё не загружена',{exact:true}).waitFor();
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'No horizontal page overflow on mobile');

@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import type { State, Purchase } from '../model';
 import { effectiveRows, removeProfile, settingsWithDefaults } from '../preferences.mjs';
 import { SOURCES } from '../domain.mjs';
-import { Dialog } from './components';
+import { Dialog, operationCount } from './components';
 
 type Rule = { id?: string; category?: string; keywords?: string[]; tokens?: string[]; negativeKeywords?: string[]; sources?: string[]; match?: string; enabled?: boolean; priority?: number; profile?: string; [key: string]: unknown };
 
@@ -39,7 +39,7 @@ export function Preferences({ state, save, onSelect }: { state: State; save: (st
   if (editingRule !== null) previewRules[editingRule] = rule;
   const previews = editingRule === null ? [] : effectiveRows({ ...state, settings: { ...settings, customRules: previewRules } }).filter((row, index) => row.category !== rows[index]?.category || row.profile !== rows[index]?.profile);
   return <>
-    <section className="panel"><h2>Как устроена ваша история</h2>
+    <section className="panel"><h2>Профили и категории</h2>
       <div className="setting-row"><div><strong>Профили покупок</strong><small>Разделяйте личные, семейные и рабочие расходы.</small></div><button onClick={() => open('profiles')}>Настроить профили</button></div>
       <div className="setting-row"><div><strong>Правила категорий</strong><small>Назначайте категории похожим товарам автоматически.</small></div><button onClick={() => open('rules')}>Свои правила ({rules.length})</button></div>
       <div className="setting-row"><div><strong>Мои изменения</strong><small>Заметки, категории и исключения из расчёта.</small></div><button onClick={() => open('manual')}>Посмотреть изменения ({Object.keys(overrides).length})</button></div>
@@ -55,7 +55,7 @@ export function Preferences({ state, save, onSelect }: { state: State; save: (st
       {view === 'profiles' && !mergeSource && <>
         <p className="note-line">Профиль для сбора определяет, куда попадут новые покупки.</p>
         <label>Профиль для сбора<select disabled={busy} value={settings.dataProfile} onChange={e => void commit({ ...state, settings: { ...settings, dataProfile: e.target.value } })}>{settings.profiles.map(profile => <option key={profile.id} value={profile.id}>{profile.name}</option>)}</select></label>
-        {settings.profiles.map(profile => <div className="setting-row" key={profile.id}><div><strong>{profile.name}</strong><small>{rows.filter(row => row.profile === profile.id).length} операций</small></div><div className="row-actions"><button disabled={busy} onClick={() => { setEditingProfile(profile.id); setProfileName(profile.name); }}>Переименовать</button><button disabled={busy || settings.profiles.length < 2} onClick={() => { setError(''); setMergingProfile(profile.id); }}>Объединить с другим</button></div></div>)}
+        {settings.profiles.map(profile => <div className="setting-row" key={profile.id}><div><strong>{profile.name}</strong><small>{operationCount(rows.filter(row => row.profile === profile.id).length)}</small></div><div className="row-actions"><button disabled={busy} onClick={() => { setEditingProfile(profile.id); setProfileName(profile.name); }}>Переименовать</button><button disabled={busy || settings.profiles.length < 2} onClick={() => { setError(''); setMergingProfile(profile.id); }}>Объединить с другим</button></div></div>)}
         <p className="note-line">Перед объединением покажем, куда перейдут покупки и какие планы будут удалены.</p>
         <form onSubmit={e => { e.preventDefault(); const name = profileName.trim(); if (!name) return; if (settings.profiles.some(p => p.id !== editingProfile && p.name.toLocaleLowerCase() === name.toLocaleLowerCase())) { setError('Такой профиль уже есть.'); return; } const profiles = editingProfile ? settings.profiles.map(p => p.id === editingProfile ? { ...p, name } : p) : [...settings.profiles, { id: crypto.randomUUID(), name }]; void commit({ ...state, settings: { ...settings, profiles } }).then(ok => { if (ok) { setProfileName(''); setEditingProfile(''); } }); }}>
           <label>{editingProfile ? 'Новое название' : 'Новый профиль'}<input required maxLength={80} value={profileName} onChange={e => setProfileName(e.target.value)} /></label><div className="form-footer">{editingProfile && <button type="button" onClick={() => { setEditingProfile(''); setProfileName(''); }}>Отмена</button>}<button className="primary" disabled={busy}>{editingProfile ? 'Сохранить название' : 'Добавить профиль'}</button></div>

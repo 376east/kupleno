@@ -2,6 +2,12 @@ import { useEffect, useRef, type ReactNode } from 'react';
 import { SOURCES } from '../domain.mjs';
 import type { Source } from '../model';
 
+const operationPlurals = new Intl.PluralRules('ru');
+export function operationCount(count: number) {
+  const form = operationPlurals.select(count);
+  return `${count.toLocaleString('ru-RU')} ${form === 'one' ? 'операция' : form === 'few' ? 'операции' : 'операций'}`;
+}
+
 export function Icon({ name }: { name: string }) {
   const paths: Record<string, ReactNode> = {
     overview: <><path d="M3 11 12 3l9 8v10h-6v-7H9v7H3Z" /></>,
@@ -32,23 +38,6 @@ export function Dialog({ title, children, onClose, error }: { title: string; chi
     <div className="dialog-head"><h2 id="dialog-title">{title}</h2><button className="secondary" onClick={onClose}>Закрыть</button></div>
     <div className="dialog-body">{error && <div className="callout" role="alert">{error}</div>}{children}</div>
   </dialog>;
-}
-
-export function ReceiptArt() {
-  return <svg className="welcome-art" viewBox="0 0 280 280" fill="none" aria-hidden="true">
-    <circle cx="146" cy="138" r="113" fill="var(--accent-soft)" />
-    <path d="m24 79 15 3m-6-12 2 19M236 197l16 8m-5-15-6 22" stroke="var(--accent)" strokeWidth="3" strokeLinecap="round" />
-    <g className="receipt-sheet"><g transform="rotate(-10 140 140)">
-      <path d="M69 27h142v218l-12-8-12 8-12-8-12 8-12-8-12 8-12-8-12 8-12-8-12 8-10-8-11 8Z" fill="var(--surface)" stroke="var(--ink)" strokeWidth="2" />
-      <text x="88" y="65" fill="var(--ink)" fontFamily="Golos,Arial" fontSize="19" fontWeight="700">КУПЛЕНО</text>
-      <path d="M88 83h103" stroke="var(--line)" strokeWidth="2" strokeDasharray="4 4" />
-      <path d="M88 104h54m22 0h26M88 125h68m8 0h26M88 146h39m37 0h26" stroke="var(--muted)" strokeWidth="5" strokeLinecap="round" />
-      <path d="M88 168h103" stroke="var(--line)" strokeWidth="2" strokeDasharray="4 4" />
-      <text x="88" y="196" fill="var(--accent)" fontFamily="Golos,Arial" fontSize="19" fontWeight="700">Всё сошлось.</text>
-      <path d="M90 208v13m5-13v13m8-13v13m4-13v13m8-13v13m8-13v13m4-13v13m6-13v13m9-13v13m4-13v13m8-13v13m5-13v13m8-13v13m4-13v13m8-13v13" stroke="var(--ink)" strokeWidth="2" />
-    </g></g>
-    <g className="receipt-stamp" style={{ transformOrigin: '212px 100px' }}><path d="m213 50 12 12 17-1 3 17 13 11-9 15 2 17-17 5-10 14-15-8-17 3-6-16-14-9 7-16-4-17 16-7 8-15Z" fill="var(--pop)" stroke="var(--ink)" strokeWidth="2" /><path d="m197 96 12 12 23-27" stroke="#202027" strokeWidth="5" strokeLinecap="round" strokeLinejoin="round" /></g>
-  </svg>;
 }
 
 export function download(name: string, text: string, type = 'application/json') {

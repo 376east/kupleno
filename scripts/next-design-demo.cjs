@@ -14,31 +14,38 @@ const products=[['Кроссовки для города','Одежда',7490],[
  const worker=ctx.serviceWorkers()[0]||await ctx.waitForEvent('serviceworker');const id=new URL(worker.url()).host;
  const page=await ctx.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message));video=page.video();
  await page.goto(`chrome-extension://${id}/app.html`);
- await page.getByRole('heading',{name:/Покупки складываются/}).waitFor();await page.evaluate(()=>document.fonts.ready);
- async function shot(name){await page.screenshot({path:path.join(output,name+'.png'),fullPage:true,animations:'disabled'});}
+ await page.getByRole('heading',{name:'История покупок',exact:true}).waitFor();await page.evaluate(()=>document.fonts.ready);
+ async function shot(name,fullPage=true){await page.mouse.move(0,0);await page.screenshot({path:path.join(output,name+'.png'),fullPage,animations:'disabled'});}
  async function caption(text){if(!record)return;await page.evaluate(text=>{let el=document.getElementById('demo-caption');if(!el){el=document.createElement('div');el.id='demo-caption';Object.assign(el.style,{position:'fixed',bottom:'18px',left:'50%',transform:'translateX(-50%)',zIndex:'100',background:'#202027',color:'#fff',padding:'14px 25px',border:'1px solid #54515e',borderRadius:'16px',font:'14px Golos,Arial',boxShadow:'0 8px 35px #0003',whiteSpace:'nowrap',pointerEvents:'none'});document.body.append(el);}el.textContent=text;},text);}
  async function pause(n=2000){if(record)await page.waitForTimeout(n);}
- await caption('Куплено / 0.21 · Демонстрационные данные');await pause(3200);await shot('01-welcome-light');
- const rows=Array.from({length:36},(_,i)=>{const p=products[i%products.length];return{rowId:`demo-${i}`,source:['ozon','wildberries','yandex'][i%3],date:`2026-${String(4+Math.floor(i/6)).padStart(2,'0')}-${String(3+i%23).padStart(2,'0')}`,title:p[0],category:p[1],amount:String(p[2]),currency:'RUB',type:'purchase',profile:'personal',marketplace_id:`DEMO-${i}`,parse_quality:'complete'};});
- rows.push({rowId:'demo-refund',source:'wildberries',date:'2026-09-25',title:'Возврат: худи oversize',category:'Одежда',amount:'-3290',currency:'RUB',type:'refund',profile:'personal'});
- const fixture={format:'kupleno-backup',version:1,rows,settings:{profiles:[{id:'personal',name:'Личные'}],overrides:{},customRules:[],refundClaims:[],warranties:[]},metadata:{demo:true}};
+ await caption('Куплено · Демонстрационные данные');await pause(3200);await shot('01-welcome-light');
+ const rows=products.map((p,i)=>({rowId:`demo-${i}`,source:['ozon','wildberries','yandex'][i%3],date:`2026-${String(7+Math.floor(i/4)).padStart(2,'0')}-${String(3+i).padStart(2,'0')}`,title:p[0],category:p[1],amount:String(p[2]),currency:'RUB',type:'purchase',profile:'personal',marketplace_id:`DEMO-${i}`,parse_quality:'complete'}));
+ rows.push({rowId:'demo-refund',source:'ozon',date:'2026-09-25',title:'Худи oversize',category:'Одежда',amount:'-3290',currency:'RUB',type:'refund',profile:'personal',marketplace_id:'DEMO-3'});
+ const fixture={format:'kupleno-backup',version:1,rows,settings:{profiles:[{id:'personal',name:'Личные'}],overrides:{},customRules:[],budgets:{'2026-09':{total:18000}},refundClaims:[{id:'demo-claim',rowId:'demo-7',marketplace_id:'DEMO-7',source:'wildberries',profile:'personal',title:'Рюкзак для поездок',expectedAmount:'4290',purchaseDate:'2026-08-10',requestedAt:'2026-10-10',dueDate:'2026-10-24'}],warranties:[]},metadata:{demo:true}};
  await page.locator('input[type=file]').first().setInputFiles({name:'demo.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify(fixture))});
  await page.getByRole('dialog').getByRole('button',{name:'Загрузить историю',exact:true}).click();await page.getByRole('heading',{name:'Обзор',exact:true}).waitFor();
- await caption('01 / Вся история — один взгляд');await pause(4000);await shot('02-overview-light');
+ await caption('Расходы с учётом возвратов');await pause(4000);await page.locator('.notice').waitFor({state:'hidden',timeout:12000});await shot('02-overview-light');await shot('overview',false);
+ await page.getByRole('link',{name:'Покупки',exact:true}).click();await shot('purchases',false);
+ await page.getByRole('searchbox').fill('Кроссовки');await page.getByRole('button',{name:'Кроссовки для города',exact:true}).first().click();await shot('details',false);await page.getByRole('button',{name:'Закрыть',exact:true}).click();await page.getByRole('searchbox').fill('');
+ await page.getByRole('link',{name:'Магазины',exact:true}).click();await shot('stores',false);
+ await page.getByRole('link',{name:'Контроль',exact:true}).click();await page.getByLabel('Месяц',{exact:true}).fill('2026-09');await shot('control',false);
+ await page.getByRole('link',{name:'Возвраты',exact:true}).click();await shot('returns',false);await page.getByRole('link',{name:'Бюджет',exact:true}).click();
+ await page.getByRole('link',{name:'Обзор',exact:true}).click();
  const headingBefore=await page.locator('.page-heading').boundingBox();await page.locator('.overview-filters summary').click();await pause(1600);assert.deepEqual(await page.locator('.page-heading').boundingBox(),headingBefore);await page.locator('.overview-filters summary').click();
- await page.getByRole('button',{name:'Включить тёмную тему',exact:true}).click();await caption('02 / Тёмная тема. Та же система.');await pause(2300);if(record){await page.evaluate(()=>window.scrollTo({top:420,behavior:'smooth'}));await pause(2300);await page.evaluate(()=>window.scrollTo({top:0,behavior:'smooth'}));await pause(600);}await shot('03-overview-dark');
- await page.getByRole('link',{name:'Покупки',exact:true}).click();await caption('03 / Найти вещь. Открыть детали.');await page.getByRole('searchbox').pressSequentially('Кроссовки',{delay:record?110:0});await pause(1700);await shot('04-search-dark');
+ await page.getByRole('button',{name:'Включить тёмную тему',exact:true}).click();await caption('Светлая и тёмная темы');await pause(2300);if(record){await page.evaluate(()=>window.scrollTo({top:420,behavior:'smooth'}));await pause(2300);await page.evaluate(()=>window.scrollTo({top:0,behavior:'smooth'}));await pause(600);}await shot('03-overview-dark');
+ await page.getByRole('link',{name:'Покупки',exact:true}).click();await caption('Поиск и детали покупки');await page.getByRole('searchbox').pressSequentially('Кроссовки',{delay:record?110:0});await pause(1700);await shot('04-search-dark');
  await page.getByRole('button',{name:'Кроссовки для города',exact:true}).first().click();await pause(2500);await shot('05-details-dark');await page.getByRole('button',{name:'Закрыть',exact:true}).click();
- await page.getByRole('link',{name:'Магазины',exact:true}).click();await caption('04 / Три магазина. Покупки и чеки рядом.');await pause(3000);await shot('06-stores-dark');
- await page.getByRole('link',{name:'Контроль',exact:true}).click();await caption('05 / Бюджет, возвраты и гарантии');await pause(2800);await shot('07-control-dark');
+ await page.getByRole('link',{name:'Магазины',exact:true}).click();await caption('История трёх маркетплейсов');await pause(3000);await shot('06-stores-dark');
+ await page.getByRole('link',{name:'Контроль',exact:true}).click();await caption('Бюджет и ожидаемые возвраты');await pause(2800);await shot('07-control-dark');
  await page.getByRole('link',{name:'Настройки',exact:true}).click();await shot('08-settings-dark');
+ if(!record){await page.getByRole('link',{name:'Покупки',exact:true}).click();await page.getByRole('searchbox').fill('');}
  if(!record) for(const theme of ['dark','light']){
  if(theme==='light')await page.getByRole('button',{name:'Включить светлую тему',exact:true}).click();
  await page.setViewportSize({width:390,height:844});
  for(const section of ['Обзор','Покупки','Магазины','Контроль','Настройки']){
  await page.getByRole('link',{name:section,exact:true}).click();
  const overflow=await page.evaluate(()=>[...document.querySelectorAll('body *')].filter(el=>el.getBoundingClientRect().right>innerWidth+1).map(el=>({tag:el.tagName,cls:el.className,width:el.getBoundingClientRect().width,text:el.textContent.slice(0,65)})).slice(0,8)); if(overflow.length)console.log(JSON.stringify({section,theme,overflow})); assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true,`${section} ${theme} overflow`);
- if(section==='Обзор'||section==='Магазины')await shot(`mobile-${section==='Обзор'?'overview':'stores'}-${theme}`);
+ if(section==='Обзор'||section==='Магазины')await shot(`mobile-${section==='Обзор'?'overview':'stores'}-${theme}`,false);
  }
  }
  if(!record){await page.setViewportSize({width:320,height:780});await page.getByRole('link',{name:'Контроль',exact:true}).click();assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true,'320px control overflow');}
