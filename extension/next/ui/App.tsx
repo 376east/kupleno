@@ -1,4 +1,6 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
+import { motion, useReducedMotion } from 'motion/react';
+import { useAutoAnimate } from '@formkit/auto-animate/react';
+import { Fragment, lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { createStore, parseBackup, serializeBackup, type Recovery } from '../storage.mjs';
 import { effectiveRows, editOperations, identifyRows, settingsWithDefaults } from '../preferences.mjs';
 import { SOURCES, categoryTotals, filterRows, formatMoney, isRefund, largePurchases, moneyMinor, monthlyTotals, receiptUrl, sourceOf, summarize } from '../domain.mjs';
@@ -13,6 +15,7 @@ import { Control, ReturnForm, DocumentForm } from './Control';
 import { addDays, today, upsertClaim, upsertDocument, claims, documents, type Claim, type DocumentRecord } from '../lifecycle';
 import { parsePurchasesCsv, exportPurchasesCsv } from '../csv';
 
+const SpendingChart = lazy(() => import('./SpendingChart').then(module => ({ default: module.SpendingChart })));
 const store = createStore();
 const empty = (): Envelope => ({ state: { rows: [], settings: {}, metadata: {} }, revision: 0, epoch: 0 });
 let boot: Promise<Envelope> | undefined;
@@ -182,6 +185,9 @@ function FiltersBar({ filters, setFilters, profiles }: { filters: Filters; setFi
 }
 
 function Overview({ rows, filters, onSelect, onMonth, onGroup, onCategory }: { rows: Purchase[]; filters: Filters; onSelect: (id: string) => void; onMonth: (month: string) => void; onGroup: (rows: Purchase[]) => void; onCategory: (category: string) => void }) {
+  const reduce = useReducedMotion();
+  const [rankList, enableList] = useAutoAnimate<HTMLDivElement>({ duration: 180 });
+  useEffect(() => { enableList(!reduce); }, [reduce, enableList]);
   const totals = summarize(rows);
   const months = monthlyTotals(rows).slice(-12);
   const max = Math.max(1, ...months.map(m => Math.abs(m.amount)));
@@ -195,12 +201,13 @@ function Overview({ rows, filters, onSelect, onMonth, onGroup, onCategory }: { r
     <section className="expense-report" aria-label="Итог расходов">
       <div className="report-period"><h2>{periodLabel(filters)}</h2><small>{operationCount(totals.count)}</small></div>
       <div className="kpis">
-        <div className="panel kpi"><span className="report-label">{totals.net < 0 ? 'Возвраты превысили покупки' : 'Потрачено с учётом возвратов'}</span><strong className="kpi-value">{formatMoney(totals.net)}</strong>{totals.net === 0 && <small>Покупки и возвраты уравновесились</small>}</div>
+        <div className="panel kpi"><span className="report-label">{totals.net < 0 ? 'Возвраты превысили покупки' : 'Потрачено с учётом возвратов'}</span><motion.strong key={totals.net} className="kpi-value" initial={reduce ? false : { opacity: 0.65, y: 3 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.16 }}>{formatMoney(totals.net)}</motion.strong>{totals.net === 0 && <small>Покупки и возвраты уравновесились</small>}</div>
         <div className="panel kpi"><small>Покупки</small><strong className="kpi-value">{formatMoney(totals.spent)}</strong><small>До вычета возвратов</small></div>
         <div className="panel kpi"><small>Возвраты</small><strong className="kpi-value">{formatMoney(totals.refunded)}</strong><small>Вычтены из расходов</small></div>
       </div>
     </section>
     {totals.unread > 0 && <div className="callout"><strong>Чеков без списка товаров: {totals.unread}</strong><p>Их суммы включены в итог. Такие чеки не показываем как крупные товары.</p><button onClick={() => onSelect(rows.find(r => r.parse_quality === 'fallback')!.rowId)}>Проверить чек</button></div>}
+    <Suspense fallback={<p className="note-line" role="status">Открываем график расходов…</p>}><SpendingChart rows={rows} /></Suspense>
     <div className="split overview-ledger"><div className="stack">
       <section className="panel"><div className="panel-heading"><h2>По месяцам</h2><small>Покупки минус возвраты</small></div>
         <div className={`chart ${signedMonths ? 'chart-signed' : ''}`}>{months.map(month => <div className="chart-column" key={month.key}>
@@ -211,7 +218,7 @@ function Overview({ rows, filters, onSelect, onMonth, onGroup, onCategory }: { r
       </section>
       <section className="panel"><div className="panel-heading"><h2>По категориям</h2><small>С учётом возвратов</small></div>{categories.map(category => <div className={`category-row ${category.amount < 0 ? 'category-refund' : ''}`} key={category.key}><button className="quiet" onClick={() => onCategory(category.key)}>{category.key}</button><strong>{formatMoney(category.amount)}</strong><div className="category-track" aria-hidden="true"><span style={{ width: `${Math.abs(category.amount) / categoryMax * 100}%` }} /></div>{category.amount < 0 && <small className="category-explanation">Возвратов больше, чем покупок</small>}</div>)}</section>
     </div>
-    <section className="panel"><div className="panel-heading"><h2>Крупные покупки</h2><small>Товары с известным составом чека</small></div><div className="rank-list">{top.map(group => <button className="rank-row" key={group.key} onClick={() => group.rows.length === 1 ? onSelect(group.rows[0]!.rowId) : onGroup(group.rows)}><StoreMark source={group.rows[0]!.source} small /><span><strong>{group.rows[0]!.title}</strong><small>{group.count > 1 ? operationCount(group.count) : longDate(group.rows[0]!.date)}</small></span><strong className="amount">{formatMoney(group.amount)}</strong></button>)}</div>{!top.length && <p className="empty">Товаров с положительным итогом и прочитанным составом чека нет. Все операции доступны в разделе «Покупки».</p>}</section></div>
+    <section className="panel"><div className="panel-heading"><h2>Крупные покупки</h2><small>Товары с известным составом чека</small></div><div className="rank-list" ref={rankList}>{top.map(group => <button className="rank-row" key={group.key} onClick={() => group.rows.length === 1 ? onSelect(group.rows[0]!.rowId) : onGroup(group.rows)}><StoreMark source={group.rows[0]!.source} small /><span><strong>{group.rows[0]!.title}</strong><small>{group.count > 1 ? operationCount(group.count) : longDate(group.rows[0]!.date)}</small></span><strong className="amount">{formatMoney(group.amount)}</strong></button>)}</div>{!top.length && <p className="empty">Товаров с положительным итогом и прочитанным составом чека нет. Все операции доступны в разделе «Покупки».</p>}</section></div>
   </>;
 }
 
