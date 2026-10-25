@@ -2,45 +2,55 @@
 
 Локальный журнал покупок, возвратов и чеков Ozon, Wildberries и Яндекс Маркета.
 
-<p><a href="PLAN.md"><img src="https://img.shields.io/badge/%D0%A1%D1%82%D0%B0%D1%82%D1%83%D1%81-%D0%B2%20%D1%80%D0%B0%D0%B7%D1%80%D0%B0%D0%B1%D0%BE%D1%82%D0%BA%D0%B5-orange?style=flat&amp;labelColor=555" alt="Статус: в разработке"></a> <a href="extension/next/package.json"><img src="https://img.shields.io/badge/%D0%92%D0%B5%D1%80%D1%81%D0%B8%D1%8F-0.22.0%20preview-blue?style=flat&amp;labelColor=555" alt="Версия: 0.22.0 preview"></a> <a href="docs/PREVIEW.md"><img src="https://img.shields.io/badge/%D0%A1%D1%82%D0%B5%D0%BA-React%20%2B%20WXT-blue?style=flat&amp;labelColor=555" alt="Стек: React + WXT"></a> <a href="assets/demo/kupleno-demo.mp4"><img src="https://img.shields.io/badge/%D0%94%D0%B5%D0%BC%D0%BE-43%20%D1%81%D0%B5%D0%BA%D1%83%D0%BD%D0%B4%D1%8B-blue?style=flat&amp;labelColor=555" alt="Демо: 43 секунды"></a> <a href="LICENSE"><img src="https://img.shields.io/badge/%D0%9B%D0%B8%D1%86%D0%B5%D0%BD%D0%B7%D0%B8%D1%8F-MIT-blue?style=flat&amp;labelColor=555" alt="Лицензия: MIT"></a> <a href="https://github.com/malyarq/kupleno/actions/workflows/ci.yml"><img src="https://github.com/malyarq/kupleno/actions/workflows/ci.yml/badge.svg" alt="CI"></a></p>
+<p><a href="#статус-и-ограничения"><img src="https://img.shields.io/static/v1?label=%D0%A1%D1%82%D0%B0%D1%82%D1%83%D1%81&amp;message=%D0%B2+%D1%80%D0%B0%D0%B7%D1%80%D0%B0%D0%B1%D0%BE%D1%82%D0%BA%D0%B5&amp;color=orange&amp;labelColor=555&amp;style=flat" alt="Статус: в разработке"></a> <a href="https://github.com/malyarq/kupleno/actions/workflows/ci.yml"><img src="https://github.com/malyarq/kupleno/actions/workflows/ci.yml/badge.svg?branch=main&amp;event=push" alt="CI"></a> <a href="extension/next/package.json"><img src="https://img.shields.io/static/v1?label=%D0%A1%D1%82%D0%B5%D0%BA&amp;message=React+%C2%B7+WXT&amp;color=blue&amp;labelColor=555&amp;style=flat" alt="Стек: React · WXT"></a> <a href="assets/demo/kupleno-demo.mp4"><img src="https://img.shields.io/static/v1?label=%D0%94%D0%B5%D0%BC%D0%BE&amp;message=00%3A43&amp;color=blue&amp;labelColor=555&amp;style=flat" alt="Демо: 00:43"></a></p>
 
-**[Демо](assets/demo/kupleno-demo.mp4) · [Запуск](#запуск) · [Архитектура](#архитектура) · [План](PLAN.md) · [Документация](docs/README.md) · [Правила разработки](AGENTS.md)**
+**[Скриншоты](#как-выглядит) · [Возможности](#что-работает) · [Запуск](#запуск) · [Архитектура](#архитектура) · [Ограничения](#статус-и-ограничения) · [Разработка](#разработка)**
 
 ## Как выглядит
 
-<img src="assets/demo/overview-light.png" width="760" alt="Куплено 0.22.0: обзор расходов в светлой теме на вымышленных покупках">
+<a href="docs/assets/readme/overview.svg"><img src="docs/assets/readme/overview.svg" alt="Обзор интерфейса Куплено" width="760"></a>
 
-*Обзор: расходы с учётом возвратов, месяцы и крупные покупки.*
+Обзор расходов, светлая и тёмная темы, карточка покупки. В демонстрации используются вымышленные покупки. [Материалы демо](docs/DEMO.md).
+
+**[Демо MP4](assets/demo/kupleno-demo.mp4)** · 00:43 · [Материалы демо](docs/DEMO.md)
 
 <details>
-<summary>Ещё два экрана: тёмная тема и карточка покупки</summary>
+<summary>Ещё два экрана</summary>
 
-<img src="assets/demo/overview-dark.png" width="760" alt="Куплено 0.22.0: тёмная тема, месяцы и категории">
+**Куплено 0.22.0: тёмная тема, месяцы и категории.**
 
-*Тот же обзор в тёмной теме. Фильтры раскрываются на месте.*
+<a href="assets/demo/overview-dark.png"><img src="docs/assets/readme/screen-2.svg" alt="Куплено 0.22.0: тёмная тема, месяцы и категории" width="760"></a>
 
-<img src="assets/demo/purchase-dark.png" width="760" alt="Куплено 0.22.0: заметка, категория, гарантия и возврат в карточке покупки">
+**Куплено 0.22.0: заметка, категория, гарантия и возврат в карточке покупки.**
 
-*Карточка вещи: заметка, категория, гарантия и ожидание возврата. На всех экранах вымышленные данные из [сценария](scripts/next-design-demo.cjs).*
+<a href="assets/demo/purchase-dark.png"><img src="docs/assets/readme/screen-3.svg" alt="Куплено 0.22.0: заметка, категория, гарантия и возврат в карточке покупки" width="760"></a>
 
 </details>
 
 ## Что работает
 
-Есть обзор расходов, поиск покупок, заметки, категории, профили, массовые правки, бюджет, ожидания возвратов и гарантии. Возможные повторы требуют проверки: одинаковая цена сама по себе не делает покупку дублем. [Код экранов](extension/next/ui/App.tsx), [проверки покупок](extension/next/intelligence.ts).
-
-Импорт JSON/CSV, редактирование и восстановление проверяются в отдельном Chromium. История хранится в браузере; сервер продукта и аккаунт в «Куплено» не нужны. [Хранение](docs/PREVIEW.md#данные).
+- **Основное:** просматривать расходы и покупки, искать нужное, вести заметки и категории. [Код экранов](extension/next/ui/App.tsx).
+- **Дополнительно:** профили, массовые правки, бюджет, ожидания возвратов и гарантии; импорт JSON/CSV, редактирование и восстановление. [Возможности и проверки](docs/PREVIEW.md).
+- **Данные:** история хранится в браузере; сервер продукта и аккаунт в «Куплено» не нужны. Кандидатов на повторы нужно проверять: одинаковая цена не делает покупку дублем. [Хранение](docs/PREVIEW.md#данные), [правила](extension/next/intelligence.ts).
 
 ## Запуск
 
+### Требования
+
 Нужны Node.js 24 и npm. Из корня репозитория:
 
-```sh
+### Быстрый старт
+
+```powershell
+git clone https://github.com/malyarq/kupleno.git
+cd kupleno
 npm ci
 npm --prefix extension/next ci
 npx playwright install chromium
 npm run preview:check
 ```
+
+### Данные и доступ
 
 В Chrome/Edge откройте `chrome://extensions`, включите режим разработчика, нажмите «Загрузить распакованное расширение» и выберите `extension/next/.output/chrome-mv3`. Откройте «Куплено - новая версия». Можно загрузить JSON/CSV или перейти в «Магазины». Для живого сбора нужен вход в магазин в этом же браузере и разрешение расширению на выбранный сайт. [Команды и зависимости](docs/PREVIEW.md#запуск).
 
@@ -63,6 +73,14 @@ flowchart TB
 
 ## Статус и ограничения
 
+| Параметр | Состояние |
+| --- | --- |
+| Стадия | В разработке. [План](PLAN.md). |
+| Версия | 0.22.0, preview. [extension/next/package.json](extension/next/package.json). |
+| Лицензия | MIT. [LICENSE](LICENSE). |
+
+### Ограничения
+
 Основная ветка `main` содержит новый предпросмотр **0.22.0**. Старый опубликованный код сохранён тегом [archive/pre-021-20261004](https://github.com/malyarq/kupleno/tree/archive/pre-021-20261004). [Точный откат](docs/PREVIEW.md#откат-основной-ветки).
 
 - `extension/next` - новый предпросмотр [0.22.0](extension/next/package.json). Его проверяют команды `preview:*`.
@@ -74,6 +92,11 @@ flowchart TB
 
 ## Разработка
 
+[Документация](docs/PREVIEW.md) · [План](PLAN.md) · [Правила](AGENTS.md) · [CI](https://github.com/malyarq/kupleno/actions/workflows/ci.yml)
+
+<details>
+<summary>Проверки и работа над проектом</summary>
+
 Перед задачей обновите ветки, посмотрите открытые PR/issues, зафиксируйте владельца и границы файлов. Небольшие проверенные изменения коммитьте и отправляйте в отдельную рабочую ветку. Не переписывайте чужую историю. Полные правила - в [AGENTS.md](AGENTS.md).
 
 [Проверки CI](https://github.com/malyarq/kupleno/actions/workflows/ci.yml) доступны участникам репозитория. Команды и охват - в [документации проверок](docs/PREVIEW.md#проверки-и-пробелы).
@@ -81,3 +104,5 @@ flowchart TB
 [Как записать демо и озвучку](docs/DEMO.md). В опубликованном ролике только вымышленные покупки; личные копии базы не входят в репозиторий.
 
 Сохраняется существующая [лицензия MIT](LICENSE); лицензии зависимостей перечислены в [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) и [файлах предпросмотра](extension/next/public/licenses/).
+
+</details>
