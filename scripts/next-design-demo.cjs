@@ -74,6 +74,7 @@ const products=[['Кроссовки для города','Одежда',7490],[
  await page.setViewportSize({width,height:1000});await shot(`signed-months-${width}-${theme}`);
  }
  await page.locator('.chart-column button.negative').click();
+ await page.getByRole('heading',{name:'Покупки',exact:true}).waitFor();
  assert.equal(await page.getByLabel('С даты',{exact:true}).inputValue(),'2026-07-01');
  assert.equal(await page.getByLabel('По дату',{exact:true}).inputValue(),'2026-07-31');
  assert.equal(await page.locator('.purchases-table tbody tr:not(.journal-month)').count(),2);
