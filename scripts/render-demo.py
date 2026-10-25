@@ -1,4 +1,4 @@
-"""Encode the eight validated static HyperFrames scenes with their 0.25s fades."""
+"""Encode eight validated static scenes with their 0.25s fades."""
 import argparse
 import json
 import os
@@ -27,4 +27,4 @@ stream = next(s for s in probe['streams'] if s['codec_type'] == 'video')
 assert (stream['width'], stream['height'], stream['r_frame_rate']) == (1920, 1080, '30/1')
 assert abs(float(probe['format']['duration']) - 43) < 0.05
 subprocess.run(['ffmpeg', '-v', 'error', '-i', str(args.output), '-f', 'null', '-'], **options)
-print(json.dumps({'file': str(args.output), 'duration': probe['format']['duration'], 'frames': stream.get('nb_frames'), 'provider': 'HyperFrames snapshots + ffmpeg'}, ensure_ascii=False))
+print(json.dumps({'file': str(args.output), 'duration': probe['format']['duration'], 'frames': stream.get('nb_frames'), 'provider': 'Static composition snapshots + ffmpeg'}, ensure_ascii=False))

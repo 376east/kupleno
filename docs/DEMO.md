@@ -14,6 +14,16 @@ npm run preview:design
 
 [Сценарий снимков](../scripts/next-design-demo.cjs) запускает настоящий MV3 в отдельном временном профиле. Он сохраняет светлые кадры overview, purchases, details, stores, control и returns. Суммы в ролике берутся из этих экранов; финансовые операции пользователя не читаются.
 
+Снимки и ролик обновлены 25.10.2026: новый обзор, журнал по месяцам и детали покупки. Для восьми неподвижных сцен есть локальный путь без загрузки скриптов композиции:
+
+```powershell
+node scripts/prepare-demo.cjs
+node scripts/demo-frames.cjs
+python scripts/render-demo.py --frames ../work/demo-composition/frames --output ../outputs/receipt-journal-after/kupleno-demo.mp4
+```
+
+[Снимки композиции](../scripts/demo-frames.cjs) используют установленный Playwright и `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH`, проверяют загрузку всех изображений, затем закрывают браузер. Проявления добавляет кодировщик. Этот путь подходит только текущим статическим сценам.
+
 Чтобы использовать новые кадры, замените одноимённые PNG в `assets/demo/scenes`. Затем подготовьте отдельный проект:
 
 ```powershell

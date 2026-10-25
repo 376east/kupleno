@@ -1,5 +1,5 @@
 import { useEffect, useRef, type ReactNode } from 'react';
-import { SOURCES } from '../domain.mjs';
+import { SOURCES, sourceOf } from '../domain.mjs';
 import type { Source } from '../model';
 
 const operationPlurals = new Intl.PluralRules('ru');
@@ -22,8 +22,9 @@ export function Icon({ name }: { name: string }) {
 }
 
 export function StoreMark({ source, small = false }: { source: string; small?: boolean }) {
-  const store = SOURCES[source as Source];
-  return <span className={`store-mark ${source} ${small ? 'small' : ''}`} aria-label={store?.name || source}>{store?.mark || '·'}</span>;
+  const key = sourceOf({ source });
+  const store = SOURCES[key as Source];
+  return <span className={`store-mark ${key} ${small ? 'small' : ''}`} aria-label={store?.name || source}>{store?.mark || '·'}</span>;
 }
 
 export function Dialog({ title, children, onClose, error }: { title: string; children: ReactNode; onClose: () => void; error?: string }) {
@@ -31,12 +32,16 @@ export function Dialog({ title, children, onClose, error }: { title: string; chi
   useEffect(() => {
     const el = ref.current!;
     const previous = document.activeElement as HTMLElement | null;
+    // Keep keyboard-triggered dialogs immediate. CSS also respects reduced motion.
+    el.dataset.enter = previous?.matches('button:not(:focus-visible), a:not(:focus-visible)') ? 'true' : 'false';
     el.showModal();
     return () => { el.close(); previous?.focus(); };
   }, []);
   return <dialog ref={ref} aria-labelledby="dialog-title" onCancel={event => { event.preventDefault(); onClose(); }}>
+    <div className="dialog-sheet">
     <div className="dialog-head"><h2 id="dialog-title">{title}</h2><button className="secondary" onClick={onClose}>Закрыть</button></div>
     <div className="dialog-body">{error && <div className="callout" role="alert">{error}</div>}{children}</div>
+    </div>
   </dialog>;
 }
 
