@@ -1,0 +1,22 @@
+{
+  "date": "2026-10-25",
+  "code_commit": "e93c3cacd6d670df0e63194cca2c6252359eebf1",
+  "data": "synthetic fixtures only; no personal accounts or files",
+  "captures": [
+    {
+      "file": "overview.svg",
+      "label": "Обзор и накопленные расходы",
+      "embedded_jpeg_sha256": "c935d6c3b19e7dbacf19597af198385a61df320e123989d9404e13c66b717aa2"
+    },
+    {
+      "file": "screen-2.svg",
+      "label": "Мобильный обзор",
+      "embedded_jpeg_sha256": "06e8c2eabbdeb227d7d5b9f5f72209fed4d3046668a55cd6930add744f7cc636"
+    },
+    {
+      "file": "screen-3.svg",
+      "label": "Сведения об операции",
+      "embedded_jpeg_sha256": "d9cdd71f500b0d6361cb805e347ce49ca2c877faef070b16e751ebc066b94a6c"
+    }
+  ]
+}

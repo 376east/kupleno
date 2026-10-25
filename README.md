@@ -10,20 +10,20 @@
 
 <a href="docs/assets/readme/overview.svg"><img src="docs/assets/readme/overview.svg" alt="Обзор интерфейса Куплено" width="760"></a>
 
-Обзор расходов, светлая и тёмная темы, карточка покупки. В демонстрации используются вымышленные покупки. Снимки и ролик обновлены 25 октября. [Материалы демо](docs/DEMO.md).
+Обзор с точными копейками, график расходов и сведения об операции. На новых снимках вымышленные покупки в отдельной IndexedDB; живые аккаунты магазинов не использовались. [Источник новых снимков](docs/assets/readme/prototype-transfer.json). Ролик ниже записан до этого переноса.
 
 **[Демо MP4](assets/demo/kupleno-demo.mp4)** · 00:43 · [Материалы демо](docs/DEMO.md)
 
 <details>
 <summary>Ещё два экрана</summary>
 
-**Куплено 0.22.0: тёмная тема, месяцы и категории.**
+**Мобильный обзор.**
 
-<a href="assets/demo/overview-dark.png"><img src="docs/assets/readme/screen-2.svg" alt="Куплено 0.22.0: тёмная тема, месяцы и категории" width="760"></a>
+<a href="docs/assets/readme/screen-2.svg"><img src="docs/assets/readme/screen-2.svg" alt="Мобильный обзор" width="760"></a>
 
-**Куплено 0.22.0: заметка, категория, гарантия и возврат в карточке покупки.**
+**Сведения об операции.**
 
-<a href="assets/demo/purchase-dark.png"><img src="docs/assets/readme/screen-3.svg" alt="Куплено 0.22.0: заметка, категория, гарантия и возврат в карточке покупки" width="760"></a>
+<a href="docs/assets/readme/screen-3.svg"><img src="docs/assets/readme/screen-3.svg" alt="Сведения об операции" width="760"></a>
 
 </details>
 
