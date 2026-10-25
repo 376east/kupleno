@@ -26,7 +26,20 @@ const products=[['Кроссовки для города','Одежда',7490],[
  await page.getByRole('dialog').getByRole('button',{name:'Загрузить историю',exact:true}).click();await page.getByRole('heading',{name:'Обзор',exact:true}).waitFor();
  await caption('Расходы с учётом возвратов');await pause(4000);await page.locator('.notice').waitFor({state:'hidden',timeout:12000});await shot('02-overview-light');await shot('overview',false);
  await page.getByRole('link',{name:'Покупки',exact:true}).click();await shot('purchases',false);
- await page.getByRole('searchbox').fill('Кроссовки');await page.getByRole('button',{name:'Кроссовки для города',exact:true}).first().click();await shot('details',false);await page.getByRole('button',{name:'Закрыть',exact:true}).click();await page.getByRole('searchbox').fill('');
+ assert.equal(await page.locator('.journal-month').count(),3,'Purchases must be grouped into three months');
+ await page.getByRole('searchbox').fill('Кроссовки');
+ const purchase=page.getByRole('button',{name:'Кроссовки для города',exact:true}).first();
+ await purchase.click();await shot('details',false);await page.keyboard.press('Escape');
+ assert.equal(await purchase.evaluate(el=>el===document.activeElement),true,'Escape restores purchase focus');
+ await purchase.press('Enter');
+ assert.equal(await page.getByRole('dialog').getAttribute('data-enter'),'false','Keyboard dialogs open immediately');
+ await page.keyboard.press('Escape');
+ await page.emulateMedia({reducedMotion:'reduce'});await purchase.click();
+ assert.equal(await page.locator('.dialog-sheet').evaluate(el=>getComputedStyle(el).animationName),'none','Reduced motion disables dialog entrance');
+ await page.keyboard.press('Escape');await page.emulateMedia({reducedMotion:'no-preference'});
+ await page.getByRole('button',{name:'Сбросить фильтры',exact:true}).click();
+ assert.equal(await page.getByRole('searchbox').inputValue(),'');
+ assert.equal(await page.locator('.purchases-table tbody tr:not(.journal-month)').count(),13,'Reset restores all operations');
  await page.getByRole('link',{name:'Магазины',exact:true}).click();await shot('stores',false);
  await page.getByRole('link',{name:'Контроль',exact:true}).click();await page.getByLabel('Месяц',{exact:true}).fill('2026-09');await shot('control',false);
  await page.getByRole('link',{name:'Возвраты',exact:true}).click();await shot('returns',false);await page.getByRole('link',{name:'Бюджет',exact:true}).click();
@@ -50,6 +63,21 @@ const products=[['Кроссовки для города','Одежда',7490],[
  }
  if(!record){await page.setViewportSize({width:320,height:780});await page.getByRole('link',{name:'Контроль',exact:true}).click();assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true,'320px control overflow');}
  if(!record){
+ const signedRows=[['2026-07-01','100'],['2026-07-02','-200'],['2026-08-01','100'],['2026-08-02','-100'],['2026-09-01','300']].map(([date,amount],i)=>({rowId:`signed-${i}`,source:'ozon',date,amount,title:`Операция ${i}`,currency:'RUB',type:amount.startsWith('-')?'refund':'purchase',profile:'personal'}));
+ await page.locator('input[type=file]').first().setInputFiles({name:'signed.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify({...fixture,rows:signedRows}))});
+ await page.getByRole('dialog').getByRole('button',{name:'Загрузить историю',exact:true}).click();
+ await page.getByRole('heading',{name:'Обзор',exact:true}).waitFor();
+ assert.match(await page.locator('.chart-column button.negative').innerText(),/-100,00/,'Refund-heavy month keeps its sign');
+ assert.match(await page.locator('.chart-column button.zero').innerText(),/0,00.*Нулевой итог/s,'Balanced month is explicit');
+ for(const theme of ['light','dark'])for(const width of [390,1440]){
+ if(await page.locator('html').getAttribute('data-theme')!==theme)await page.getByRole('button',{name:theme==='dark'?'Включить тёмную тему':'Включить светлую тему',exact:true}).click();
+ await page.setViewportSize({width,height:1000});await shot(`signed-months-${width}-${theme}`);
+ }
+ await page.locator('.chart-column button.negative').click();
+ assert.equal(await page.getByLabel('С даты',{exact:true}).inputValue(),'2026-07-01');
+ assert.equal(await page.getByLabel('По дату',{exact:true}).inputValue(),'2026-07-31');
+ assert.equal(await page.locator('.purchases-table tbody tr:not(.journal-month)').count(),2);
+ await page.getByRole('button',{name:'Сбросить фильтры',exact:true}).click();
  const profilesFixture={...fixture,rows:fixture.rows.map(row=>({...row,profile:'work'})),settings:{...fixture.settings,profiles:[{id:'personal',name:'Личные'},{id:'work',name:'Работа'}],budgets:{'work\u00012026-10':{total:5000}},monthClosures:{'work\u00012026-09':{status:'closed'},'all\u00012026-09':{status:'closed',totals:null},'all\u00012026-08':{status:'closed',totals:{netSpend:100}}}}};
  await page.locator('input[type=file]').first().setInputFiles({name:'profiles.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify(profilesFixture))});
  await page.getByRole('dialog').getByRole('button',{name:'Загрузить историю',exact:true}).click();
