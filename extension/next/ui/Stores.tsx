@@ -14,6 +14,7 @@ async function command(message: Command): Promise<Job | null> {
 }
 
 export function Stores({ state, rows, save, onSelect }: { state: State; rows: Purchase[]; save: (state: State) => Promise<void>; onSelect: (id: string) => void }) {
+  const canCollect = typeof browser.runtime?.sendMessage === 'function';
   const [job, setJob] = useState<Job | null>(null);
   const [error, setError] = useState('');
   const [applying, setApplying] = useState(false);
@@ -33,9 +34,9 @@ export function Stores({ state, rows, save, onSelect }: { state: State; rows: Pu
       catch (e) { if (!stopped) setError(e instanceof Error ? e.message : 'Не удалось прочитать ход сбора.'); }
       if (!stopped) timer = setTimeout(() => void poll(), 1500);
     }
-    void poll();
+    if (canCollect) void poll();
     return () => { stopped = true; alive.current = false; clearTimeout(timer); };
-  }, []);
+  }, [canCollect]);
 
   useEffect(() => {
     if (job?.status !== 'completed' || !job.result || applyingId.current === job.id) return;
@@ -64,6 +65,7 @@ export function Stores({ state, rows, save, onSelect }: { state: State; rows: Pu
   }, [job, state, save]);
 
   async function start(source: Source) {
+    if (!canCollect) return;
     setError(''); setSuccess('');
     setStarting(true);
     setErrorSource(source);
@@ -84,6 +86,7 @@ export function Stores({ state, rows, save, onSelect }: { state: State; rows: Pu
   }
   const failure = error || (job?.status === 'failed' ? job.error : '');
   return <div className="store-list">
+    {!canCollect && <section className="callout" role="status"><h2>Предпросмотр истории</h2><p>Сбор покупок доступен в установленном расширении Куплено. Откройте его через меню расширений браузера. Здесь можно посмотреть сохранённую историю и перейти к чекам магазинов.</p></section>}
     {clearing && <Dialog title={`Удалить историю ${SOURCES[clearing].name}?`} error={error} onClose={() => !clearBusy && setClearing(null)}><p>Будут удалены покупки этого магазина во всех профилях, связанные ручные правки, ожидания возвратов и гарантии. История остальных магазинов останется.</p><p>Новый сбор не запустится. Предыдущие данные можно восстановить в настройках из истории изменений.</p><button className="danger" disabled={clearBusy} onClick={() => { setClearBusy(true); setError(''); void command({type: 'KUPLENO_JOB', action: 'status'}).then(async latest => { if (latest?.status === 'running' || latest?.status === 'completed') throw new Error('Сначала остановите сбор или дождитесь сохранения результата.'); await save(clearSource(state, clearing)); }).then(() => { setClearing(null); setSuccess('История магазина удалена'); }).catch(e => setError(e instanceof Error ? e.message : 'Не удалось удалить историю.')).finally(() => setClearBusy(false)); }}>Удалить историю</button></Dialog>}
     {starting && <div className="callout" role="status">Подключаем магазин. Ждём загрузки вкладки…</div>}
     {success && <div className="callout" role="status">{success}</div>}
@@ -93,7 +96,7 @@ export function Stores({ state, rows, save, onSelect }: { state: State; rows: Pu
       const unread = purchases.filter(row => row.parse_quality === 'fallback');
       const active = job?.source === source ? job : null;
       const health = sourceHealth(source, state.metadata);
-      return <section className="panel store-panel" key={source}><StoreMark source={source} /><div><h2>{info.name}</h2><p>{purchases.length ? `${operationCount(purchases.length)} в истории` : 'История ещё не загружена'}</p></div><div className="row-actions"><button className="primary" disabled={starting || applying || job?.status === 'running' || job?.status === 'completed'} onClick={() => void start(source as Source)}>Обновить покупки</button><a className="action" href={info.url} target="_blank" rel="noreferrer">Чеки в магазине ↗</a><button className="quiet" disabled={!purchases.length || starting || clearBusy || applying || job?.status === 'running' || job?.status === 'completed'} onClick={() => { setError(''); setClearing(source as Source); }}>Удалить историю</button></div>
+      return <section className="panel store-panel" key={source}><StoreMark source={source} /><div><h2>{info.name}</h2><p>{purchases.length ? `${operationCount(purchases.length)} в истории` : 'История ещё не загружена'}</p></div><div className="row-actions"><button className="primary" disabled={!canCollect || starting || applying || job?.status === 'running' || job?.status === 'completed'} onClick={() => void start(source as Source)}>Обновить покупки</button><a className="action" href={info.url} target="_blank" rel="noreferrer">Чеки в магазине ↗</a><button className="quiet" disabled={!canCollect || !purchases.length || starting || clearBusy || applying || job?.status === 'running' || job?.status === 'completed'} onClick={() => { setError(''); setClearing(source as Source); }}>Удалить историю</button></div>
         {health.warnings.length > 0 && <div className="store-details" role="status">{health.warnings.map((warning, index) => <p key={index}>{warning}</p>)}</div>}
         {active?.status === 'running' && <div className="store-progress" role="status"><p>{active.message}</p><progress value={active.progress.total ? active.progress.done : undefined} max={active.progress.total || 1} /><button className="secondary" onClick={() => void command({ type: 'KUPLENO_JOB', action: 'cancel' }).then(setJob).catch(e => setError(String(e)))}>Остановить сбор</button><button className="secondary" onClick={() => void copyDiagnostics()}>Скопировать сведения</button></div>}
         {active?.status === 'completed' && <div className="store-details" role="status">{applying ? 'Сохраняем полученные покупки…' : 'Результат собран и ждёт сохранения.'}</div>}

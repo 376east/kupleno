@@ -12,7 +12,7 @@ import { Stores } from './Stores';
 import { Preferences } from './Preferences';
 import { BulkEdit } from './BulkEdit';
 import { Control, ReturnForm, DocumentForm } from './Control';
-import { addDays, today, upsertClaim, upsertDocument, claims, documents, type Claim, type DocumentRecord } from '../lifecycle';
+import { addDays, today, upsertClaim, upsertDocument, claims, documents, reconcileClaims, type Claim, type DocumentRecord } from '../lifecycle';
 import { parsePurchasesCsv, exportPurchasesCsv } from '../csv';
 
 const SpendingChart = lazy(() => import('./SpendingChart').then(module => ({ default: module.SpendingChart })));
@@ -105,6 +105,8 @@ export function App() {
   const settings = useMemo(() => settingsWithDefaults(state?.settings), [state]);
   const visible = useMemo(() => filterRows(rows, filters), [rows, filters]);
   const activePurchase = rows.find(row => row.rowId === selected);
+  const categoryChecks = useMemo(() => filterRows(rows, { categoryReview: true }).length, [rows]);
+  const pendingReturns = useMemo(() => state ? reconcileClaims(claims(state), rows).filter(item => item.status !== 'received').length : 0, [state, rows]);
 
   async function save(next: State) {
     if (!version || writing.current) throw new Error('Дождитесь завершения сохранения.');
@@ -155,7 +157,8 @@ export function App() {
             <div className="page-heading"><div><h1>{pages.find(item => item.id === page)?.title}</h1><p>{page === 'overview' ? 'Расходы и возвраты за выбранный период.' : page === 'purchases' ? 'Чеки, категории и заметки к покупкам.' : page === 'stores' ? 'Загрузите или обновите историю покупок.' : page === 'control' ? 'Бюджет, ожидаемые возвраты и документы.' : 'Резервные копии, профили и категории.'}</p></div>{page === 'overview' && <a className="heading-action" href="#stores">Обновить покупки</a>}</div>
             {page === 'overview' && <details className="overview-filters"><summary><span><Icon name="settings" /><strong>Период и фильтры</strong><small>{Object.values(filters).some(Boolean) ? 'Фильтры применены' : 'Вся история · все магазины'}</small></span></summary><FiltersBar filters={filters} setFilters={setFilters} profiles={settings.profiles} /></details>}{page === 'purchases' && <FiltersBar filters={filters} setFilters={setFilters} profiles={settings.profiles} />}
             {(filters.category || filters.rowIds) && <div className="row-actions" style={{ marginBottom: 16 }}><span>{filters.category ? `Категория: ${filters.category}` : `Связанные операции: ${filters.rowIds?.length}`}</span><button className="quiet" onClick={() => setFilters({ ...filters, category: undefined, rowIds: undefined })}>Показать все покупки</button></div>}
-            {page === 'overview' && <Overview rows={visible} filters={filters} onSelect={setSelected} onGroup={group => { setFilters({ ...filters, rowIds: group.map(row => row.rowId) }); location.hash = "purchases"; }} onCategory={category => { setFilters({ ...filters, category }); location.hash = "purchases"; }} onMonth={month => { setFilters({ ...filters, from: `${month}-01`, to: new Date(Date.UTC(Number(month.slice(0, 4)), Number(month.slice(5)), 0)).toISOString().slice(0, 10) }); location.hash = 'purchases'; }} />}
+            {page === 'overview' && (categoryChecks > 0 || pendingReturns > 0) && <section className="attention-queue" aria-labelledby="attention-title"><h2 id="attention-title">Требуют внимания</h2><p>Задачи по всей сохранённой истории, независимо от фильтров обзора.</p><div className="row-actions">{pendingReturns > 0 && <a className="action" href="#control/returns">Проверить возвраты: {pendingReturns}</a>}{categoryChecks > 0 && <button className="secondary" onClick={() => { setFilters({ categoryReview: true }); location.hash = 'purchases'; }}>Проверить категории: {categoryChecks}</button>}</div></section>}
+            {page === 'overview' && <Overview rows={visible} onDate={date => { setFilters({ ...filters, from: date, to: date }); location.hash = 'purchases'; }} filters={filters} onSelect={setSelected} onGroup={group => { setFilters({ ...filters, rowIds: group.map(row => row.rowId) }); location.hash = "purchases"; }} onCategory={category => { setFilters({ ...filters, category }); location.hash = "purchases"; }} onMonth={month => { setFilters({ ...filters, from: `${month}-01`, to: new Date(Date.UTC(Number(month.slice(0, 4)), Number(month.slice(5)), 0)).toISOString().slice(0, 10) }); location.hash = 'purchases'; }} />}
             {page === 'purchases' && <><div className="row-actions journal-tools"><button className="secondary" onClick={() => download(`kupleno-${new Date().toISOString().slice(0, 10)}.csv`, exportPurchasesCsv(visible), 'text/csv;charset=utf-8')}>Скачать таблицу ({visible.length})</button><label className="checkbox-label"><input type="checkbox" checked={filters.includeExcluded === true} onChange={e => setFilters({ ...filters, includeExcluded: e.target.checked })} />Показать исключённые</label><label className="checkbox-label"><input type="checkbox" checked={filters.categoryReview === true} onChange={e => setFilters({ ...filters, categoryReview: e.target.checked })} />Проверить категории</label></div><Purchases rows={visible} onSelect={setSelected} onBulk={setBulk} /></>}
             {page === 'control' && <Control state={state} save={save} onSelect={setSelected} />}
             {page === 'stores' && <Stores state={state} rows={rows} save={save} onSelect={setSelected} />}
@@ -184,7 +187,7 @@ function FiltersBar({ filters, setFilters, profiles }: { filters: Filters; setFi
   return <div className="filter-area"><div className="filterbar"><label className="search-field">Найти покупку<input type="search" placeholder="Название, заказ или заметка" value={filters.query || ''} onChange={e => setFilters({ ...filters, query: e.target.value })} /></label><label>Магазин<select value={filters.source || ''} onChange={e => setFilters({ ...filters, source: e.target.value })}><option value="">Все магазины</option>{Object.entries(SOURCES).map(([key, source]) => <option key={key} value={key}>{source.name}</option>)}</select></label><label>С даты<input type="date" value={filters.from || ''} onChange={e => setFilters({ ...filters, from: e.target.value })} /></label><label>По дату<input type="date" value={filters.to || ''} onChange={e => setFilters({ ...filters, to: e.target.value })} /></label>{profiles.length > 1 && <label>Профиль<select value={filters.profile || 'all'} onChange={e => setFilters({ ...filters, profile: e.target.value })}><option value="all">Все профили</option>{profiles.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>}</div>{Object.values(filters).some(value => Array.isArray(value) ? value.length > 0 : value && value !== 'all') && <div className="filter-reset"><span>Показаны покупки по выбранным условиям.</span><button className="quiet" onClick={() => setFilters({})}>Сбросить фильтры</button></div>}</div>;
 }
 
-function Overview({ rows, filters, onSelect, onMonth, onGroup, onCategory }: { rows: Purchase[]; filters: Filters; onSelect: (id: string) => void; onMonth: (month: string) => void; onGroup: (rows: Purchase[]) => void; onCategory: (category: string) => void }) {
+function Overview({ rows, filters, onSelect, onMonth, onGroup, onCategory, onDate }: { rows: Purchase[]; filters: Filters; onDate: (date: string) => void; onSelect: (id: string) => void; onMonth: (month: string) => void; onGroup: (rows: Purchase[]) => void; onCategory: (category: string) => void }) {
   const reduce = useReducedMotion();
   const [rankList, enableList] = useAutoAnimate<HTMLDivElement>({ duration: 180 });
   useEffect(() => { enableList(!reduce); }, [reduce, enableList]);
@@ -207,7 +210,7 @@ function Overview({ rows, filters, onSelect, onMonth, onGroup, onCategory }: { r
       </div>
     </section>
     {totals.unread > 0 && <div className="callout"><strong>Чеков без списка товаров: {totals.unread}</strong><p>Их суммы включены в итог. Такие чеки не показываем как крупные товары.</p><button onClick={() => onSelect(rows.find(r => r.parse_quality === 'fallback')!.rowId)}>Проверить чек</button></div>}
-    <Suspense fallback={<p className="note-line" role="status">Открываем график расходов…</p>}><SpendingChart rows={rows} /></Suspense>
+    <Suspense fallback={<p className="note-line" role="status">Открываем график расходов…</p>}><SpendingChart rows={rows} onDate={onDate} /></Suspense>
     <div className="split overview-ledger"><div className="stack">
       <section className="panel"><div className="panel-heading"><h2>По месяцам</h2><small>Покупки минус возвраты</small></div>
         <div className={`chart ${signedMonths ? 'chart-signed' : ''}`}>{months.map(month => <div className="chart-column" key={month.key}>
