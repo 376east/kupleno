@@ -2,28 +2,30 @@
 
 Локальный журнал покупок, возвратов и чеков Ozon, Wildberries и Яндекс Маркета.
 
-<p><a href="#статус-и-ограничения"><img src="https://img.shields.io/static/v1?label=%D0%A1%D1%82%D0%B0%D1%82%D1%83%D1%81&amp;message=%D0%B2+%D1%80%D0%B0%D0%B7%D1%80%D0%B0%D0%B1%D0%BE%D1%82%D0%BA%D0%B5&amp;color=orange&amp;labelColor=555&amp;style=flat" alt="Статус: в разработке"></a> <a href="https://github.com/malyarq/kupleno/actions/workflows/ci.yml"><img src="https://github.com/malyarq/kupleno/actions/workflows/ci.yml/badge.svg?branch=main&amp;event=push" alt="CI"></a> <a href="extension/next/package.json"><img src="https://img.shields.io/static/v1?label=%D0%A1%D1%82%D0%B5%D0%BA&amp;message=React+%C2%B7+WXT&amp;color=blue&amp;labelColor=555&amp;style=flat" alt="Стек: React · WXT"></a> <a href="assets/demo/kupleno-demo.mp4"><img src="https://img.shields.io/static/v1?label=%D0%94%D0%B5%D0%BC%D0%BE&amp;message=00%3A43&amp;color=blue&amp;labelColor=555&amp;style=flat" alt="Демо: 00:43"></a></p>
+<p><a href="#статус-и-ограничения"><img src="https://img.shields.io/static/v1?label=%D0%A1%D1%82%D0%B0%D1%82%D1%83%D1%81&amp;message=%D0%B2+%D1%80%D0%B0%D0%B7%D1%80%D0%B0%D0%B1%D0%BE%D1%82%D0%BA%D0%B5&amp;color=orange&amp;labelColor=555&amp;style=flat" alt="Статус: в разработке"></a> <a href="https://github.com/malyarq/kupleno/actions/workflows/ci.yml"><img src="https://github.com/malyarq/kupleno/actions/workflows/ci.yml/badge.svg?branch=main&amp;event=push" alt="CI"></a> <a href="extension/next/package.json"><img src="https://img.shields.io/static/v1?label=%D0%A1%D1%82%D0%B5%D0%BA&amp;message=React+%C2%B7+WXT&amp;color=blue&amp;labelColor=555&amp;style=flat" alt="Стек: React · WXT"></a> <a href="docs/assets/readme/current-flow.mp4"><img src="https://img.shields.io/static/v1?label=%D0%94%D0%B5%D0%BC%D0%BE&amp;message=00%3A29&amp;color=blue&amp;labelColor=555&amp;style=flat" alt="Демо: 00:29"></a></p>
 
 **[Скриншоты](#как-выглядит) · [Возможности](#что-работает) · [Запуск](#запуск) · [Архитектура](#архитектура) · [Ограничения](#статус-и-ограничения) · [Разработка](#разработка)**
 
 ## Как выглядит
 
-<a href="docs/assets/readme/overview.svg"><img src="docs/assets/readme/overview.svg" alt="Обзор интерфейса Куплено" width="760"></a>
+<a href="docs/assets/readme/overview.svg"><img src="docs/assets/readme/overview.svg" alt="Обзор покупок и расходов" width="760"></a>
 
-Обзор с точными копейками, график расходов и сведения об операции. На новых снимках вымышленные покупки в отдельной IndexedDB; живые аккаунты магазинов не использовались. [Источник новых снимков](docs/assets/readme/prototype-transfer.json). Ролик ниже записан до этого переноса.
+Обзор выделяет покупки, возвраты и операции, которым нужно внимание. Из графика можно перейти к журналу выбранного дня, сохраняя фильтры. На снимках вымышленные операции в отдельной IndexedDB; живые аккаунты магазинов не использовались. [Источник снимков](docs/assets/readme/prototype-transfer.json).
 
-**[Демо MP4](assets/demo/kupleno-demo.mp4)** · 00:43 · [Материалы демо](docs/DEMO.md)
+**[Актуальное демо MP4](docs/assets/readme/current-flow.mp4)** · 00:29 · 26 октября 2026 · [Источник записи](docs/assets/readme/current-flow.json)
+
+[Предыдущее демо, 00:43](assets/demo/kupleno-demo.mp4) · [Материалы демо](docs/DEMO.md)
 
 <details>
 <summary>Ещё два экрана</summary>
 
-**Мобильный обзор.**
+**Операции выбранного дня.**
 
-<a href="docs/assets/readme/screen-2.svg"><img src="docs/assets/readme/screen-2.svg" alt="Мобильный обзор" width="760"></a>
+<a href="docs/assets/readme/screen-2.svg"><img src="docs/assets/readme/screen-2.svg" alt="Операции выбранного дня" width="760"></a>
 
-**Сведения об операции.**
+**График расходов на телефоне.**
 
-<a href="docs/assets/readme/screen-3.svg"><img src="docs/assets/readme/screen-3.svg" alt="Сведения об операции" width="760"></a>
+<a href="docs/assets/readme/screen-3.svg"><img src="docs/assets/readme/screen-3.svg" alt="График расходов на телефоне" width="760"></a>
 
 </details>
 
