@@ -123,6 +123,7 @@ export function applyCollectionRows(state, rows) {
   }
   const replacements = settlementReplacements(rows);
   const settings = structuredClone(state.settings);
+  const savedRows = new Map(state.rows.map(row => [row.rowId, row]));
   const currentRows = new Map(rows.map(row => [row.rowId, row]));
   const key = (row, receipt = row.receipt_url || row.marketplace_id, item = row.item_index) => JSON.stringify([sourceOf(row), row.profile || 'personal', receipt, item]);
   const previousRows = new Map();
@@ -138,7 +139,10 @@ export function applyCollectionRows(state, rows) {
     const previous = oldRow.rowId;
     const inline = Object.fromEntries(['note', 'category', 'excluded']
       .filter(key => oldRow[key] != null).map(key => [key, oldRow[key]]));
-    const patch = { ...inline, ...settings.overrides?.[previous] };
+    const savedFinal = savedRows.get(current);
+    const finalInline = Object.fromEntries(['note', 'category', 'excluded']
+      .filter(key => savedFinal && Object.hasOwn(savedFinal, key)).map(key => [key, savedFinal[key]]));
+    const patch = { ...inline, ...settings.overrides?.[previous], ...finalInline };
     // Keep the old annotation too; an existing final-receipt edit takes precedence.
     if (Object.keys(patch).length) {
       settings.overrides ||= {};

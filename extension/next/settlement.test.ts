@@ -84,4 +84,27 @@ for (const source of ['yandex', 'ozon'] as const) {
     assert.deepEqual(migrated.settlementOriginals, [shallow]);
     assert.equal(Object.hasOwn(migrated.rows[0]!.settlement_predecessor as object, 'original'), false);
   });
+
+  test(`${source}: saved final inline edits outrank advance edits when only the advance is reread`, () => {
+    for (const version of [1, 2]) {
+      const pre = { ...parse(source, 'pre-inline', 'prepayment', [items[0]!])[0]!, note: 'PRE', category: 'PRE-CATEGORY', excluded: true };
+      const final = { ...parse(source, 'final-inline', 'full', [items[0]!])[0]!, note: 'FINAL', category: 'FINAL-CATEGORY', excluded: false };
+      const saved = { rows: [pre, final], settings: {}, metadata: {} };
+      const initial = parseBackup(JSON.stringify(version === 1 ? { format: 'kupleno-backup', version, ...saved } : { format: 'kupleno-backup', version, state: saved })).state;
+      let state = initial;
+      for (let reread = 0; reread < 3; reread++) {
+        state = collect(state, [pre], source);
+        state = parseBackup(serializeBackup(state)).state;
+        const effective = effectiveRows(state)[0]!;
+        assert.equal(effective.note, 'FINAL');
+        assert.equal(effective.category, 'FINAL-CATEGORY');
+        assert.equal(effective.excluded, false);
+        assert.equal(summarize(effectiveRows(state)).net, 10000);
+      }
+      const overridden = collect({ ...initial, settings: { overrides: { [final.rowId]: { note: 'OVERRIDE', category: 'OVERRIDE-CATEGORY', excluded: true } } } }, [pre], source);
+      assert.equal(effectiveRows(overridden)[0]!.note, 'OVERRIDE');
+      assert.equal(effectiveRows(overridden)[0]!.category, 'OVERRIDE-CATEGORY');
+      assert.equal(summarize(effectiveRows(overridden)).net, 0);
+    }
+  });
 }
