@@ -109,6 +109,12 @@ const money = text => text.replace(/\s/g, '');
     assert.equal(money(await reopened.locator('.expense-report .kpi-value').first().innerText()), '20,02₽', 'Overview keeps the selected day and profile');
     await reopened.evaluate(async () => { const tab = await chrome.tabs.getCurrent(); await chrome.tabs.setZoom(tab.id, 2); });
     assert.equal(await reopened.evaluate(async () => { const tab = await chrome.tabs.getCurrent(); return chrome.tabs.getZoom(tab.id); }), 2);
+    // ResponsiveContainer updates after ResizeObserver, not when setZoom resolves.
+    await reopened.waitForFunction(() => document.documentElement.scrollWidth <= innerWidth, null, { timeout: 5000 }).catch(async error => {
+      console.error('Zoom overflow', await reopened.evaluate(() => ({ innerWidth, scrollWidth: document.documentElement.scrollWidth,
+        elements: [...document.querySelectorAll('body *')].filter(el => el.getBoundingClientRect().right > innerWidth + 1).slice(0, 8).map(el => ({ tag: el.tagName, className: String(el.className), width: el.getBoundingClientRect().width })) })));
+      throw error;
+    });
     assert.equal(await reopened.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'Real browser zoom 200% fits');
     if (output) await reopened.screenshot({ path: path.join(output, 'overview-zoom-200.png') });
     await reopened.evaluate(async () => { const tab = await chrome.tabs.getCurrent(); await chrome.tabs.setZoom(tab.id, 1); });
