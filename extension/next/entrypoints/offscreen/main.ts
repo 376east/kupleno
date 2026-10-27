@@ -5,18 +5,18 @@ import { collectYandex } from '../../collectors/yandex-collect';
 import type { Job, CollectionResult } from '../../collection';
 import { withDeadline } from '../../deadline';
 
-let controller: AbortController | null = null;
-let jobId = '';
-let running = false;
-let delivery: ReturnType<typeof setTimeout> | undefined;
+const tasks = new Map<string, { source: Job['source']; controller: AbortController; delivery?: ReturnType<typeof setTimeout> }>();
 
 async function finish(id: string, result?: CollectionResult, error?: string) {
+  const task = tasks.get(id);
+  if (!task) return;
   try {
-    const response = await browser.runtime.sendMessage({ type: 'KUPLENO_OFFSCREEN_EVENT', action: 'finished', id, result, error });
+    const response = await withDeadline(browser.runtime.sendMessage({ type: 'KUPLENO_OFFSCREEN_EVENT', action: 'finished', id, result, error }), 'Не удалось сохранить результат.', 10000);
     if (!response?.ok) throw new Error('Не удалось сохранить результат обработки.');
+    if (tasks.get(id) === task) tasks.delete(id);
   } catch {
-    // Keep the completed result alive if the service worker is being restarted.
-    delivery = setTimeout(() => void finish(id, result, error), 2000);
+    // Each result retries independently while the worker restarts.
+    if (tasks.get(id) === task) task.delivery = setTimeout(() => void finish(id, result, error), 2000);
   }
 }
 
@@ -24,11 +24,19 @@ browser.runtime.onMessage.addListener((message, sender, reply) => {
   if (sender.id !== browser.runtime.id || message?.type !== 'KUPLENO_OFFSCREEN') return;
   // A website and the report page cannot supply executable jobs or authenticated request headers.
   if (sender.url && sender.url !== browser.runtime.getURL('/background.js')) { reply({ ok: false }); return; }
-  if (message.action === 'cancel' && message.id === jobId) { controller?.abort(); clearTimeout(delivery); reply({ ok: true }); return; }
-  if (message.action !== 'run' || running || !message.job?.id) { reply({ ok: false }); return; }
+  if (message.action === 'status') { reply({ ok: true, ids: [...tasks.keys()] }); return; }
+  if (message.action === 'cancel') {
+    const task = tasks.get(message.id);
+    if (task) { task.controller.abort(); clearTimeout(task.delivery); tasks.delete(message.id); }
+    reply({ ok: true }); return;
+  }
+  if (message.action !== 'run' || !message.job?.id) { reply({ ok: false }); return; }
   const job = message.job as Job;
   if (job.source !== 'ozon' && job.source !== 'yandex') { reply({ ok: false }); return; }
-  jobId = job.id; running = true; controller = new AbortController();
+  if (tasks.has(job.id)) { reply({ ok: true }); return; }
+  if ([...tasks.values()].some(task => task.source === job.source)) { reply({ ok: false }); return; }
+  const controller = new AbortController();
+  tasks.set(job.id, { source: job.source, controller });
   const signal = controller.signal;
   reply({ ok: true });
   const options = {

@@ -9,6 +9,7 @@ import type { Filters } from '../domain.mjs';
 import { Dialog, Icon, StoreMark, download, operationCount } from './components';
 import { LocalReceipt } from './LocalReceipt';
 import { Stores } from './Stores';
+import { createStateUpdater } from '../collection-state';
 import { Preferences } from './Preferences';
 import { BulkEdit } from './BulkEdit';
 import { Control, ReturnForm, DocumentForm } from './Control';
@@ -78,6 +79,9 @@ export function App() {
   const [history, setHistory] = useState<Snapshot[] | null>(null);
   const input = useRef<HTMLInputElement>(null);
   const channel = useRef<BroadcastChannel | null>(null);
+  const updateCollection = useMemo(() => createStateUpdater(store, value => {
+    setEnvelope(value); setRecovery(null); channel.current?.postMessage(value.revision);
+  }), []);
 
   useEffect(() => {
     let active = true;
@@ -161,7 +165,7 @@ export function App() {
             {page === 'overview' && <Overview rows={visible} onDate={date => { setFilters({ ...filters, from: date, to: date }); location.hash = 'purchases'; }} filters={filters} onSelect={setSelected} onGroup={group => { setFilters({ ...filters, rowIds: group.map(row => row.rowId) }); location.hash = "purchases"; }} onCategory={category => { setFilters({ ...filters, category }); location.hash = "purchases"; }} onMonth={month => { setFilters({ ...filters, from: `${month}-01`, to: new Date(Date.UTC(Number(month.slice(0, 4)), Number(month.slice(5)), 0)).toISOString().slice(0, 10) }); location.hash = 'purchases'; }} />}
             {page === 'purchases' && <><div className="row-actions journal-tools"><button className="secondary" onClick={() => download(`kupleno-${new Date().toISOString().slice(0, 10)}.csv`, exportPurchasesCsv(visible), 'text/csv;charset=utf-8')}>Скачать таблицу ({visible.length})</button><label className="checkbox-label"><input type="checkbox" checked={filters.includeExcluded === true} onChange={e => setFilters({ ...filters, includeExcluded: e.target.checked })} />Показать исключённые</label><label className="checkbox-label"><input type="checkbox" checked={filters.categoryReview === true} onChange={e => setFilters({ ...filters, categoryReview: e.target.checked })} />Проверить категории</label></div><Purchases rows={visible} onSelect={setSelected} onBulk={setBulk} /></>}
             {page === 'control' && <Control state={state} save={save} onSelect={setSelected} />}
-            {page === 'stores' && <Stores state={state} rows={rows} save={save} onSelect={setSelected} />}
+            {page === 'stores' && <Stores state={state} rows={rows} update={updateCollection} onSelect={setSelected} />}
             {page === 'settings' && <div className="stack"><section className="panel"><h2>Ваши данные</h2><div className="setting-row"><div><strong>Резервная копия</strong><small>Покупки, заметки, категории и остальные сохранённые настройки.</small></div><button onClick={() => download(`kupleno-backup-${new Date().toISOString().slice(0,10)}.json`, serializeBackup(state))}>Скачать копию</button></div><div className="setting-row"><div><strong>Вернуться к сохранённому состоянию</strong><small>Последние 12 сохранений. Восстановление тоже можно отменить.</small></div><button disabled={busy} onClick={() => void run(async () => setHistory(await store.history()))}>История изменений</button></div><div className="setting-row"><div><strong>Обновить данные из хранилища</strong><small>Если вы работали в другой вкладке.</small></div><button onClick={() => void refresh()}>Обновить</button></div></section><Preferences state={state} save={save} onSelect={setSelected} /></div>}
           </>}
         </div>}

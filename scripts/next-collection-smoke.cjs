@@ -29,6 +29,10 @@ async function main() {
     channel: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ? undefined : 'chromium',
     executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH, headless: true,
     args: [`--disable-extensions-except=${build}`, `--load-extension=${build}`],
+  }).catch(async error => {
+    assert.equal(path.dirname(root), os.tmpdir()); assert.ok(path.basename(root).startsWith('kupleno-collect-test-'));
+    await fs.rm(root, { recursive: true, force: true });
+    throw error;
   });
   try {
     const worker = context.serviceWorkers()[0] || await context.waitForEvent('serviceworker');
@@ -42,6 +46,8 @@ async function main() {
     }, pdf.toString('base64'));
     const requests = [];
     let stallOzon = false;
+    let holdYandex = false, releaseYandex;
+    let yandexReceiptRequests = 0;
     const ozonRequestPages = new Set();
     await context.route('https://www.ozon.ru/**', route => {
       if (route.request().isNavigationRequest()) return route.fulfill({contentType:'text/html',body:'<html><script>window.fetch = () => new Promise(() => {});</script><body>Receipt page</body></html>'});
@@ -50,9 +56,12 @@ async function main() {
       if (stallOzon) return new Promise(() => {});
       return route.fulfill(route.request().url().includes('downloadCheque') ? { contentType: 'application/pdf', body: pdf } : { contentType: 'application/json', json: { cheques: [{ link: '/_action/downloadCheque?id=synthetic' }] } });
     });
-    await context.route('https://market.yandex.ru/**', route => {
+    await context.route('https://market.yandex.ru/**', async route => {
       const url = new URL(route.request().url()); requests.push(url.href);
       if (url.pathname === '/api/resolve/') {
+        if (url.searchParams.get('r')?.includes('resolveConsolidationOrders')) return route.fulfill({ json: { results: [{ data: { result: 'list', collections: { orderConsolidationResult: { list: { ordersGroupsIds: [123456], pageToken: '', hasNext: false } } } } }] } });
+        yandexReceiptRequests++;
+        if (holdYandex) await new Promise(resolve => { releaseYandex = resolve; });
         const body = route.request().postDataJSON(); assert.equal(body.params[0].orderId, 123456);
         return route.fulfill({ json: { results: [{ data: { result: ['r'], collections: { orderReceipt: { r: { id: 'r', fiscalUrl: 'https://check.yandex.ru/test', createdAt: 1767225600, type: 'INCOME' } } } } }] } });
       }
@@ -110,10 +119,123 @@ async function main() {
     assert.equal(typeof started.job.marketTabId,'number');
     await finish();
     assert.equal(yandexUser.isClosed(),false);
-    assert.equal(requests.filter(url => url.includes('/api/resolve/')).length, 1);
+    assert.equal(yandexReceiptRequests, 1);
     const denied = await page.evaluate(() => chrome.runtime.sendMessage({ type: 'KUPLENO_YANDEX_REQUEST', id: 'fake', url: 'https://evil.test/', body: '{}' }));
     assert.equal(denied.ok, false);
-    stallOzon = true;
+    // Migrate a durable old single-job result without discarding it on worker restart.
+    const devtools = await context.newCDPSession(page);
+    await devtools.send('ServiceWorker.enable');
+    async function restartWorker() {
+      const { targetInfos } = await devtools.send('Target.getTargets');
+      const target = targetInfos.find(target => target.type === 'service_worker' && target.url === `chrome-extension://${id}/background.js`);
+      assert.ok(target, 'Locate the exact disposable extension worker');
+      await devtools.send('Target.closeTarget', { targetId: target.targetId });
+      const status = await command({ action: 'status' });
+      const fresh = context.serviceWorkers().find(worker => worker.url() === `chrome-extension://${id}/background.js`);
+      return { status, fresh };
+    }
+    const legacy = { id: 'legacy-completed', source: 'ozon', profile: 'personal', status: 'completed', startedAt: new Date().toISOString(), updatedAt: new Date().toISOString(), message: 'legacy', progress: { done: 1, total: 1 }, result: { rows: [], stats: { receipts: 0 }, warnings: [] } };
+    await page.evaluate(async legacy => {
+      await chrome.storage.local.remove('kupleno-next-jobs');
+      await chrome.storage.local.set({ 'kupleno-next-job': legacy });
+    }, legacy);
+    assert.equal((await restartWorker()).status.job.id, legacy.id);
+    assert.equal((await page.evaluate(() => chrome.storage.local.get('kupleno-next-job')))['kupleno-next-job'], undefined);
+    await command({ action: 'ack', id: legacy.id });
+
+    // All three sources remain active together; a slow Ozon request does not own the other buttons.
+    stallOzon = true; holdYandex = true;
+    const parallelWorker = context.serviceWorkers()[0];
+    await parallelWorker.evaluate(() => {
+      const original = globalThis.fetch;
+      globalThis.parallelWb = true;
+      globalThis.fetch = async (input, init) => {
+        if (globalThis.parallelWb && String(input).startsWith('https://astro.wildberries.ru/')) {
+          await new Promise((resolve, reject) => {
+            globalThis.releaseParallelWb = resolve;
+            init?.signal?.addEventListener('abort', () => reject(init.signal.reason), { once: true });
+          });
+          return new Response(JSON.stringify({ receipts: [{ receiptUid: 'parallel-wb', link: 'https://receipt.wb.ru/parallel-wb', operationSum: 100, operationDateTime: '2026-01-01T10:00:00Z' }] }));
+        }
+        if (String(input) === 'https://receipt.wb.ru/parallel-wb') return new Response('<h2>Кассовый чек</h2>Приход<div class="products-item"><div class="products-cell products-cell_name"><div class="products-prop-value">Наименование Книга</div></div><div class="products-cell products-cell_price"></div><div class="products-cell products-cell_cost"><div class="products-prop-value">100,00 ₽</div></div></div><div class="total"></div>');
+        return original(input, init);
+      };
+    });
+    await context.addCookies([{ url: 'https://www.wildberries.ru/', name: 'wbid-sdk-id-token', value: 'synthetic.' + Buffer.from(JSON.stringify({ exp: Math.floor(Date.now()/1000)+3600 })).toString('base64url') + '.signature' }]);
+    const [parallelOzon, duplicateOzon] = await Promise.all([
+      command({ action: 'start', source: 'ozon', profile: 'personal' }),
+      command({ action: 'start', source: 'ozon', profile: 'work' })
+    ]);
+    assert.equal(parallelOzon.ok, true); assert.equal(duplicateOzon.ok, false, 'One source cannot start twice');
+    await page.goto(`chrome-extension://${id}/app.html#stores`);
+    const stores = page.locator('.store-panel');
+    await stores.filter({ has: page.getByRole('heading', { name: 'Ozon', exact: true }) }).getByRole('button', { name: 'Остановить сбор', exact: true }).waitFor();
+    for (const name of ['Wildberries', 'Яндекс Маркет']) assert.equal(await stores.filter({ has: page.getByRole('heading', { name, exact: true }) }).getByRole('button', { name: 'Обновить покупки', exact: true }).isEnabled(), true, name + ' remains enabled');
+    await page.goto(`chrome-extension://${id}/app.html`);
+    const [parallelWb, parallelYandex] = await Promise.all([
+      command({ action: 'start', source: 'wildberries', profile: 'personal' }),
+      command({ action: 'start', source: 'yandex', profile: 'personal' })
+    ]);
+    assert.equal(parallelWb.ok, true); assert.equal(parallelYandex.ok, true);
+    const allRunning = await command({ action: 'status' });
+    assert.equal(allRunning.jobs.filter(job => job.status === 'running').length, 3);
+    assert.equal(allRunning.job, null, 'Legacy unqualified status never picks an arbitrary active job');
+    assert.equal((await command({ action: 'cancel' })).ok, false, 'Ambiguous legacy cancellation is rejected');
+    assert.equal((await command({ action: 'cancel', id: parallelOzon.job.id })).job.status, 'cancelled');
+    assert.equal((await command({ action: 'status', source: 'yandex' })).job.status, 'running');
+    assert.equal((await command({ action: 'status', source: 'wildberries' })).job.status, 'running');
+    for (let attempt = 0; attempt < 100; attempt++) {
+      if (await parallelWorker.evaluate(() => typeof globalThis.releaseParallelWb === 'function')) break;
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    await parallelWorker.evaluate(() => globalThis.releaseParallelWb());
+    let wbDone;
+    for (let attempt = 0; attempt < 100; attempt++) {
+      wbDone = await command({ action: 'status', source: 'wildberries' });
+      if (wbDone.job.status !== 'running') break;
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    assert.equal(wbDone.job.status, 'completed', JSON.stringify(wbDone));
+    const restarted = await restartWorker();
+    assert.equal(restarted.status.jobs.find(job => job.source === 'wildberries').status, 'completed', 'Completed results survive restart');
+    assert.equal(restarted.status.jobs.find(job => job.source === 'yandex').status, 'running', 'Offscreen source survives worker restart');
+    for (let attempt = 0; attempt < 100 && !releaseYandex; attempt++) await new Promise(resolve => setTimeout(resolve, 100));
+    assert.equal(typeof releaseYandex, 'function');
+    holdYandex = false; releaseYandex();
+    let yandexDone;
+    for (let attempt = 0; attempt < 100; attempt++) {
+      yandexDone = await command({ action: 'status', source: 'yandex' });
+      if (yandexDone.job.status !== 'running') break;
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    assert.equal(yandexDone.job.status, 'completed', JSON.stringify(yandexDone));
+    await command({ action: 'ack', id: 'wrong-job' });
+    assert.equal((await command({ action: 'status' })).jobs.filter(job => job.status === 'completed').length, 2);
+    // ACK of one exact result leaves its neighbour durable.
+    await command({ action: 'ack', id: parallelWb.job.id });
+    assert.equal((await command({ action: 'status', source: 'yandex' })).job.id, parallelYandex.job.id);
+    // Seed three pending durable results simultaneously to exercise Stores+App fresh-state writes.
+    const completed = ['ozon', 'wildberries', 'yandex'].map(source => ({ ...legacy, id: 'apply-' + source, source, result: { rows: [{ rowId: 'apply-' + source, source, date: '2026-01-01', title: 'Synthetic ' + source, amount: '100.00', marketplace_id: 'apply-' + source }], stats: { receipts: 1 }, warnings: [] } }));
+    await page.evaluate(jobs => chrome.storage.local.set({ 'kupleno-next-jobs': Object.fromEntries(jobs.map(job => [job.source, job])) }), completed);
+    await restartWorker();
+    await page.goto(`chrome-extension://${id}/app.html#stores`);
+    for (let attempt = 0; attempt < 100; attempt++) {
+      if ((await command({ action: 'status' })).jobs.length === 0) break;
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    assert.equal((await command({ action: 'status' })).jobs.length, 0, 'Only saved results are acknowledged');
+    const persisted = await page.evaluate(async () => {
+      const database = await new Promise((resolve, reject) => { const request = indexedDB.open('kupleno-storage-v2'); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
+      try { return await new Promise((resolve, reject) => { const request = database.transaction('current').objectStore('current').get('state'); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); }); }
+      finally { database.close(); }
+    });
+    assert.deepEqual(persisted.state.rows.map(row => row.source).sort(), ['ozon', 'wildberries', 'yandex']);
+    assert.equal(Object.keys(persisted.state.metadata.appliedCollections).length, 3);
+    await page.reload();
+    assert.equal((await command({ action: 'status' })).jobs.length, 0);
+    await context.clearCookies();
+    await page.goto(`chrome-extension://${id}/app.html`);
+    console.log('PASS: three concurrent sources; duplicate-source guard; independent cancellation; singleton offscreen; legacy migration; worker restart; exact ACK; concurrent fresh-CAS Stores application.');
     const before = requests.length;
     const startedAt = Date.now();
     assert.equal((await command({ action: 'start', source: 'ozon', profile: 'personal' })).ok, true);

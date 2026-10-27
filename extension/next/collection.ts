@@ -12,5 +12,5 @@ export interface Job {
   marketTabId?: number;
   progress: { done: number; total: number }; error?: string; diagnostic?: string; result?: CollectionResult;
 }
-export type Command = { type: 'KUPLENO_JOB'; action: 'status' | 'cancel' } | { type: 'KUPLENO_JOB'; action: 'start'; source: Source; profile: string } | { type: 'KUPLENO_JOB'; action: 'ack'; id: string };
-export type JobResponse = { ok: true; job: Job | null } | { ok: false; error: string };
+export type Command = { type: 'KUPLENO_JOB'; action: 'status' | 'cancel'; source?: Source; id?: string } | { type: 'KUPLENO_JOB'; action: 'start'; source: Source; profile: string } | { type: 'KUPLENO_JOB'; action: 'ack'; id: string };
+export type JobResponse = { ok: true; job: Job | null; jobs: Job[] } | { ok: false; error: string };

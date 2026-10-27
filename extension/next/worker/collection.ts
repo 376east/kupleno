@@ -7,25 +7,42 @@ import { yandexRequest } from './yandex-request';
 import { ozonRequest } from './ozon-request';
 import { withDeadline } from '../deadline';
 
-const key = 'kupleno-next-job';
-let current: Job | null = null;
-let running: AbortController | null = null;
-let queue = Promise.resolve();
+const key = 'kupleno-next-jobs';
+const legacyKey = 'kupleno-next-job';
+let jobs: Partial<Record<Source, Job>> = {};
+const running = new Map<string, AbortController>();
 let writes = Promise.resolve();
-const init = browser.storage.local.get(key).then(async data => {
-  current = data[key] as Job || null;
-  if (current?.status === 'running') {
-    const contexts = await browser.runtime.getContexts({ contextTypes: ['OFFSCREEN_DOCUMENT'], documentUrls: [browser.runtime.getURL('/offscreen.html')] });
-    if (current.source !== 'wildberries' && contexts.length) return;
-    current = { ...current, status: 'failed', error: 'Браузер прервал сбор. Запустите его ещё раз; сохранённая история не изменилась.', updatedAt: new Date().toISOString() };
-    await browser.storage.local.set({ [key]: current });
-    await closeCollectionTab(current);
+let offscreenCreation: Promise<void> | undefined;
+const jobById = (id: unknown) => Object.values(jobs).find(job => job.id === id);
+const init = browser.storage.local.get([key, legacyKey]).then(async data => {
+  const legacy = data[legacyKey] as Job | undefined;
+  if (data[key]) jobs = data[key] as typeof jobs;
+  else if (legacy && Object.hasOwn(SOURCES, legacy.source)) jobs = { [legacy.source]: legacy };
+  const contexts = await browser.runtime.getContexts({ contextTypes: ['OFFSCREEN_DOCUMENT'], documentUrls: [browser.runtime.getURL('/offscreen.html')] });
+  const alive: string[] = contexts.length ? await withDeadline(browser.runtime.sendMessage({ type: 'KUPLENO_OFFSCREEN', action: 'status' }), 'Обработчик не ответил.', 3000).then(reply => reply?.ids || [], () => []) : [];
+  for (const job of Object.values(jobs)) {
+    if (job.status !== 'running' || (job.source !== 'wildberries' && alive.includes(job.id))) continue;
+    jobs[job.source] = { ...job, status: 'failed', error: 'Браузер прервал сбор. Запустите его ещё раз; сохранённая история не изменилась.', updatedAt: new Date().toISOString() };
+    await closeCollectionTab(job);
   }
+  await browser.storage.local.set({ [key]: jobs });
+  await browser.storage.local.remove(legacyKey);
 });
 
 async function ensureOffscreen() {
-  const contexts = await browser.runtime.getContexts({ contextTypes: ['OFFSCREEN_DOCUMENT'], documentUrls: [browser.runtime.getURL('/offscreen.html')] });
-  if (!contexts.length) await browser.offscreen.createDocument({ url: 'offscreen.html', reasons: ['WORKERS'], justification: 'Разбор PDF-чеков локальным PDF worker без открытых служебных вкладок.' });
+  if (!offscreenCreation) offscreenCreation = (async () => {
+    const contexts = await browser.runtime.getContexts({ contextTypes: ['OFFSCREEN_DOCUMENT'], documentUrls: [browser.runtime.getURL('/offscreen.html')] });
+    if (!contexts.length) await browser.offscreen.createDocument({ url: 'offscreen.html', reasons: ['WORKERS'], justification: 'Локальный разбор чеков нескольких магазинов.' });
+  })().finally(() => { offscreenCreation = undefined; });
+  await offscreenCreation;
+}
+
+function response(selected?: Job | null): JobResponse {
+  const values = Object.values(jobs);
+  const pending = values.filter(job => job.status === 'running' || job.status === 'completed');
+  // Old callers can still control a single pending job, never an arbitrary parallel one.
+  const legacy = pending.length === 1 ? pending[0]! : pending.length ? null : values.sort((a,b) => b.updatedAt.localeCompare(a.updatedAt))[0] || null;
+  return { ok: true, job: selected === undefined ? legacy : selected, jobs: values };
 }
 
 async function closeCollectionTab(job: Job | null) {
@@ -38,13 +55,18 @@ async function closeCollectionTab(job: Job | null) {
   if (url.hostname.replace(/^www\./, '') === expected.hostname.replace(/^www\./, '') && url.pathname.replace(/\/$/, '') === expected.pathname.replace(/\/$/, '')) await browser.tabs.remove(job.marketTabId).catch(() => {});
 }
 
-async function marketContext(source: Source) {
+async function marketContext(job: Job, controller: AbortController) {
+  const source = job.source;
+  controller.signal.throwIfAborted();
   let tab = await browser.tabs.create({ url: SOURCES[source].url, active: false });
   const ownedId = tab.id;
   try {
+  await persist(job.source, current => current?.id === job.id ? { ...current, marketTabId: ownedId } : current);
+  controller.signal.throwIfAborted();
   const deadline = Date.now() + 20000;
   while (tab.status !== 'complete' && Date.now() < deadline) {
     await new Promise(resolve => setTimeout(resolve, 250));
+    controller.signal.throwIfAborted();
     tab = await browser.tabs.get(tab.id!);
   }
   if (tab.id === undefined || tab.status !== 'complete') throw new Error(`${SOURCES[source].name}: страница ещё загружается. Повторите сбор после загрузки.`);
@@ -63,11 +85,13 @@ async function marketContext(source: Source) {
   }
 }
 
-async function persist(change: Job | null | ((job: Job | null) => Job | null)) {
+async function persist(source: Source, change: Job | null | ((job: Job | null) => Job | null)) {
   const task = writes.then(async () => {
-    const job = typeof change === 'function' ? change(current) : change;
-    await browser.storage.local.set({ [key]: job });
-    current = job;
+    const job = typeof change === 'function' ? change(jobs[source] || null) : change;
+    const next = { ...jobs };
+    if (job) next[source] = job; else delete next[source];
+    await browser.storage.local.set({ [key]: next });
+    jobs = next;
   });
   writes = task.catch(() => {});
   await task;
@@ -121,17 +145,17 @@ async function execute(job: Job, controller: AbortController) {
       token, signal: controller.signal,
       fetch: (url, options) => fetch(url, { ...options, signal: AbortSignal.any([controller.signal, AbortSignal.timeout(25000)]) }),
       onProgress: async progress => {
-        await persist(value => value?.id === job.id && value.status === 'running'
+        await persist(job.source, value => value?.id === job.id && value.status === 'running'
           ? { ...value, progress: { done: progress.done, total: progress.total }, message: progress.message, updatedAt: new Date().toISOString() } : value);
       },
     });
-    if (current?.id === job.id && current.status === 'running') {
+    if (jobs[job.source]?.id === job.id && jobs[job.source]?.status === 'running') {
       // The durable result and completed status are one write. The app acknowledges only after its DB transaction.
-      await persist(value => value?.id === job.id && value.status === 'running'
+      await persist(job.source, value => value?.id === job.id && value.status === 'running'
         ? { ...value, status: 'completed', result, message: `Собрано ${result.rows.length} операций`, updatedAt: new Date().toISOString() } : value);
     }
   } catch (error) {
-    if (current?.id === job.id && current.status === 'running') {
+    if (jobs[job.source]?.id === job.id && jobs[job.source]?.status === 'running') {
       const diagnostic = error instanceof Error ? error.message : 'Сбор не завершён.';
       const message = diagnostic.startsWith('WB_LIST_UNKNOWN_PAYLOAD') ? 'Wildberries изменил формат списка чеков. Скопируйте сведения об ошибке — в них есть структура ответа для исправления сборщика.'
         : diagnostic === 'WB_SESSION_NOT_FOUND' ? 'Не удалось получить сессию Wildberries из открытой вкладки. Откройте страницу чеков WB и повторите сбор.'
@@ -139,62 +163,76 @@ async function execute(job: Job, controller: AbortController) {
         : diagnostic === 'WB_LIST_HTTP_403' ? 'Wildberries отказал в доступе к чекам (403). Откройте страницу чеков и проверьте, доступны ли они в магазине.'
         : diagnostic === 'WB_LIST_NON_JSON' ? 'Wildberries вернул страницу вместо списка чеков. Откройте магазин, проверьте вход и повторите сбор.'
         : diagnostic.startsWith('WB_LIST_HTTP_') ? `Wildberries временно не отдал историю (код ${diagnostic.split('_').at(-1)}). Повторите сбор позже.` : diagnostic;
-      await persist(value => value?.id === job.id && value.status === 'running'
+      await persist(job.source, value => value?.id === job.id && value.status === 'running'
         ? { ...value, status: controller.signal.aborted ? 'cancelled' : 'failed', error: message, diagnostic: diagnostic.slice(0, 2000), updatedAt: new Date().toISOString() } : value);
     }
-  } finally { await closeCollectionTab(job); if (running === controller) running = null; }
+  } finally { await closeCollectionTab(job); running.delete(job.id); }
 }
 
 async function handle(command: Command): Promise<JobResponse> {
   await init;
   if (command.action === 'status') {
-    if (current?.status === 'running' && Date.now() - Date.parse(current.updatedAt) > 180000) {
-      running?.abort();
-      const stale = current;
-      await persist({ ...stale, status: 'failed', error: 'Сбор не отвечает больше трёх минут. Обновите вкладку магазина и запустите снова; сохранённая история не изменилась.', updatedAt: new Date().toISOString() });
+    for (const stale of Object.values(jobs)) {
+      if (stale.status !== 'running' || Date.now() - Date.parse(stale.updatedAt) <= 180000) continue;
+      running.get(stale.id)?.abort();
+      await persist(stale.source, value => value?.id === stale.id && value.status === 'running'
+        ? { ...value, status: 'failed', error: 'Сбор не отвечает больше трёх минут. Повторите его.', updatedAt: new Date().toISOString() } : value);
+      if (stale.source !== 'wildberries') await withDeadline(browser.runtime.sendMessage({ type: 'KUPLENO_OFFSCREEN', action: 'cancel', id: stale.id }), 'Обработчик не ответил.', 1000).catch(() => {});
       await closeCollectionTab(stale);
-      if (stale.source !== 'wildberries') await withDeadline(browser.offscreen.closeDocument(), 'Не удалось закрыть обработчик.', 5000).catch(() => {});
     }
-    return { ok: true, job: current };
+    return response(command.id ? jobById(command.id) || null : command.source ? jobs[command.source] || null : undefined);
   }
   if (command.action === 'ack') {
-    if (current?.id === command.id && current.status === 'completed') { await closeCollectionTab(current); await persist(null); }
-    return { ok: true, job: current };
+    const job = jobById(command.id);
+    if (job?.status === 'completed') {
+      await closeCollectionTab(job);
+      await persist(job.source, value => value?.id === job.id && value.status === 'completed' ? null : value);
+    }
+    return response();
   }
   if (command.action === 'cancel') {
-    running?.abort();
-    // Persist cancellation before talking to a possibly frozen offscreen page.
-    if (current?.status === 'running') await persist({ ...current, status: 'cancelled', message: 'Сбор отменён', updatedAt: new Date().toISOString() });
-    if (current && current.source !== 'wildberries') {
-      await withDeadline(browser.runtime.sendMessage({ type: 'KUPLENO_OFFSCREEN', action: 'cancel', id: current.id }), 'Обработчик не ответил на отмену.', 1000).catch(() => {});
-      await withDeadline(browser.offscreen.closeDocument(), 'Не удалось закрыть обработчик.', 5000).catch(() => {});
-    }
-    await closeCollectionTab(current);
-    return { ok: true, job: current };
+    const pending = Object.values(jobs).filter(job => job.status === 'running');
+    const job = command.id ? jobById(command.id) : command.source ? jobs[command.source] : pending.length === 1 ? pending[0] : undefined;
+    if (!job && !command.id && !command.source && pending.length > 1) return { ok: false, error: 'Выберите магазин для остановки сбора.' };
+    if (!job || job.status !== 'running') return response(job || null);
+    running.get(job.id)?.abort();
+    await persist(job.source, value => value?.id === job.id && value.status === 'running'
+      ? { ...value, status: 'cancelled', message: 'Сбор отменён', updatedAt: new Date().toISOString() } : value);
+    if (job.source !== 'wildberries') await withDeadline(browser.runtime.sendMessage({ type: 'KUPLENO_OFFSCREEN', action: 'cancel', id: job.id }), 'Обработчик не ответил на отмену.', 1000).catch(() => {});
+    await closeCollectionTab(job);
+    return response(jobs[job.source] || null);
   }
   if (command.action !== 'start') return { ok: false, error: 'Неизвестная команда сбора.' };
   if (!Object.hasOwn(SOURCES, command.source)) return { ok: false, error: 'Неизвестный магазин.' };
   if (typeof command.profile !== 'string' || !command.profile || command.profile.length > 120) return { ok: false, error: 'Выберите профиль для сбора.' };
-  if (current?.status === 'running' || current?.status === 'completed') return { ok: false, error: 'Сначала завершите сохранение предыдущего сбора.' };
-  await closeCollectionTab(current);
-  const context = await marketContext(command.source);
-  const job: Job = { id: crypto.randomUUID(), source: command.source, profile: command.profile, ...('marketTabId' in context ? { marketTabId: context.marketTabId as number } : {}), status: 'running', startedAt: new Date().toISOString(), updatedAt: new Date().toISOString(), message: `Подключаем ${SOURCES[command.source].name}…`, progress: { done: 0, total: 0 } };
-  await persist(job);
-  if (job.source !== 'wildberries') {
-    try {
+  const job: Job = { id: crypto.randomUUID(), source: command.source, profile: command.profile, status: 'running', startedAt: new Date().toISOString(), updatedAt: new Date().toISOString(), message: `Подключаем ${SOURCES[command.source].name}…`, progress: { done: 0, total: 0 } };
+  // Reserve this source before opening a tab; other sources can start immediately.
+  await persist(job.source, previous => {
+    if (previous?.status === 'running' || previous?.status === 'completed') throw new Error('Сначала завершите сохранение предыдущего сбора этого магазина.');
+    return job;
+  });
+  const controller = new AbortController(); running.set(job.id, controller);
+  try {
+    const context = await marketContext(job, controller);
+    controller.signal.throwIfAborted();
+    const active = jobById(job.id);
+    if (!active || active.status !== 'running') { await closeCollectionTab(active || null); running.delete(job.id); return response(active || null); }
+    if (job.source === 'wildberries') {
+      void execute(active, controller).catch(error => console.error('Не удалось сохранить состояние сбора', error instanceof Error ? error.name : 'Error'));
+    } else {
       await ensureOffscreen();
-      const reply = await withDeadline(browser.runtime.sendMessage({ type: 'KUPLENO_OFFSCREEN', action: 'run', job, context }), 'Обработчик чеков не ответил за 30 секунд. Повторите сбор.');
+      controller.signal.throwIfAborted();
+      const reply = await withDeadline(browser.runtime.sendMessage({ type: 'KUPLENO_OFFSCREEN', action: 'run', job: active, context }), 'Обработчик чеков не ответил за 30 секунд. Повторите сбор.');
       if (!reply?.ok) throw new Error('Обработчик чеков занят. Повторите сбор.');
-    } catch (e) {
-      await persist({ ...job, status: 'failed', error: e instanceof Error ? e.message : 'Не удалось запустить обработку чеков.' });
-      await browser.offscreen.closeDocument().catch(() => {});
-      await closeCollectionTab(job);
+      running.delete(job.id);
     }
-    return { ok: true, job: current };
+  } catch (error) {
+    await persist(job.source, value => value?.id === job.id && value.status === 'running'
+      ? { ...value, status: controller.signal.aborted ? 'cancelled' : 'failed', error: error instanceof Error ? error.message : 'Не удалось запустить сбор.', updatedAt: new Date().toISOString() } : value);
+    await closeCollectionTab(jobById(job.id) || null);
+    running.delete(job.id);
   }
-  const controller = new AbortController(); running = controller;
-  void execute(job, controller).catch(error => console.error('Не удалось сохранить состояние сбора', error instanceof Error ? error.name : 'Error'));
-  return { ok: true, job };
+  return response(jobById(job.id) || null);
 }
 
 export function registerCollection() {
@@ -202,7 +240,8 @@ export function registerCollection() {
     if (message && typeof message === 'object' && 'type' in message && message.type === 'KUPLENO_OZON_REQUEST') {
       if (sender.id !== browser.runtime.id || sender.url !== browser.runtime.getURL('/offscreen.html') || !('id' in message) || !('url' in message)) { reply({ ok: false }); return; }
       void init.then(async () => {
-        if (!current || current.id !== message.id || current.source !== 'ozon' || current.status !== 'running') throw new Error('Сбор уже завершён.');
+        const current = jobById(message.id);
+        if (!current || current.source !== 'ozon' || current.status !== 'running') throw new Error('Сбор уже завершён.');
         return ozonRequest(message.url, current.marketTabId);
       }).then(result => reply({ ok: true, ...result })).catch(error => reply({ ok: false, error: error instanceof Error ? error.message : 'Магазин не ответил.' }));
       return true;
@@ -210,7 +249,8 @@ export function registerCollection() {
     if (message && typeof message === 'object' && 'type' in message && message.type === 'KUPLENO_YANDEX_REQUEST') {
       if (sender.id !== browser.runtime.id || sender.url !== browser.runtime.getURL('/offscreen.html') || !('id' in message) || !('url' in message) || !('body' in message)) { reply({ ok: false }); return; }
       void init.then(async () => {
-        if (!current || current.id !== message.id || current.source !== 'yandex' || current.status !== 'running') throw new Error('Сбор уже завершён.');
+        const current = jobById(message.id);
+        if (!current || current.source !== 'yandex' || current.status !== 'running') throw new Error('Сбор уже завершён.');
         return yandexRequest(message.url, message.body, current.marketTabId);
       }).then(result => reply({ ok: true, ...result })).catch(error => reply({ ok: false, error: error instanceof Error ? error.message : 'Магазин не ответил.' }));
       return true;
@@ -219,31 +259,32 @@ export function registerCollection() {
       if (sender.id !== browser.runtime.id || sender.url !== browser.runtime.getURL('/offscreen.html')) { reply({ ok: false }); return; }
       if (!('id' in message) || typeof message.id !== 'string' || !('action' in message) || typeof message.action !== 'string') { reply({ ok: false }); return; }
       const event = message as { id: string; action: string; progress?: Job['progress'] & { message: string }; result?: Job['result']; error?: string };
-      queue = queue.then(async () => {
+      void (async () => {
         try {
           await init;
+          const current = jobById(event.id);
           if (current?.id !== event.id || current.status !== 'running') { reply({ ok: true }); return; }
           if (event.action === 'progress' && event.progress) {
-            if (!Number.isSafeInteger(event.progress.done) || !Number.isSafeInteger(event.progress.total) || event.progress.done < 0 || event.progress.total < 0) throw new Error('Некорректный ход сбора.');
-            await persist({ ...current, message: String(event.progress.message).slice(0,1000), progress: { done: event.progress.done, total: event.progress.total }, updatedAt: new Date().toISOString() });
+            const progress = event.progress;
+            if (!Number.isSafeInteger(progress.done) || !Number.isSafeInteger(progress.total) || progress.done < 0 || progress.total < 0) throw new Error('Некорректный ход сбора.');
+            await persist(current.source, value => value?.id === event.id && value.status === 'running' ? { ...value, message: String(progress.message).slice(0,1000), progress: { done: progress.done, total: progress.total }, updatedAt: new Date().toISOString() } : value);
           } else if (event.action === 'finished') {
             if (!event.error && !event.result) throw new Error('Обработчик не передал результат.');
             if (event.result && (!Array.isArray(event.result.rows) || event.result.rows.length > 100000 || !Array.isArray(event.result.warnings) || !event.result.stats || typeof event.result.stats !== 'object')) throw new Error('Некорректный результат сбора.');
-            await persist({ ...current, status: event.error ? 'failed' : 'completed', ...(event.result ? { result: event.result } : {}), ...(event.error ? { error: event.error } : {}), updatedAt: new Date().toISOString() });
+            await persist(current.source, value => value?.id === event.id && value.status === 'running' ? { ...value, status: event.error ? 'failed' : 'completed', ...(event.result ? { result: event.result } : {}), ...(event.error ? { error: event.error } : {}), updatedAt: new Date().toISOString() } : value);
             await closeCollectionTab(current);
             reply({ ok: true });
-            await browser.offscreen.closeDocument().catch(() => {});
             return;
           }
           reply({ ok: true });
         } catch { reply({ ok: false }); }
-      });
+      })();
       return true;
     }
     if (!message || typeof message !== 'object' || !('type' in message) || message.type !== 'KUPLENO_JOB') return;
     const trustedUrl = browser.runtime.getURL('/app.html');
     if (sender.id !== browser.runtime.id || sender.url?.split('#')[0] !== trustedUrl) { reply({ ok: false, error: 'Источник команды не разрешён.' }); return; }
-    queue = queue.then(async () => { try { reply(await handle(message as Command)); } catch (error) { reply({ ok: false, error: error instanceof Error ? error.message : 'Хранилище сбора недоступно.' }); } });
+    void handle(message as Command).then(reply, error => reply({ ok: false, error: error instanceof Error ? error.message : 'Хранилище сбора недоступно.' }));
     return true;
   });
 }
