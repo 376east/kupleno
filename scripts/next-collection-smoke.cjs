@@ -305,6 +305,13 @@ async function main() {
     });
     assert.deepEqual(persisted.state.rows.map(row => row.source).sort(), ['ozon', 'wildberries', 'yandex']);
     assert.equal(Object.keys(persisted.state.metadata.appliedCollections).length, 3);
+    for (const source of ['ozon', 'wildberries', 'yandex']) {
+      const stats = persisted.state.metadata.collection.stats[source];
+      assert.equal(stats.appliedRowsBefore, 0);
+      assert.equal(stats.appliedRowsReceived, 1);
+      assert.equal(stats.appliedRowsAfter, 1);
+      assert.equal(stats.appliedArchivedRowsBefore, 0);
+    }
     await page.reload();
     assert.equal((await command({ action: 'status' })).jobs.length, 0);
     await context.clearCookies();

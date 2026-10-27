@@ -54,6 +54,21 @@ test('failed save never acknowledges, does not poison queue, and can be retried'
   assert.equal((await store.read())!.state.rows.length, 2);
 });
 
+test('application counts record the actual source/profile base without changing collector stats', () => {
+  const finished = job('yandex');
+  const original = { rowId: 'old', source: 'yandex', profile: 'personal', title: 'old', date: '2026-01-01', amount: '100.00', marketplace_id: 'old' };
+  const state: State = { ...empty(), rows: [original, { ...original, rowId: 'work', profile: 'work' }, { ...original, rowId: 'ozon', source: 'ozon' }],
+    settlementOriginals: [original, { ...original, profile: 'work' }] };
+  const result = applyCollectionResult(state, finished);
+  const collection = result.metadata.collection as { stats: Record<string, Record<string, number | boolean>> };
+  assert.deepEqual(collection.stats.yandex, { receipts: 1, appliedRowsBefore: 1, appliedRowsReceived: 1, appliedRowsAfter: 2, appliedArchivedRowsBefore: 1 });
+  assert.deepEqual(finished.result!.stats, { receipts: 1 });
+  assert.deepEqual(result.settlementOriginals, state.settlementOriginals);
+  const cleared = applyCollectionResult(empty(), finished).metadata.collection as typeof collection;
+  assert.equal(cleared.stats.yandex!.appliedRowsBefore, 0);
+  assert.equal(cleared.stats.yandex!.appliedRowsAfter, 1);
+});
+
 test('external revision is reread before retry and its history is preserved', async () => {
   const store = memoryStore();
   const write = store.write;

@@ -1,6 +1,6 @@
 import type { Envelope, Expected, State } from './model';
 import type { Job } from './collection';
-import { SOURCES, mergeCollection } from './domain.mjs';
+import { SOURCES, mergeCollection, sourceOf } from './domain.mjs';
 import { applyCollectionRows, identifyRows } from './preferences.mjs';
 
 export function applyCollectionResult(state: State, job: Job): State {
@@ -9,13 +9,17 @@ export function applyCollectionResult(state: State, job: Job): State {
   if (applied?.[job.source] === job.id || state.metadata.lastAppliedCollection === job.id) return state;
   const result = job.result;
   const merged = mergeCollection(state.rows, result.rows, { source: job.source, profile: job.profile, processedReceipts: result.processedReceipts });
+  const inProfile = (row: State['rows'][number]) => sourceOf(row) === job.source && (row.profile || 'personal') === job.profile;
+  const stats = { ...result.stats, appliedRowsBefore: state.rows.filter(inProfile).length, appliedRowsReceived: result.rows.length,
+    appliedRowsAfter: merged.filter(inProfile).length,
+    appliedArchivedRowsBefore: Array.isArray(state.settlementOriginals) ? state.settlementOriginals.filter(inProfile).length : 0 };
   const previous = state.metadata.collection as { sources?: string[]; stats?: Record<string, unknown>; warnings?: string[] } | undefined;
   return { ...applyCollectionRows(state, identifyRows(merged)), metadata: {
     ...state.metadata, appliedCollections: { ...applied, [job.source]: job.id }, lastAppliedCollection: job.id, lastRunAt: job.updatedAt,
     collection: {
       ...previous,
       sources: [...new Set([...(previous?.sources || []), job.source])],
-      stats: { ...previous?.stats, [job.source]: result.stats },
+      stats: { ...previous?.stats, [job.source]: stats },
       warnings: [...(previous?.warnings || []).filter(text => !text.startsWith(SOURCES[job.source].name)), ...result.warnings],
     },
   } };
