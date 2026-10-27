@@ -126,22 +126,31 @@ function predecessor(row) {
 }
 const predecessorKey = value => JSON.stringify([value.receipt, value.item]);
 const settlementDate = row => String(row.date).replace('T', ' ').slice(0, 16);
+const settlementContent = row => JSON.stringify([sourceOf(row), row.profile || 'personal', normalizedText(row.title), moneyMinor(row.amount), currencyOf(row)]);
+const finalReceiptIdentity = row => JSON.stringify([receiptKey(row), row.item_index, settlementContent(row), String(row.date).slice(0, 10)]);
 
 export function reconcileSettlementReceipts(input, activeReceipts) {
-  const rows = input.map(row => ({ ...row })), groups = new Map(), removed = new Set();
+  const rows = input.map(row => ({ ...row })), groups = new Map(), linked = new Map(), removed = new Set();
   for (const row of rows) {
     const signature = settlementSignature(row);
     if (!signature || settlementKind(row) !== 'full') continue;
     if (!groups.has(signature)) groups.set(signature, []);
     groups.get(signature).push(row);
+    const previous = predecessor(row);
+    if (previous) {
+      const key = JSON.stringify([predecessorKey(previous), settlementContent(row)]);
+      if (!linked.has(key)) linked.set(key, []);
+      linked.get(key).push(row);
+    }
   }
   for (const early of rows) {
     const signature = settlementSignature(early);
     if (!signature || settlementKind(early) !== 'prepayment') continue;
     const identity = predecessorKey({ receipt: settlementIdentity(early), item: early.item_index });
-    const candidates = groups.get(signature) || [];
-    const known = candidates.find(row => predecessor(row) && predecessorKey(predecessor(row)) === identity);
-    const final = (known ? [known] : candidates).find(row => {
+    // A saved fiscal link survives mutable provider order aliases; new pairs still require an order match.
+    const known = linked.get(JSON.stringify([identity, settlementContent(early)]));
+    const candidates = known || groups.get(signature) || [];
+    const final = candidates.find(row => {
       if (activeReceipts && !activeReceipts.has(receiptKey(early)) && !activeReceipts.has(receiptKey(row))) return false;
       if (settlementIdentity(row) === settlementIdentity(early) || settlementDate(early) > settlementDate(row)) return false;
       const previous = predecessor(row);
@@ -169,11 +178,11 @@ export function mergeCollection(existing, incoming, { source, profile = 'persona
   if (!Object.hasOwn(SOURCES, source)) throw new TypeError('Неизвестный магазин.');
   if (incoming.some(row => sourceOf(row) !== source)) throw new TypeError('В результате смешаны разные магазины.');
   const priorFinals = new Map(existing.filter(row => predecessor(row) && settlementSignature(row) && settlementKind(row) === 'full')
-    .map(row => [JSON.stringify([receiptKey(row), row.item_index, settlementSignature(row)]), row]));
+    .map(row => [finalReceiptIdentity(row), row]));
   const additions = incoming.map(row => {
     const addition = { ...row, source, profile };
-    const previous = priorFinals.get(JSON.stringify([receiptKey(addition), addition.item_index, settlementSignature(addition)]));
-    return previous ? { ...previous, ...addition, settlement_predecessor: previous.settlement_predecessor } : addition;
+    const previous = settlementSignature(addition) && settlementKind(addition) === 'full' ? priorFinals.get(finalReceiptIdentity(addition)) : undefined;
+    return previous ? { ...previous, ...addition, rowId: previous.rowId, settlement_predecessor: previous.settlement_predecessor } : addition;
   });
   const incomingReceipts = new Set(additions.map(receiptKey).filter(Boolean));
   for (const identity of processedReceipts) {

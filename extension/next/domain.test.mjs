@@ -98,6 +98,40 @@ for (const source of ['ozon', 'yandex']) {
     assert.equal(result.find(row => row.rowId === 'final-b').settlement_predecessor.rowId, 'pre-b');
     assert.deepEqual(settlementReplacements(result), { 'pre-a': 'final', 'pre-b': 'final-b' });
   });
+  test(`${source}: fiscal identity keeps a consumed final and its annotations across order aliases`, () => {
+    const pre = receipt('pre-a', 'prepayment', { date: '2026-01-01' });
+    const final = receipt('final', 'full', { note: 'keep', futureField: { keep: true } });
+    const accepted = collect(collect([], [pre]), [final]);
+    const refreshed = receipt('refreshed', 'full', { receipt_url: final.receipt_url, marketplace_id: 'new-alias:receipt', [`${source}_order_id`]: 'new-alias' });
+    let result = collect(accepted, [refreshed]);
+    assert.equal(result[0].rowId, 'final');
+    assert.equal(result[0].note, 'keep');
+    assert.deepEqual(result[0].futureField, { keep: true });
+    assert.deepEqual(result[0].settlement_predecessor, accepted[0].settlement_predecessor);
+    const precise = collect(accepted, [{ ...refreshed, date: `${final.date.slice(0, 10)}T12:00:00Z` }]);
+    assert.equal(precise[0].rowId, 'final', 'Adding time precision does not change fiscal item identity');
+    assert.deepEqual(precise[0].settlement_predecessor, accepted[0].settlement_predecessor);
+    for (const alias of ['order', 'new-alias']) {
+      result = collect(result, [{ ...pre, rowId: 'reread-pre', [`${source}_order_id`]: alias }]);
+      assert.deepEqual(result.map(row => row.rowId), ['final']);
+    }
+    for (const changed of [{ amount: '101.00' }, { currency: 'USD' }, { title: 'Different item' }, { item_index: '2' }, { date: '2026-03-01' }, { parse_quality: 'unverified' }, { type: 'refund', amount: '-100.00' }]) {
+      assert.equal(collect(result, [{ ...pre, ...changed, [`${source}_order_id`]: 'new-alias' }]).length, 2);
+    }
+    assert.equal(collect(result, [pre], { profile: 'work' }).length, 2);
+    const untouched = [...result, { ...pre, [`${source}_order_id`]: 'new-alias' }];
+    const unrelated = receipt('unrelated', 'full', { [`${source}_order_id`]: 'unrelated-order' });
+    assert.equal(collect(untouched, [unrelated]).length, 3, 'Only an updated receipt can trigger reconciliation');
+    const repeat = receipt('pre-b', 'prepayment', { date: '2026-01-01', [`${source}_order_id`]: 'new-alias' });
+    result = collect(result, [repeat]);
+    assert.deepEqual(result.map(row => row.rowId), ['final', 'pre-b']);
+    assert.equal(summarize(result).net, 20000);
+    for (const changed of [{ amount: '101.00' }, { title: 'Different item' }, { item_index: '2' }, { date: '2026-02-02' }, { parse_quality: 'unverified' }]) {
+      const replacement = collect(accepted, [{ ...refreshed, ...changed }]).find(row => row.rowId === 'refreshed');
+      assert.ok(replacement);
+      assert.equal(Object.hasOwn(replacement, 'settlement_predecessor'), false);
+    }
+  });
   test(`${source}: partial batches preserve other profiles, refunds, sparse and unrelated history`, () => {
     const legacy = receipt('legacy', 'prepayment', { [`${source}_order_id`]: undefined });
     const unknown = receipt('unknown', 'unknown');
