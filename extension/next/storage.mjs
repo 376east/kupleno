@@ -224,6 +224,9 @@ function validateState(state) {
   }
   if (state.rows.length > MAX_ROWS) throw storageError('TOO_MANY_ROWS', 'Слишком много покупок.');
   validateJson(state);
+  if (own(state, 'settlementOriginals') && (!Array.isArray(state.settlementOriginals) || state.settlementOriginals.some(row => !isPlainObject(row)))) {
+    throw storageError('INVALID_STATE', 'Некорректный архив исходных строк чеков.');
+  }
   validateSettings(state.settings);
   const collection = state.metadata.collection;
   if (collection != null) {

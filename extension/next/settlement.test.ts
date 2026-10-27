@@ -54,19 +54,34 @@ for (const source of ['yandex', 'ozon'] as const) {
     let effective = effectiveRows(state)[0]!;
     assert.equal(effective.note, pre.note); assert.equal(effective.category, pre.category); assert.equal(effective.excluded, true);
     assert.equal(summarize(effectiveRows(state)).net, 0);
-    assert.deepEqual((state.rows[0]!.settlement_predecessor as { original: Purchase }).original.extraUserJson, pre.extraUserJson);
+    assert.deepEqual((state.settlementOriginals as Purchase[])[0]!.extraUserJson, pre.extraUserJson);
     state.rows[0]!.finalUserJson = { keep: true };
     state = parseBackup(serializeBackup(state)).state;
     state = collect(state, parse(source, 'final', 'full', [items[0]!]), source);
     effective = effectiveRows(state)[0]!;
     assert.equal(effective.note, pre.note); assert.equal(effective.category, pre.category); assert.equal(effective.excluded, true);
     assert.equal(summarize(effectiveRows(state)).net, 0);
-    assert.deepEqual((state.rows[0]!.settlement_predecessor as { original: Purchase }).original.extraUserJson, pre.extraUserJson);
+    assert.deepEqual((state.settlementOriginals as Purchase[])[0]!.extraUserJson, pre.extraUserJson);
     assert.deepEqual(state.rows[0]!.finalUserJson, { keep: true });
     const finalId = state.rows[0]!.rowId;
     const existingEdit = collect({ ...initial, settings: { overrides: { [finalId]: { note: 'Правка итогового чека', category: 'Приоритетная категория', excluded: false } } } }, parse(source, 'final', 'full', [items[0]!]), source);
     assert.equal(effectiveRows(existingEdit)[0]!.note, 'Правка итогового чека');
     assert.equal(effectiveRows(existingEdit)[0]!.excluded, false);
     }
+  });
+
+  test(`${source}: archiving keeps the accepted JSON depth and old nested snapshots migrate`, () => {
+    let extra: unknown = 'keep';
+    for (let i = 0; i < 16; i++) extra = { child: extra };
+    const pre = { ...parse(source, 'deep-pre', 'prepayment', [items[0]!])[0]!, extra };
+    const initial = parseBackup(serializeBackup({ rows: [pre], settings: {}, metadata: {} })).state;
+    const next = collect(initial, parse(source, 'deep-final', 'full', [items[0]!]), source);
+    assert.deepEqual(parseBackup(serializeBackup(next)).state.settlementOriginals, [pre]);
+    const shallow = parse(source, 'legacy-pre', 'prepayment', [items[0]!])[0]!;
+    const final = parse(source, 'legacy-final', 'full', [items[0]!])[0]!;
+    const legacy = { rows: [{ ...final, settlement_predecessor: { receipt: shallow.receipt_url, item: shallow.item_index, rowId: shallow.rowId, original: shallow } }], settings: {}, metadata: {} };
+    const migrated = collect(legacy, [final], source);
+    assert.deepEqual(migrated.settlementOriginals, [shallow]);
+    assert.equal(Object.hasOwn(migrated.rows[0]!.settlement_predecessor as object, 'original'), false);
   });
 }

@@ -27,6 +27,17 @@ test('v2 export round-trips unknown fields and exact amount', () => {
   assert.equal(parsed.state.rows[0].amount, '001.50');
 });
 
+test('settlement archive validates its container and preserves original JSON in v2', () => {
+  for (const settlementOriginals of [null, {}, 'broken', [null], [true], [[]]]) {
+    const sample = { ...state, settlementOriginals };
+    const backup = { format: 'kupleno-backup', version: 2, state: sample };
+    assert.throws(() => parseBackup(JSON.stringify(backup)), error => error.code === 'INVALID_STATE');
+    assert.throws(() => serializeBackup(sample), error => error.code === 'INVALID_STATE');
+  }
+  const sample = { ...state, settlementOriginals: [{ ...state.rows[0], future: { keep: ['original'] } }] };
+  assert.deepEqual(parseBackup(serializeBackup(sample)).state, sample);
+});
+
 test('v1 backup remains readable without changing purchase fields', () => {
   const v1 = JSON.stringify({
     format: 'kupleno-backup',

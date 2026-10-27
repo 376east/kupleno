@@ -112,6 +112,15 @@ export function removeProfile(state, id) {
 
 export function applyCollectionRows(state, rows) {
   rows = rows.map(row => ({ ...row }));
+  const originals = [...(state.settlementOriginals || [])];
+  for (const row of rows) {
+    const link = row.settlement_predecessor;
+    if (link?.original && typeof link.original.rowId === 'string') {
+      originals.push(structuredClone(link.original));
+      const { original, ...reference } = link;
+      row.settlement_predecessor = reference;
+    }
+  }
   const replacements = settlementReplacements(rows);
   const settings = structuredClone(state.settings);
   const currentRows = new Map(rows.map(row => [row.rowId, row]));
@@ -136,12 +145,12 @@ export function applyCollectionRows(state, rows) {
       settings.overrides[current] = { ...patch, ...settings.overrides[current] };
     }
     // The original fiscal row can contain supported annotations or future JSON fields.
-    finalRow.settlement_predecessor = { ...link, original: structuredClone(oldRow) };
+    originals.push(structuredClone(oldRow));
     for (const key of ['refundClaims', 'warranties']) for (const record of settings[key] || []) {
       if (record.rowId === previous) record.rowId = current;
     }
   }
-  return { ...state, rows, settings };
+  return { ...state, rows, settings, ...(originals.length ? { settlementOriginals: originals } : {}) };
 }
 
 export const budgetKey = (month, profile = 'all') => profile === 'all' ? month : `${profile}\u0001${month}`;
