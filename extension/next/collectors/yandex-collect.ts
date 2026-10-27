@@ -87,30 +87,38 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
   const receipts = new Map<string, { id: string; url: string; orderId: string; type: string; date?: string }>();
   let checked = 0;
   await mapConcurrent([...orderIds], 4, async orderId => {
-    let found = false, errored = false, invalidReceipt = false;
+    let found = false;
+    const validIds = new Set<string>(), unresolved = new Map<string, Error>(), resolverErrors: unknown[] = [];
     for (const archived of [false, true]) {
       try {
         const data = resultData(await resolve(receiptResolver, [{ orderId: Number(orderId), archived }]));
         if (!Array.isArray(data.result)) throw new Error('Список чеков заказа не распознан.');
         const collection = object(object(data.collections).orderReceipt);
         for (const receiptId of data.result) {
-          const receipt = object(collection[String(receiptId)]);
-          if (typeof receipt.fiscalUrl !== 'string' || !receipt.fiscalUrl.trim()) { invalidReceipt = true; rememberFailure(new Error('Магазин не предоставил ссылку на часть чеков.')); continue; }
+          const id = String(receiptId), receipt = object(collection[id]);
+          if (typeof receipt.fiscalUrl !== 'string' || !receipt.fiscalUrl.trim()) {
+            if (!validIds.has(id)) unresolved.set(id, new Error('Магазин не предоставил ссылку на часть чеков.'));
+            continue;
+          }
           let url: string;
           try { url = safeReceipt(receipt.fiscalUrl); }
           catch {
-            invalidReceipt = true;
-            rememberFailure(new Error('Магазин предоставил некорректную ссылку на часть чеков.'));
+            if (!validIds.has(id)) unresolved.set(id, new Error('Магазин предоставил некорректную ссылку на часть чеков.'));
             continue;
           }
           const created = typeof receipt.createdAt === 'number' ? new Date(receipt.createdAt < 1e12 ? receipt.createdAt * 1000 : receipt.createdAt) : null;
           receipts.set(url, { id: String(receipt.id || receiptId), url, orderId, type: String(receipt.type || ''), date: created && Number.isFinite(created.valueOf()) ? created.toISOString() : undefined });
+          validIds.add(id); unresolved.delete(id);
           found = true; cap(receipts.size);
         }
-        if (found && !invalidReceipt) break;
-      } catch (e) { if (options.signal?.aborted || (e as { code?: string }).code === 'ROW_LIMIT_EXCEEDED') throw e; errored = true; rememberFailure(e); }
+        if (found && !unresolved.size) break;
+      } catch (e) { if (options.signal?.aborted || (e as { code?: string }).code === 'ROW_LIMIT_EXCEEDED') throw e; resolverErrors.push(e); }
     }
-    if (invalidReceipt || (errored && !found)) failedOrders++;
+    if (unresolved.size || (resolverErrors.length && !found)) {
+      failedOrders++;
+      for (const error of unresolved.values()) rememberFailure(error);
+      for (const error of resolverErrors) rememberFailure(error);
+    }
     await options.onProgress?.({ done: ++checked, total: orderIds.size, message: `Яндекс Маркет: проверено ${checked} из ${orderIds.size} заказов.` });
   }, options.signal);
   let rowCount = 0;

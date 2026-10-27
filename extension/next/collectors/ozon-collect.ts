@@ -77,7 +77,7 @@ export async function collectOzon(options: { fetch: typeof fetch; readPdf: (byte
         if (response.url) safeUrl(response.url);
         const body = await response.text(); if (body.length > 8 * 1024 * 1024) throw new Error('Слишком большой ответ.');
         const page = ozonList(body);
-        if (!page.records.length && !page.next && !page.knownShape) throw new Error('Формат списка не распознан; проверьте вход в магазин.');
+        if (!page.records.length && !page.next && !page.knownShape) throw new Error('Неизвестный формат ответа списка чеков.');
         if (page.knownShape && !page.records.length) emptyKnown++;
         for (const receipt of page.records) receipts.set(receipt.id, receipt);
         cap(receipts.size);
@@ -91,7 +91,8 @@ export async function collectOzon(options: { fetch: typeof fetch; readPdf: (byte
           incomplete = true; warnings.push(`Ozon: ${e.message}`);
           break;
         }
-        incomplete = true; warnings.push(`Ozon: список получен не полностью (${e instanceof Error ? e.message : 'ошибка ответа'}).`); break;
+        const section = start.includes('archive=1') ? 'архив' : 'текущие чеки';
+        incomplete = true; warnings.push(`Ozon: список получен не полностью (${section}, страница ${count}: ${e instanceof Error ? e.message : 'ошибка ответа'}).`); break;
       }
     }
   }

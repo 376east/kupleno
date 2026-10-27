@@ -83,6 +83,21 @@ test('Ozon retains parsed receipts and reports partial PDF failure', async () =>
   const result = await collectOzon({ fetch, readPdf });
   assert.equal(result.rows.length, 1); assert.equal(result.stats.failedReceipts, 1); assert.ok(result.warnings.some(text => text.includes('HTTP 500: 1')));
 });
+
+test('unknown terminal list responses identify each section without declaring the history complete', async () => {
+  const result = await collectOzon({ fetch: async input => {
+    const url = new URL(String(input));
+    if (url.pathname.includes('downloadCheque')) return new Response('pdf');
+    if (url.pathname.includes('entrypoint')) return new Response(JSON.stringify({ unexpected: 'private-token' }));
+    return new Response(page(['a'], `/my/e-check?page=2${url.searchParams.has('archive') ? '&archive=1' : ''}`));
+  }, readPdf });
+  assert.equal(result.stats.incomplete, true);
+  assert.equal(result.rows.length, 1);
+  assert.equal(result.warnings.length, 2);
+  assert.match(result.warnings[0]!, /текущие чеки, страница 2/);
+  assert.match(result.warnings[1]!, /архив, страница 2/);
+  assert.doesNotMatch(result.warnings.join(' '), /проверьте вход|private-token/);
+});
 test('Ozon distinguishes known empty history from login and all-PDF failure', async () => {
   assert.equal((await collectOzon({ fetch: async () => new Response(page([])), readPdf })).rows.length, 0);
   await assert.rejects(collectOzon({ fetch: async () => new Response('<html>Войти</html>'), readPdf }), /не полностью/);

@@ -130,6 +130,35 @@ test('missing receipt URL does not discard subsequent receipts of the same order
   assert.match(result.warnings.join(' '), /не предоставил ссылку/);
 });
 
+test('archived URL recovery clears only the matching receipt failure', async () => {
+  for (const fiscalUrl of [undefined, 'https://example.com/private-check']) {
+    for (const unrecovered of [false, true]) {
+      const archivedRequests: boolean[] = [];
+      const result = await collectYandex({ fetch: async (input, init) => {
+        const url = new URL(String(input));
+        if (url.pathname === '/my/orders') return new Response('');
+        if (url.searchParams.get('r')?.includes('resolveConsolidationOrders')) return orderList([123456]);
+        if (url.hostname === 'check.yandex.ru') return new Response(receipt);
+        const { archived } = JSON.parse(String(init?.body)).params[0];
+        archivedRequests.push(archived);
+        return envelope({ result: archived ? ['r'] : ['r', ...(unrecovered ? ['missing'] : [])], collections: { orderReceipt: {
+          r: { fiscalUrl: archived ? 'https://check.yandex.ru/recovered' : fiscalUrl, createdAt: 1767225600 },
+          ...(unrecovered ? { missing: {} } : {}),
+        } } });
+      } });
+      assert.deepEqual(archivedRequests, [false, true]);
+      assert.equal(result.rows.length, 1);
+      assert.equal(result.stats.receipts, 1);
+      assert.equal(result.stats.failedOrders, unrecovered ? 1 : 0);
+      assert.equal(result.stats.failedReceipts, 0);
+      if (unrecovered) {
+        assert.match(result.warnings.join(' '), /не предоставил ссылку/);
+        assert.doesNotMatch(result.warnings.join(' '), /некорректную ссылку/);
+      } else assert.deepEqual(result.warnings, []);
+    }
+  }
+});
+
 test('repeated cursor with hasNext true stops and marks history incomplete', async () => {
   let pages = 0;
   const result = await collectYandex({ fetch: async input => {
