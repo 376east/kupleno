@@ -78,14 +78,14 @@ flowchart TB
 | Параметр | Состояние |
 | --- | --- |
 | Стадия | В разработке. [План](PLAN.md). |
-| Версия | 0.22.2, preview. [extension/next/package.json](extension/next/package.json). |
+| Версия | 0.22.3, preview. [extension/next/package.json](extension/next/package.json). |
 | Лицензия | MIT. [LICENSE](LICENSE). |
 
 ### Ограничения
 
-Основная ветка `main` содержит новый предпросмотр **0.22.2**. Старый опубликованный код сохранён тегом [archive/pre-021-20261004](https://github.com/malyarq/kupleno/tree/archive/pre-021-20261004). [Точный откат](docs/PREVIEW.md#откат-основной-ветки).
+Основная ветка `main` содержит новый предпросмотр **0.22.3**. Старый опубликованный код сохранён тегом [archive/pre-021-20261004](https://github.com/malyarq/kupleno/tree/archive/pre-021-20261004). [Точный откат](docs/PREVIEW.md#откат-основной-ветки).
 
-- `extension/next` - новый предпросмотр [0.22.2](extension/next/package.json). Его проверяют команды `preview:*`.
+- `extension/next` - новый предпросмотр [0.22.3](extension/next/package.json). Его проверяют команды `preview:*`.
 - `extension` без `next` - архивная реализация. Текущая версия исходников: `0.19.2` (только архив). Её версия хранится в [manifest](extension/manifest.json), а команды `verify:*` и старый выпуск ZIP относятся именно к ней. [Архивная документация](docs/README.md#архив-0192).
 
 Не собирайте новый продукт старым упаковщиком: он намеренно берёт только файлы прежней версии. Публикация кода предпросмотра не означает новый стабильный Release или выпуск в магазине расширений.
