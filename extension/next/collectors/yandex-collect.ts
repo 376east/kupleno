@@ -28,6 +28,11 @@ function resultData(payload: unknown, diagnostics: Record<string, number>, index
     if (value && typeof value === 'object' && !Array.isArray(value)) diagnostics.responseEmptyData!++;
     else {
       diagnostics.responseMalformedData!++;
+      if (payload === null) diagnostics.responseRootNull!++;
+      else if (Array.isArray(payload)) diagnostics.responseRootArray!++;
+      else if (typeof payload !== 'object') diagnostics.responseRootPrimitive!++;
+      else if (!Object.keys(root).length) diagnostics.responseRootEmpty!++;
+      if (Object.hasOwn(root, 'errors')) diagnostics.responseRootErrorsField!++;
       const raw = Object.hasOwn(entry, 'data') ? entry.data : index === 0 ? root.data : undefined;
       const counter = raw === undefined ? 'responseDataMissing' : raw === null ? 'responseDataNull' : Array.isArray(raw) ? 'responseDataArray' : 'responseDataPrimitive';
       diagnostics[counter]!++;
@@ -53,6 +58,7 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
   };
   let pages = 0, incomplete = false, failedOrders = 0;
   const diagnostics = { responseRootErrors: 0, responseEntryErrors: 0, responseEmptyData: 0, responseMalformedData: 0, responseMalformedResult: 0,
+    responseRootNull: 0, responseRootArray: 0, responseRootPrimitive: 0, responseRootEmpty: 0, responseRootErrorsField: 0,
     responseDataMissing: 0, responseDataNull: 0, responseDataArray: 0, responseDataPrimitive: 0, responseResultsMissing: 0, responseResultsEmpty: 0, responseResultsMalformed: 0,
     resolverNotFoundErrors: 0, resolverForbiddenErrors: 0, resolverUnauthorizedErrors: 0, resolverRateLimitErrors: 0, resolverOtherErrors: 0,
     missingUrlOrders: 0, unsafeUrlOrders: 0, responseErrorOrders: 0, noReceiptOrders: 0 };
