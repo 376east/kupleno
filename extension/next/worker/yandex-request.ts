@@ -14,12 +14,16 @@ export async function yandexRequest(input: unknown, body: unknown, tabId?: numbe
   const resolver = url.searchParams.get('r') || '';
   if (url.origin !== 'https://market.yandex.ru' || url.pathname !== '/api/resolve/' || url.username || url.password || !resolvers.has(resolver)) throw new Error('Запрос к магазину не разрешён.');
   const request = JSON.parse(body);
-  if (request.path !== '/my/orders?filter=COMPLETED' || !Array.isArray(request.params) || request.params.length !== 1) throw new Error('Неизвестный запрос истории.');
+  if (request.path !== '/my/orders?filter=COMPLETED' || !Array.isArray(request.params) || request.params.length < 1 || request.params.length > 8) throw new Error('Неизвестный запрос истории.');
   const params = request.params[0];
   if (!params || typeof params !== 'object') throw new Error('Некорректные параметры истории.');
   if (resolver.includes('resolveOrderReceiptsByOrderId')) {
-    if (!Number.isSafeInteger(params.orderId) || params.orderId <= 0 || typeof params.archived !== 'boolean' || Object.keys(params).some(key => !['orderId','archived'].includes(key))) throw new Error('Некорректный номер заказа.');
-  } else if (params.filter !== 'COMPLETED' || params.size !== 18 || (params.pageToken !== undefined && (typeof params.pageToken !== 'string' || params.pageToken.length > 8000)) || Object.keys(params).some(key => !['filter','size','pageToken'].includes(key))) throw new Error('Некорректная страница истории.');
+    const ids = new Set<number>();
+    for (const item of request.params) {
+      if (!item || typeof item !== 'object' || Array.isArray(item) || !Number.isSafeInteger(item.orderId) || item.orderId <= 0 || typeof item.archived !== 'boolean' || item.archived !== params.archived || ids.has(item.orderId) || Object.keys(item).some(key => !['orderId','archived'].includes(key))) throw new Error('Некорректный номер заказа.');
+      ids.add(item.orderId);
+    }
+  } else if (request.params.length !== 1 || params.filter !== 'COMPLETED' || params.size !== 18 || (params.pageToken !== undefined && (typeof params.pageToken !== 'string' || params.pageToken.length > 8000)) || Object.keys(params).some(key => !['filter','size','pageToken'].includes(key))) throw new Error('Некорректная страница истории.');
   const tab = tabId === undefined ? null : await browser.tabs.get(tabId).catch(() => null);
   if (!tab?.url || new URL(tab.url).origin !== 'https://market.yandex.ru') throw new Error('Вкладка сбора Яндекс Маркета закрыта или открыта другая страница. Повторите сбор.');
   const executions = await withDeadline(browser.scripting.executeScript({ target: { tabId: tabId! }, world: 'MAIN', args: [resolver, body], func: async (resolver: string, body: string) => {

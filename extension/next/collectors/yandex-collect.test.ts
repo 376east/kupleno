@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { collectYandex } from './yandex-collect.ts';
 import { mergeCollection, summarize } from '../domain.mjs';
 const envelope = (data: unknown) => new Response(JSON.stringify({ results: [{ data }] }));
+const batchEnvelope = (data: unknown[]) => new Response(JSON.stringify({ results: data.map(data => ({ data })) }));
 const orderList = (ids: number[]) => envelope({ result: 'list', collections: { orderConsolidationResult: { list: { ordersGroupsIds: ids, hasNext: false } } } });
 const receipt = '<table><tr><td>1</td><td>Книга</td><td>1</td><td>100,00</td></tr><tr><td>ИТОГ</td><td>100,00</td></tr></table>';
 
@@ -19,7 +20,7 @@ test('initial HTML without pagination metadata still enumerates all API pages', 
         ? { ordersGroupsIds: [345678], hasNext: false }
         : { ordersGroupsIds: [123456, 234567], pageToken: 'next', hasNext: true } } } });
     }
-    return envelope({ result: ['r'], collections: { orderReceipt: { r: { fiscalUrl: `https://check.yandex.ru/${params.orderId}`, createdAt: 1767225600 } } } });
+    return batchEnvelope(JSON.parse(String(init?.body)).params.map((param: { orderId: number }) => ({ result: ['r'], collections: { orderReceipt: { r: { fiscalUrl: `https://check.yandex.ru/${param.orderId}`, createdAt: 1767225600 } } } })));
   } });
   assert.deepEqual(tokens, [undefined, 'next']);
   assert.equal(result.stats.pages, 2);
@@ -29,19 +30,105 @@ test('initial HTML without pagination metadata still enumerates all API pages', 
   assert.deepEqual(result.warnings, []);
 });
 
-test('Yandex loads four orders and four receipts concurrently', async () => {
+test('Yandex loads at most two batches of eight orders and four receipts concurrently', async () => {
   const active={orders:0,receipts:0}, peak={orders:0,receipts:0};
   const result=await collectYandex({fetch:async(input,init)=>{
     const url=new URL(String(input));
-    if(url.pathname==='/my/orders') return new Response(Array.from({length:6},(_,i)=>`<a href="/my/order/${123456+i}">Order</a>`).join(''));
-    if(url.searchParams.get('r')?.includes('resolveConsolidationOrders')) return orderList(Array.from({length:6},(_,i)=>123456+i));
+    if(url.pathname==='/my/orders') return new Response(Array.from({length:20},(_,i)=>`<a href="/my/order/${123456+i}">Order</a>`).join(''));
+    if(url.searchParams.get('r')?.includes('resolveConsolidationOrders')) return orderList(Array.from({length:20},(_,i)=>123456+i));
     const kind=url.hostname==='check.yandex.ru'?'receipts':'orders';
     peak[kind]=Math.max(peak[kind],++active[kind]); await new Promise(resolve=>setTimeout(resolve,10)); active[kind]--;
     if(kind==='receipts') return new Response(receipt);
-    const orderId=JSON.parse(String(init?.body)).params[0].orderId;
-    return envelope({result:['r'],collections:{orderReceipt:{r:{id:orderId,fiscalUrl:`https://check.yandex.ru/${orderId}`,createdAt:1767225600}}}});
+    const params=JSON.parse(String(init?.body)).params;
+    assert.ok(params.length <= 8);
+    return batchEnvelope(params.map(({orderId}: {orderId: number}) => ({result:['r'],collections:{orderReceipt:{r:{id:orderId,fiscalUrl:`https://check.yandex.ru/${orderId}`,createdAt:1767225600}}}})));
   }});
-  assert.deepEqual(peak,{orders:4,receipts:4}); assert.equal(result.rows.length,6); assert.equal(result.stats.failedOrders,0);
+  assert.deepEqual(peak,{orders:2,receipts:4}); assert.equal(result.rows.length,20); assert.equal(result.stats.failedOrders,0);
+  assert.equal(result.stats.receiptMetadataRequests, 3);
+  assert.equal(result.stats.receiptMetadataOrdersRequested, 20);
+});
+
+test('receipt batches keep indexed order identity and archive only empty or unresolved orders', async () => {
+  const requests: Array<Array<{ orderId: number; archived: boolean }>> = [];
+  const ids = Array.from({ length: 10 }, (_, index) => 123456 + index);
+  const result = await collectYandex({ fetch: async (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname === '/my/orders') return new Response('');
+    if (url.hostname === 'check.yandex.ru') return new Response(receipt);
+    if (url.searchParams.get('r')?.includes('resolveConsolidationOrders')) return orderList(ids);
+    const params: Array<{ orderId: number; archived: boolean }> = JSON.parse(String(init?.body)).params;
+    requests.push(params);
+    return batchEnvelope(params.map(({ orderId, archived }) => {
+      if (orderId === ids[8]) return { result: [], collections: {} };
+      return { result: ['same-key'], collections: { orderReceipt: { 'same-key': {
+        id: String(orderId), createdAt: 1767225600, ...(orderId === ids[9] && !archived ? {} : { fiscalUrl: `https://check.yandex.ru/${orderId}` }),
+      } } } };
+    }));
+  } });
+  assert.deepEqual(requests.map(params => params.length), [8, 2, 2]);
+  assert.deepEqual(requests[2], ids.slice(8).map(orderId => ({ orderId, archived: true })));
+  assert.equal(result.rows.length, 9);
+  for (const row of result.rows) assert.ok(row.receipt_url?.endsWith('/' + row.yandex_order_id));
+  assert.equal(result.stats.failedOrders, 0);
+  assert.equal(result.stats.noReceiptOrders, 1);
+  assert.equal(result.stats.missingUrlOrders, 0);
+  assert.equal(result.stats.receiptMetadataRequests, 3);
+  assert.equal(result.stats.receiptMetadataOrdersRequested, 12);
+});
+
+test('a single receipt request retains the established root.data response contract', async () => {
+  for (const results of [undefined, [], [{}], [null]]) {
+  const result = await collectYandex({ fetch: async input => {
+    const url = new URL(String(input));
+    if (url.pathname === '/my/orders') return new Response('');
+    if (url.hostname === 'check.yandex.ru') return new Response(receipt);
+    if (url.searchParams.get('r')?.includes('resolveConsolidationOrders')) return orderList([123456]);
+    return new Response(JSON.stringify({ results, data: { result: ['r'], collections: { orderReceipt: { r: { fiscalUrl: 'https://check.yandex.ru/123456', createdAt: 1767225600 } } } } }));
+  } });
+  assert.equal(result.rows.length, 1);
+  assert.equal(result.stats.failedOrders, 0);
+  assert.equal(result.stats.receiptMetadataRequests, 1);
+  assert.deepEqual(result.warnings, []);
+  }
+});
+
+test('an entry error takes priority over the single root.data fallback', async () => {
+  let receiptRequests = 0;
+  await assert.rejects(collectYandex({ fetch: async input => {
+    const url = new URL(String(input));
+    if (url.pathname === '/my/orders') return new Response('');
+    if (url.hostname === 'check.yandex.ru') { receiptRequests++; return new Response(receipt); }
+    if (url.searchParams.get('r')?.includes('resolveConsolidationOrders')) return orderList([123456]);
+    return new Response(JSON.stringify({ results: [{ error: { code: 'FORBIDDEN' } }],
+      data: { result: ['r'], collections: { orderReceipt: { r: { fiscalUrl: 'https://check.yandex.ru/123456', createdAt: 1767225600 } } } } }));
+  } }), /неизвестный формат/);
+  assert.equal(receiptRequests, 0);
+});
+
+test('malformed batch cardinality or missing entries never shift another orders receipt', async () => {
+  for (const mode of ['short', 'extra', 'missing-entry', 'missing-data', 'root-data']) {
+    const ids = Array.from({ length: 10 }, (_, index) => 123456 + index);
+    const result = await collectYandex({ fetch: async (input, init) => {
+      const url = new URL(String(input));
+      if (url.pathname === '/my/orders') return new Response('');
+      if (url.hostname === 'check.yandex.ru') return new Response(receipt);
+      if (url.searchParams.get('r')?.includes('resolveConsolidationOrders')) return orderList(ids);
+      const params: Array<{ orderId: number; archived: boolean }> = JSON.parse(String(init?.body)).params;
+      const data = (orderId: number) => ({ result: ['r'], collections: { orderReceipt: { r: { id: orderId, fiscalUrl: `https://check.yandex.ru/${orderId}`, createdAt: 1767225600 } } } });
+      if (params[0]!.archived) return batchEnvelope(params.map(() => ({ result: [], collections: {} })));
+      if (params[0]!.orderId === ids[0]) return batchEnvelope(params.map(({ orderId }) => data(orderId)));
+      const second = { data: data(ids[9]!) };
+      const results = mode === 'short' ? [second] : mode === 'extra' ? [second, second, second] : [mode === 'missing-entry' ? null : {}, second];
+      return new Response(JSON.stringify({ results, ...(mode === 'root-data' ? { data: data(ids[8]!) } : {}) }));
+    } });
+    const validSecond = ['missing-entry', 'missing-data', 'root-data'].includes(mode);
+    assert.equal(result.rows.length, validSecond ? 9 : 8, mode);
+    assert.equal(result.stats.failedOrders, validSecond ? 1 : 2, mode);
+    assert.ok(!result.rows.some(row => row.yandex_order_id === String(ids[8])), mode);
+    const secondRows = result.rows.filter(row => row.yandex_order_id === String(ids[9]));
+    assert.equal(secondRows.length, validSecond ? 1 : 0, mode);
+    assert.ok(secondRows.every(row => row.receipt_url?.endsWith('/' + ids[9])), mode);
+  }
 });
 test('Yandex resolver contracts, pagination, archive fallback and fiscal URLs', async () => {
   const queried: Array<{ orderId: number; archived: boolean }> = []; let pages = 0;
@@ -59,9 +146,11 @@ test('Yandex resolver contracts, pagination, archive fallback and fiscal URLs', 
         : { ordersGroupsIds: [234567], pageToken: '', hasNext: false } } } });
     }
     assert.match(url.searchParams.get('r') || '', /resolveOrderReceiptsByOrderId/);
-    const params = body.params[0]; queried.push(params);
-    if (params.orderId === 234567 && !params.archived) return envelope({ result: [], collections: {} });
-    return envelope({ result: ['fiscal'], collections: { orderReceipt: { fiscal: { id: `r${params.orderId}`, fiscalUrl: `https://check.yandex.ru/${params.orderId}`, createdAt: 1767225600, type: 'INCOME' } } } });
+    return batchEnvelope(body.params.map((params: { orderId: number; archived: boolean }) => {
+      queried.push(params);
+      if (params.orderId === 234567 && !params.archived) return { result: [], collections: {} };
+      return { result: ['fiscal'], collections: { orderReceipt: { fiscal: { id: `r${params.orderId}`, fiscalUrl: `https://check.yandex.ru/${params.orderId}`, createdAt: 1767225600, type: 'INCOME' } } } };
+    }));
   };
   const result = await collectYandex({ fetch });
   assert.equal(pages, 2); assert.deepEqual(queried, [{ orderId: 123456, archived: false }, { orderId: 123457, archived: false }, { orderId: 234567, archived: false }, { orderId: 234567, archived: true }]);
@@ -109,7 +198,7 @@ test('explicit final page stops even when token repeats; archived recovery is no
       pages++;
       return envelope({result:'list',collections:{orderConsolidationResult:{list:{ordersGroupsIds:[123456],pageToken:'same',hasNext:false}}}});
     }
-    if(!body.params[0].archived) return new Response('',{status:404});
+    if(!body.params[0]!.archived) return new Response('',{status:404});
     return envelope({result:['r'],collections:{orderReceipt:{r:{fiscalUrl:'https://check.yandex.ru/r',createdAt:1767225600}}}});
   }});
   assert.equal(pages,1); assert.equal(result.stats.failedOrders,0); assert.equal(result.stats.incomplete,false); assert.deepEqual(result.warnings,[]);
@@ -250,20 +339,19 @@ test('Yandex diagnostics distinguish resolver envelopes and malformed data witho
       const url = new URL(String(input));
       if (url.pathname === '/my/orders') return new Response('');
       if (url.hostname === 'check.yandex.ru') return new Response(receipt);
-      if (url.searchParams.get('r')?.includes('resolveConsolidationOrders')) return orderList([123456, 234567, 345678]);
+      if (url.searchParams.get('r')?.includes('resolveConsolidationOrders')) return orderList([...Array.from({length: 8}, (_, i) => 123456 + i), 234567]);
       const { orderId } = JSON.parse(String(init?.body)).params[0];
       if (orderId === 234567) return new Response(JSON.stringify(payload));
-      if (orderId === 345678) return envelope({ result: [], collections: {} });
-      return envelope({ result: ['r'], collections: { orderReceipt: { r: { fiscalUrl: 'https://check.yandex.ru/r', createdAt: 1767225600 } } } });
+      return batchEnvelope(JSON.parse(String(init?.body)).params.map(({orderId}: {orderId: number}) => ({ result: ['r'], collections: { orderReceipt: { r: { fiscalUrl: `https://check.yandex.ru/${orderId}`, createdAt: 1767225600 } } } })));
     } });
     for (const [key, value] of Object.entries(counters)) assert.equal(result.stats[key], value, key);
     assert.equal(result.stats.responseErrorOrders, 1);
-    assert.equal(result.stats.noReceiptOrders, 1);
+    assert.equal(result.stats.noReceiptOrders, 0);
     assert.equal(result.stats.missingUrlOrders, 0);
     assert.equal(result.stats.unsafeUrlOrders, 0);
     assert.equal(result.stats.failedOrders, 1);
-    assert.equal(result.stats.lastPageIds, 3);
-    assert.equal(result.stats.lastPageNewIds, 3);
+    assert.equal(result.stats.lastPageIds, 9);
+    assert.equal(result.stats.lastPageNewIds, 9);
     assert.equal(result.stats.lastPageHasNextKnown, true);
     assert.equal(result.stats.lastPageHasNext, false);
     assert.equal(result.stats.lastPageCursorPresent, false);
@@ -337,9 +425,9 @@ test('unknown root shape captures fixed fields once and ignores changing content
       const url = new URL(String(input));
       if (url.pathname === '/my/orders') return new Response('');
       if (url.hostname === 'check.yandex.ru') return new Response(receipt);
-      if (url.searchParams.get('r')?.includes('resolveConsolidationOrders')) return orderList([123456, 234567]);
+      if (url.searchParams.get('r')?.includes('resolveConsolidationOrders')) return orderList([...Array.from({length: 8}, (_, i) => 123456 + i), 234567]);
       const { orderId, archived } = JSON.parse(String(init?.body)).params[0];
-      if (orderId === 123456) return envelope({ result: ['r'], collections: { orderReceipt: { r: { fiscalUrl: 'https://check.yandex.ru/r', createdAt: 1767225600 } } } });
+      if (orderId === 123456) return batchEnvelope(JSON.parse(String(init?.body)).params.map(({orderId}: {orderId: number}) => ({ result: ['r'], collections: { orderReceipt: { r: { fiscalUrl: `https://check.yandex.ru/${orderId}`, createdAt: 1767225600 } } } })));
       return new Response(JSON.stringify({ result: archived ? [secret, 'another'] : [secret],
         collections: { orderReceipt: archived ? { [secret]: {}, another: {} } : { [secret]: {} } },
         type: archived ? 'changed-value' : secret, [secret]: secret, ...(archived && different ? { status: secret } : {}) }));
@@ -374,7 +462,7 @@ test('explicit challenge stops order pagination without retrying another resolve
       calls++;
       return new Response(JSON.stringify(payload));
     } }), error => {
-      assert.match((error as Error).message, /откройте магазин и пройдите проверку/);
+      assert.match((error as Error).message, /пройдите проверку/);
       assert.ok(!(error as Error).message.includes(secret));
       return true;
     });
@@ -382,7 +470,7 @@ test('explicit challenge stops order pagination without retrying another resolve
   }
 });
 
-test('challenge stops queued metadata work after at most four in-flight requests', async () => {
+test('challenge stops queued metadata work after at most two in-flight batch requests', async () => {
   let calls = 0;
   await assert.rejects(collectYandex({ fetch: async input => {
     const url = new URL(String(input));
@@ -391,7 +479,35 @@ test('challenge stops queued metadata work after at most four in-flight requests
     calls++;
     return new Response(JSON.stringify({ captcha: true }));
   } }), /пройдите проверку/);
-  assert.ok(calls > 0 && calls <= 4);
+  assert.ok(calls > 0 && calls <= 2);
+});
+
+test('challenge in a result slot stops queued batches and the archive phase', async () => {
+  const ids = Array.from({ length: 17 }, (_, index) => 123456 + index);
+  const requests: Array<Array<{ orderId: number; archived: boolean }>> = [];
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const result = await collectYandex({ fetch: async (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname === '/my/orders') return new Response('');
+    if (url.hostname === 'check.yandex.ru') return new Response(receipt);
+    if (url.searchParams.get('r')?.includes('resolveConsolidationOrders')) return orderList(ids);
+    const params: Array<{ orderId: number; archived: boolean }> = JSON.parse(String(init?.body)).params;
+    requests.push(params);
+    if (requests.length === 2) release();
+    await gate;
+    return new Response(JSON.stringify({ results: params.map(({ orderId }) => orderId === ids[0] ? { type: 'captcha' } : {
+      data: { result: ['r'], collections: { orderReceipt: { r: { id: String(orderId), fiscalUrl: `https://check.yandex.ru/${orderId}`, createdAt: 1767225600 } } } },
+    }) }));
+  } });
+  assert.deepEqual(requests.map(params => params.length), [8, 8]);
+  assert.ok(requests.flat().every(param => param.archived === false));
+  assert.equal(result.stats.receiptMetadataRequests, 2);
+  assert.equal(result.stats.challengeResponses, 1);
+  assert.equal(result.stats.uncheckedOrders, 9);
+  assert.equal(result.stats.incomplete, true);
+  assert.equal(result.rows.length, 8);
+  assert.ok(result.rows.every(row => ids.slice(8, 16).map(String).includes(String(row.yandex_order_id))));
 });
 
 test('metadata challenge preserves discovered receipts and marks unchecked orders incomplete', async () => {
@@ -399,16 +515,25 @@ test('metadata challenge preserves discovered receipts and marks unchecked order
     const url = new URL(String(input));
     if (url.pathname === '/my/orders') return new Response('');
     if (url.hostname === 'check.yandex.ru') return new Response(receipt);
-    if (url.searchParams.get('r')?.includes('resolveConsolidationOrders')) return orderList([123456, 234567, 345678, 456789, 567890]);
+    if (url.searchParams.get('r')?.includes('resolveConsolidationOrders')) return orderList([...Array.from({length: 8}, (_, i) => 123456 + i), 234567]);
     const { orderId } = JSON.parse(String(init?.body)).params[0];
-    if (orderId === 123456) return envelope({ result: ['r'], collections: { orderReceipt: { r: { fiscalUrl: 'https://check.yandex.ru/r', createdAt: 1767225600 } } } });
-    return new Response(JSON.stringify({ status: 'CAPTCHA_REQUIRED', url: 'private-challenge-secret' }));
+    if (orderId === 123456) return batchEnvelope(JSON.parse(String(init?.body)).params.map(({orderId}: {orderId: number}) => ({ result: ['r'], collections: { orderReceipt: { r: { fiscalUrl: `https://check.yandex.ru/${orderId}`, createdAt: 1767225600 } } } })));
+    return new Response(JSON.stringify({ type: 'captcha', captcha: {
+      url: 'https://market.yandex.ru/showcaptcha?private=private-challenge-secret',
+      redirect: 'https://yandex.ru.evil.test/showcaptcha?private=private-challenge-secret',
+      'captcha-page': '/showcaptcha?private=private-challenge-secret',
+      'form-action': 'private-challenge-secret', 'img-url': 'private-challenge-secret', key: 'private-challenge-secret',
+    } }));
   } });
-  assert.equal(result.rows.length, 1);
+  assert.equal(result.rows.length, 8);
   assert.equal(result.stats.incomplete, true);
-  assert.equal(result.stats.uncheckedOrders, 4);
-  assert.equal(result.stats.challengeResponses, 3);
+  assert.equal(result.stats.uncheckedOrders, 1);
+  assert.equal(result.stats.challengeResponses, 1);
   assert.match(result.warnings.join(' '), /пройдите проверку/);
+  assert.equal(result.stats.captchaValueType, 3);
+  assert.equal(result.stats.captchaObjectKeys, 6);
+  assert.equal(result.stats.captchaObjectKeyMask, 63);
+  assert.equal(result.stats.captchaUrlCandidateMask, 40);
   assert.ok(!JSON.stringify({ stats: result.stats, warnings: result.warnings }).includes('private-challenge-secret'));
 });
 
@@ -440,19 +565,39 @@ test('concurrent challenge does not swallow cancellation or an unrelated progres
     { cancel: true, failure: new Error('caller cancelled') },
   ]) {
     const controller = new AbortController();
+    let started = 0, release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
     await assert.rejects(collectYandex({ signal: controller.signal,
       onProgress: progress => { if (!cancel && progress.message.includes('проверено')) throw failure; },
       fetch: async (input, init) => {
         const url = new URL(String(input));
         if (url.pathname === '/my/orders') return new Response('');
-        if (url.searchParams.get('r')?.includes('resolveConsolidationOrders')) return orderList([123456, 234567, 345678, 456789]);
+        if (url.searchParams.get('r')?.includes('resolveConsolidationOrders')) return orderList([...Array.from({length: 8}, (_, i) => 123456 + i), 234567]);
+        if (++started === 2) release();
+        await gate;
         const { orderId } = JSON.parse(String(init?.body)).params[0];
         if (orderId === 123456) {
           if (cancel) controller.abort(failure);
-          return envelope({ result: ['r'], collections: { orderReceipt: { r: { fiscalUrl: 'https://check.yandex.ru/r', createdAt: 1767225600 } } } });
+          return batchEnvelope(JSON.parse(String(init?.body)).params.map(({orderId}: {orderId: number}) => ({ result: ['r'], collections: { orderReceipt: { r: { fiscalUrl: `https://check.yandex.ru/${orderId}`, createdAt: 1767225600 } } } })));
         }
         return new Response(JSON.stringify({ type: 'captcha' }));
       },
     }), error => error === failure);
   }
+});
+
+test('cancellation during the metadata pause sends no metadata request', async () => {
+  const controller = new AbortController(), failure = new Error('cancelled during pause');
+  let requests = 0;
+  await assert.rejects(collectYandex({ signal: controller.signal,
+    onProgress: progress => { if (!progress.total) setTimeout(() => controller.abort(failure), 10); },
+    fetch: async input => {
+      const url = new URL(String(input));
+      if (url.pathname === '/my/orders') return new Response('');
+      if (url.searchParams.get('r')?.includes('resolveConsolidationOrders')) return orderList([123456]);
+      requests++;
+      return envelope({ result: [], collections: {} });
+    },
+  }), error => error === failure);
+  assert.equal(requests, 0);
 });

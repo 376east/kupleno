@@ -40,8 +40,32 @@ async function main() {
   await fs.writeFile(path.join(build, 'test-fixtures.js'), `
   const sendMessage = chrome.runtime.sendMessage.bind(chrome.runtime);
   let ozonFinished = 0;
+  let yandexBatchValidated = false;
   chrome.runtime.sendMessage = (...args) => {
     const message = args[0];
+    if (message?.type === 'KUPLENO_YANDEX_REQUEST' && !yandexBatchValidated && JSON.parse(message.body).params.length === 8) {
+      yandexBatchValidated = true;
+      const request = JSON.parse(message.body), first = request.params[0];
+      const invalid = [
+        { ...request, params: Array.from({ length: 9 }, (_, index) => ({ ...first, orderId: first.orderId + index })) },
+        { ...request, params: [first, { ...first, orderId: 'invalid' }] },
+        { ...request, params: [first, { ...first, orderId: first.orderId + 1, extra: true }] },
+        { ...request, params: [first, first] },
+        { ...request, params: [first, { ...first, orderId: first.orderId + 1, archived: !first.archived }] },
+      ].map(body => ({ ...message, body: JSON.stringify(body) }));
+      const paginationUrl = new URL(message.url);
+      paginationUrl.searchParams.set('r', 'src/resolvers/orders/resolveConsolidationOrders:resolveConsolidationOrders');
+      invalid.push({ ...message, url: paginationUrl.href, body: JSON.stringify({ ...request, params: [{ filter: 'COMPLETED', size: 18 }, { filter: 'COMPLETED', size: 18 }] }) });
+      const probes = (async () => {
+        for (const probe of invalid) {
+          const response = await sendMessage(probe);
+          if (response?.ok !== false) throw new Error('Invalid synthetic Yandex batch was accepted.');
+        }
+      })();
+      const callback = args.at(-1);
+      if (typeof callback === 'function') { void probes.then(() => sendMessage(...args), () => callback({ ok: false, error: 'Yandex batch validation failed.' })); return; }
+      return probes.then(() => sendMessage(...args));
+    }
     if (message?.type === 'KUPLENO_OFFSCREEN_EVENT' && message.action === 'finished' && message.result?.rows?.[0]?.source === 'ozon' && ++ozonFinished === 2) {
       // Deliver and persist the result, but lose its acknowledgement in transit.
       const callback = args.at(-1);
@@ -100,6 +124,7 @@ async function main() {
     let stallOzon = false, ozonGate;
     let holdYandex = false, releaseYandex;
     let yandexReceiptRequests = 0;
+    let yandexOrderIds = [123456];
     const ozonRequestPages = new Set();
     await context.route('https://www.ozon.ru/**', async route => {
       if (route.request().isNavigationRequest()) return route.fulfill({contentType:'text/html',body:'<html><script>window.fetch = () => new Promise(() => {});</script><body>Receipt page</body></html>'});
@@ -112,11 +137,12 @@ async function main() {
     await context.route('https://market.yandex.ru/**', async route => {
       const url = new URL(route.request().url()); requests.push(url.href);
       if (url.pathname === '/api/resolve/') {
-        if (url.searchParams.get('r')?.includes('resolveConsolidationOrders')) return route.fulfill({ json: { results: [{ data: { result: 'list', collections: { orderConsolidationResult: { list: { ordersGroupsIds: [123456], pageToken: '', hasNext: false } } } } }] } });
+        if (url.searchParams.get('r')?.includes('resolveConsolidationOrders')) return route.fulfill({ json: { results: [{ data: { result: 'list', collections: { orderConsolidationResult: { list: { ordersGroupsIds: yandexOrderIds, pageToken: '', hasNext: false } } } } }] } });
         yandexReceiptRequests++;
         if (holdYandex) await new Promise(resolve => { releaseYandex = resolve; });
         const body = route.request().postDataJSON(); assert.equal(body.params[0].orderId, 123456);
-        return route.fulfill({ json: { results: [{ data: { result: ['r'], collections: { orderReceipt: { r: { id: 'r', fiscalUrl: 'https://check.yandex.ru/test', createdAt: 1767225600, type: 'INCOME' } } } } }] } });
+        assert.ok(body.params.length <= 8);
+        return route.fulfill({ json: { results: body.params.map(({orderId}) => ({ data: { result: ['r'], collections: { orderReceipt: { r: { id: String(orderId), fiscalUrl: 'https://check.yandex.ru/test/' + orderId, createdAt: 1767225600, type: 'INCOME' } } } } })) } });
       }
       return route.fulfill({ contentType: 'text/html', body: '<html><a href="/my/order/123456">Order</a></html>' });
     });
@@ -125,7 +151,7 @@ async function main() {
     const page = await context.newPage();
     await page.goto(`chrome-extension://${id}/app.html`);
     const command = message => page.evaluate(message => chrome.runtime.sendMessage({ type: 'KUPLENO_JOB', ...message }), message);
-    async function finish(source) {
+    async function finish(source, expectedRows = 1) {
       const scope = source ? { source } : {};
       let result;
       const deadline = Date.now() + 30000;
@@ -136,13 +162,14 @@ async function main() {
       } while (Date.now() < deadline);
       assert.equal(result.job.status, 'completed', JSON.stringify(result));
       assert.equal(await page.evaluate(id => chrome.tabs.get(id).then(() => true, () => false), result.job.marketTabId), false, 'Owned tab closes before acknowledgement');
-      assert.equal(result.job.result.rows.length, 1);
+      assert.equal(result.job.result.rows.length, expectedRows);
       assert.equal(result.job.result.rows[0].amount, '100.00');
       assert.ok(Object.values(result.job.result.stats).every(value => typeof value === 'boolean' || (typeof value === 'number' && Number.isFinite(value))));
       if (source === 'ozon') assert.equal(result.job.result.stats.unrecognizedListResponses, 0);
       if (source === 'yandex') {
+        if (expectedRows === 8) assert.equal(result.job.result.stats.receiptMetadataRequests, 1, 'The first batch succeeds without an archive fallback masking a bridge rejection');
         assert.equal(result.job.result.stats.responseRootErrors, 0);
-        assert.equal(result.job.result.stats.lastPageIds, 1);
+        assert.equal(result.job.result.stats.lastPageIds, expectedRows);
         assert.equal(result.job.result.stats.lastPageHasNextKnown, true);
         assert.equal(result.job.result.stats.repeatedCursor, false);
       }
@@ -182,10 +209,12 @@ async function main() {
     assert.equal(await worker.evaluate(() => globalThis.testPdfRequests), 1);
     // No Yandex tab exists: start must open it, wait and continue without a second click.
     const yandexUser = await context.newPage(); await yandexUser.goto('https://market.yandex.ru/my/orders');
+    yandexOrderIds = Array.from({ length: 8 }, (_, index) => 123456 + index);
     const started = await command({ action: 'start', source: 'yandex', profile: 'personal' });
     assert.equal(started.ok, true, JSON.stringify(started));
     assert.equal(typeof started.job.marketTabId,'number');
-    await finish();
+    await finish('yandex', 8);
+    yandexOrderIds = [123456];
     assert.equal(yandexUser.isClosed(),false);
     assert.equal(yandexReceiptRequests, 1);
     const denied = await page.evaluate(() => chrome.runtime.sendMessage({ type: 'KUPLENO_YANDEX_REQUEST', id: 'fake', url: 'https://evil.test/', body: '{}' }));

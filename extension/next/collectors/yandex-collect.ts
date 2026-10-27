@@ -11,7 +11,7 @@ const receiptResolver = 'src/resolvers/orderDocuments/resolveOrderReceiptsByOrde
 const object = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const array = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
 const cap = (size: number) => { if (size > 100000) throw Object.assign(new Error('В сборе больше 100 000 операций.'), { code: 'ROW_LIMIT_EXCEEDED' }); };
-const challengeError = () => Object.assign(new Error('Яндекс Маркет: откройте магазин и пройдите проверку, затем повторите сбор.'), { code: 'YANDEX_CHALLENGE' });
+const challengeError = () => Object.assign(new Error('Яндекс Маркет запросил проверку доступа. Если магазин покажет её, пройдите проверку и повторите сбор. Иначе попробуйте позже.'), { code: 'YANDEX_CHALLENGE' });
 // Shape types: 0 missing, 1 null, 2 array, 3 object, 4 string, 5 number, 6 boolean, 7 other.
 const shapeType = (value: unknown) => value === undefined ? 0 : value === null ? 1 : Array.isArray(value) ? 2 : typeof value === 'object' ? 3 : typeof value === 'string' ? 4 : typeof value === 'number' ? 5 : typeof value === 'boolean' ? 6 : 7;
 function captureRootShape(root: Record<string, unknown>, diagnostics: Record<string, number>) {
@@ -24,25 +24,37 @@ function captureRootShape(root: Record<string, unknown>, diagnostics: Record<str
     Object.assign(diagnostics, shape, { responseShapeCaptured: 1, responseShapeResultCount: array(root.result).length, responseShapeReceiptCount: Object.keys(object(receiptCollection)).length });
   } else if (Object.entries(shape).some(([key, value]) => diagnostics[key] !== value)) diagnostics.responseShapeDifferent!++;
 }
+function isChallengeUrl(value: unknown) {
+  if (typeof value !== 'string') return false;
+  try {
+    const url = new URL(value, origin);
+    return url.protocol === 'https:' && !url.username && !url.password && /(^|\.)yandex\.(ru|com)$/.test(url.hostname) && /^\/(showcaptcha|checkcaptcha|captcha)(\/|$)/i.test(url.pathname);
+  } catch { return false; }
+}
+function checkChallenge(root: Record<string, unknown>, diagnostics: Record<string, number>) {
+  const captcha = root.captcha, fields = object(captcha);
+  const challengeRedirect = [root.url, root.redirect].some(isChallengeUrl);
+  if ([root.type, root.status].some(value => value === 'captcha' || value === 'CAPTCHA_REQUIRED' || value === 'SHOW_CAPTCHA') || captcha === true ||
+      (typeof captcha === 'string' && !!captcha.trim()) || Object.keys(object(captcha)).length > 0 || challengeRedirect) {
+    if (!diagnostics.challengeResponses) {
+      diagnostics.captchaValueType = shapeType(captcha);
+      diagnostics.captchaObjectKeys = Object.keys(fields).length;
+      // Key bits: url, redirect, captcha-page, form-action, img-url, key. Values never leave this function.
+      diagnostics.captchaObjectKeyMask = ['url', 'redirect', 'captcha-page', 'form-action', 'img-url', 'key'].reduce((mask, key, index) => mask | (Object.hasOwn(fields, key) ? 1 << index : 0), 0);
+      // Candidate bits: root.url, root.redirect, captcha string, captcha.url, captcha.redirect, captcha-page.
+      diagnostics.captchaUrlCandidateMask = [root.url, root.redirect, captcha, fields.url, fields.redirect, fields['captcha-page']].reduce<number>((mask, value, index) => mask | (isChallengeUrl(value) ? 1 << index : 0), 0);
+    }
+    diagnostics.challengeResponses!++;
+    throw challengeError();
+  }
+}
 function resultData(payload: unknown, diagnostics: Record<string, number>, index = 0) {
   const root = object(payload), entries = array(root.results);
   const entry = object(entries[index]);
   const errors = [root.error, entry.error].filter(Boolean);
   const value = entry.data || (index === 0 ? root.data : undefined), data = object(value);
   if (!errors.length && !Object.keys(data).length && Object.keys(root).length) captureRootShape(root, diagnostics);
-  const captcha = root.captcha;
-  const challengeRedirect = [root.url, root.redirect].some(value => {
-    if (typeof value !== 'string') return false;
-    try {
-      const url = new URL(value, origin);
-      return url.protocol === 'https:' && !url.username && !url.password && /(^|\.)yandex\.(ru|com)$/.test(url.hostname) && /^\/(showcaptcha|checkcaptcha|captcha)(\/|$)/i.test(url.pathname);
-    } catch { return false; }
-  });
-  if ([root.type, root.status].some(value => value === 'captcha' || value === 'CAPTCHA_REQUIRED' || value === 'SHOW_CAPTCHA') || captcha === true ||
-      (typeof captcha === 'string' && !!captcha.trim()) || Object.keys(object(captcha)).length > 0 || challengeRedirect) {
-    diagnostics.challengeResponses!++;
-    throw challengeError();
-  }
+  checkChallenge(root, diagnostics);
   if (root.error) diagnostics.responseRootErrors!++;
   if (entry.error) diagnostics.responseEntryErrors!++;
   const codes = { NOT_FOUND: 'resolverNotFoundErrors', FORBIDDEN: 'resolverForbiddenErrors', UNAUTHORIZED: 'resolverUnauthorizedErrors', TOO_MANY_REQUESTS: 'resolverRateLimitErrors' } as const;
@@ -87,10 +99,11 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
   const diagnostics = { responseRootErrors: 0, responseEntryErrors: 0, responseEmptyData: 0, responseMalformedData: 0, responseMalformedResult: 0,
     responseShapeCaptured: 0, responseShapeKeyMask: 0, responseShapeKeyCount: 0, responseShapeResultType: 0, responseShapeCollectionsType: 0, responseShapeOrderReceiptType: 0,
     responseShapeResultCount: 0, responseShapeReceiptCount: 0, responseShapeDifferent: 0, challengeResponses: 0, uncheckedOrders: 0,
+    captchaValueType: 0, captchaObjectKeys: 0, captchaObjectKeyMask: 0, captchaUrlCandidateMask: 0,
     responseRootNull: 0, responseRootArray: 0, responseRootPrimitive: 0, responseRootEmpty: 0, responseRootErrorsField: 0,
     responseDataMissing: 0, responseDataNull: 0, responseDataArray: 0, responseDataPrimitive: 0, responseResultsMissing: 0, responseResultsEmpty: 0, responseResultsMalformed: 0,
     resolverNotFoundErrors: 0, resolverForbiddenErrors: 0, resolverUnauthorizedErrors: 0, resolverRateLimitErrors: 0, resolverOtherErrors: 0,
-    missingUrlOrders: 0, unsafeUrlOrders: 0, responseErrorOrders: 0, noReceiptOrders: 0 };
+    missingUrlOrders: 0, unsafeUrlOrders: 0, responseErrorOrders: 0, noReceiptOrders: 0, receiptMetadataRequests: 0, receiptMetadataOrdersRequested: 0 };
   const pagination = { lastPageItems: 0, lastPageIds: 0, lastPageNewIds: 0, lastPageHasNextKnown: false, lastPageHasNext: false, lastPageCursorPresent: false, lastPageCursorMatchesRequest: false, repeatedCursor: false };
   const headers: Record<string, string> = { accept: '*/*', 'content-type': 'application/json', 'x-market-apphost-target': 'WEB', 'x-market-core-service': '<UNKNOWN>', 'x-market-page-id': options.context?.pageId || 'market:orders', 'x-requested-with': 'XMLHttpRequest', 'x-retpath-y': origin + ordersPath };
   if (options.context?.sk) headers.sk = options.context.sk;
@@ -155,61 +168,90 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
   }
   if (requestPage && pages >= 2000) { incomplete = true; warnings.push('Яндекс Маркет: достигнут лимит страниц заказов.'); }
   const receipts = new Map<string, { id: string; url: string; orderId: string; type: string; date?: string }>();
+  const states = [...orderIds].map(orderId => ({ orderId, found: false, emptyLists: 0, done: false,
+    validIds: new Set<string>(), unresolved: new Map<string, 'missing' | 'unsafe'>(), errors: [] as unknown[] }));
   let checked = 0, metadataStopped = false, hasMetadataFatal = false;
   let metadataFatal: unknown;
-  try { await mapConcurrent([...orderIds], 4, async orderId => { try {
-    let found = false, emptyLists = 0;
-    const validIds = new Set<string>(), unresolved = new Map<string, 'missing' | 'unsafe'>(), resolverErrors: unknown[] = [];
+  try {
     for (const archived of [false, true]) {
-      try {
+      const pending = states.filter(state => !state.done);
+      const batches = Array.from({ length: Math.ceil(pending.length / 8) }, (_, index) => pending.slice(index * 8, index * 8 + 8));
+      await mapConcurrent(batches, 2, async batch => { try {
         if (metadataStopped) throw challengeError();
-        const data = resultData(await resolve(receiptResolver, [{ orderId: Number(orderId), archived }]), diagnostics);
-        if (!Array.isArray(data.result)) { diagnostics.responseMalformedResult++; throw new Error('Список чеков заказа не распознан.'); }
-        if (!data.result.length) emptyLists++;
-        const collection = object(object(data.collections).orderReceipt);
-        for (const receiptId of data.result) {
-          const id = String(receiptId), receipt = object(collection[id]);
-          if (typeof receipt.fiscalUrl !== 'string' || !receipt.fiscalUrl.trim()) {
-            if (!validIds.has(id)) unresolved.set(id, 'missing');
-            continue;
+        await new Promise(resolve => setTimeout(resolve, 300));
+        options.signal?.throwIfAborted();
+        if (metadataStopped) throw challengeError();
+        let payload: unknown;
+        try {
+          diagnostics.receiptMetadataRequests++;
+          diagnostics.receiptMetadataOrdersRequested += batch.length;
+          payload = await resolve(receiptResolver, batch.map(state => ({ orderId: Number(state.orderId), archived })));
+          const root = object(payload);
+          const singleData = batch.length === 1 && (!Array.isArray(root.results) || !root.results.length) && Object.keys(object(root.data)).length > 0;
+          if (root.error || (!singleData && (!Array.isArray(root.results) || root.results.length !== batch.length))) {
+            // Diagnose the original envelope, but never assign a shortened batch by guessed indexes.
+            resultData(payload, diagnostics);
+            diagnostics.responseMalformedResult++;
+            throw new Error('Число ответов на запрос чеков не совпало с числом заказов.');
           }
-          let url: string;
-          try { url = safeReceipt(receipt.fiscalUrl); }
-          catch {
-            if (!validIds.has(id)) unresolved.set(id, 'unsafe');
-            continue;
-          }
-          const created = typeof receipt.createdAt === 'number' ? new Date(receipt.createdAt < 1e12 ? receipt.createdAt * 1000 : receipt.createdAt) : null;
-          receipts.set(url, { id: String(receipt.id || receiptId), url, orderId, type: String(receipt.type || ''), date: created && Number.isFinite(created.valueOf()) ? created.toISOString() : undefined });
-          validIds.add(id); unresolved.delete(id);
-          found = true; cap(receipts.size);
+          checkChallenge(root, diagnostics);
+        } catch (error) {
+          if (options.signal?.aborted || object(error).code === 'ROW_LIMIT_EXCEEDED' || object(error).code === 'YANDEX_CHALLENGE') throw error;
+          for (const state of batch) state.errors.push(error);
+          payload = undefined;
         }
-        if (found && !unresolved.size) break;
-      } catch (e) {
-        if (options.signal?.aborted || object(e).code === 'ROW_LIMIT_EXCEEDED') { hasMetadataFatal = true; metadataFatal = e; throw e; }
-        if (object(e).code === 'YANDEX_CHALLENGE') { metadataStopped = true; throw e; }
-        resolverErrors.push(e);
-      }
+        for (const [index, state] of batch.entries()) {
+          if (payload !== undefined) try {
+            const entry = array(object(payload).results)[index];
+            checkChallenge(object(entry), diagnostics);
+            const data = resultData(batch.length === 1 ? payload : { results: [entry] }, diagnostics);
+            if (!Array.isArray(data.result) || data.result.some(id => !(typeof id === 'string' && id.length > 0) && !Number.isSafeInteger(id))) {
+              diagnostics.responseMalformedResult++; throw new Error('Список чеков заказа не распознан.');
+            }
+            if (!data.result.length) state.emptyLists++;
+            const collection = object(object(data.collections).orderReceipt);
+            for (const receiptId of data.result) {
+              const id = String(receiptId), receipt = object(collection[id]);
+              if (typeof receipt.fiscalUrl !== 'string' || !receipt.fiscalUrl.trim()) {
+                if (!state.validIds.has(id)) state.unresolved.set(id, 'missing');
+                continue;
+              }
+              let url: string;
+              try { url = safeReceipt(receipt.fiscalUrl); }
+              catch { if (!state.validIds.has(id)) state.unresolved.set(id, 'unsafe'); continue; }
+              const created = typeof receipt.createdAt === 'number' ? new Date(receipt.createdAt < 1e12 ? receipt.createdAt * 1000 : receipt.createdAt) : null;
+              receipts.set(url, { id: String(receipt.id || receiptId), url, orderId: state.orderId, type: String(receipt.type || ''), date: created && Number.isFinite(created.valueOf()) ? created.toISOString() : undefined });
+              state.validIds.add(id); state.unresolved.delete(id);
+              state.found = true; cap(receipts.size);
+            }
+          } catch (error) {
+            if (options.signal?.aborted || object(error).code === 'ROW_LIMIT_EXCEEDED' || object(error).code === 'YANDEX_CHALLENGE') throw error;
+            state.errors.push(error);
+          }
+          if (!archived && (!state.found || state.unresolved.size)) continue;
+          state.done = true;
+          if (state.unresolved.size || (state.errors.length && !state.found)) {
+            failedOrders++;
+            if ([...state.unresolved.values()].includes('missing')) diagnostics.missingUrlOrders++;
+            if ([...state.unresolved.values()].includes('unsafe')) diagnostics.unsafeUrlOrders++;
+            if (state.errors.length) diagnostics.responseErrorOrders++;
+            for (const reason of state.unresolved.values()) rememberFailure(new Error(reason === 'missing' ? 'Магазин не предоставил ссылку на часть чеков.' : 'Магазин предоставил некорректную ссылку на часть чеков.'));
+            for (const error of state.errors) rememberFailure(error);
+          }
+          if (state.emptyLists === 2) diagnostics.noReceiptOrders++;
+          checked++;
+          await options.onProgress?.({ done: checked, total: orderIds.size, message: `Яндекс Маркет: проверено ${checked} из ${orderIds.size} заказов.` });
+        }
+      } catch (error) {
+        if (object(error).code === 'YANDEX_CHALLENGE') metadataStopped = true;
+        else { hasMetadataFatal = true; metadataFatal = error; }
+        throw error;
+      } }, options.signal);
     }
-    if (unresolved.size || (resolverErrors.length && !found)) {
-      failedOrders++;
-      if ([...unresolved.values()].includes('missing')) diagnostics.missingUrlOrders++;
-      if ([...unresolved.values()].includes('unsafe')) diagnostics.unsafeUrlOrders++;
-      if (resolverErrors.length) diagnostics.responseErrorOrders++;
-      for (const reason of unresolved.values()) rememberFailure(new Error(reason === 'missing' ? 'Магазин не предоставил ссылку на часть чеков.' : 'Магазин предоставил некорректную ссылку на часть чеков.'));
-      for (const error of resolverErrors) rememberFailure(error);
-    }
-    if (emptyLists === 2) diagnostics.noReceiptOrders++;
-    checked++;
-    await options.onProgress?.({ done: checked, total: orderIds.size, message: `Яндекс Маркет: проверено ${checked} из ${orderIds.size} заказов.` });
-  } catch (e) {
-    if (object(e).code !== 'YANDEX_CHALLENGE') { hasMetadataFatal = true; metadataFatal = e; }
-    throw e;
-  }
-  }, options.signal); } catch (e) {
+  } catch (error) {
     options.signal?.throwIfAborted();
     if (hasMetadataFatal) throw metadataFatal;
-    if (object(e).code !== 'YANDEX_CHALLENGE') throw e;
+    if (object(error).code !== 'YANDEX_CHALLENGE') throw error;
     if (!receipts.size) throw challengeError();
     incomplete = true;
     diagnostics.uncheckedOrders = orderIds.size - checked;
