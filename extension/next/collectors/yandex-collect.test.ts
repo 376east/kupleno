@@ -3,13 +3,38 @@ import assert from 'node:assert/strict';
 import { collectYandex } from './yandex-collect.ts';
 import { mergeCollection, summarize } from '../domain.mjs';
 const envelope = (data: unknown) => new Response(JSON.stringify({ results: [{ data }] }));
+const orderList = (ids: number[]) => envelope({ result: 'list', collections: { orderConsolidationResult: { list: { ordersGroupsIds: ids, hasNext: false } } } });
 const receipt = '<table><tr><td>1</td><td>Книга</td><td>1</td><td>100,00</td></tr><tr><td>ИТОГ</td><td>100,00</td></tr></table>';
+
+test('initial HTML without pagination metadata still enumerates all API pages', async () => {
+  const tokens: (string | undefined)[] = [];
+  const result = await collectYandex({ fetch: async (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname === '/my/orders') return new Response('<a href="/my/order/123456">Заказ</a>');
+    if (url.hostname === 'check.yandex.ru') return new Response(receipt);
+    const params = JSON.parse(String(init?.body)).params[0];
+    if (url.searchParams.get('r')?.includes('resolveConsolidationOrders')) {
+      tokens.push(params.pageToken);
+      return envelope({ result: 'list', collections: { orderConsolidationResult: { list: params.pageToken
+        ? { ordersGroupsIds: [345678], hasNext: false }
+        : { ordersGroupsIds: [123456, 234567], pageToken: 'next', hasNext: true } } } });
+    }
+    return envelope({ result: ['r'], collections: { orderReceipt: { r: { fiscalUrl: `https://check.yandex.ru/${params.orderId}`, createdAt: 1767225600 } } } });
+  } });
+  assert.deepEqual(tokens, [undefined, 'next']);
+  assert.equal(result.stats.pages, 2);
+  assert.equal(result.stats.orders, 3);
+  assert.equal(result.rows.length, 3);
+  assert.equal(result.stats.incomplete, false);
+  assert.deepEqual(result.warnings, []);
+});
 
 test('Yandex loads four orders and four receipts concurrently', async () => {
   const active={orders:0,receipts:0}, peak={orders:0,receipts:0};
   const result=await collectYandex({fetch:async(input,init)=>{
     const url=new URL(String(input));
     if(url.pathname==='/my/orders') return new Response(Array.from({length:6},(_,i)=>`<a href="/my/order/${123456+i}">Order</a>`).join(''));
+    if(url.searchParams.get('r')?.includes('resolveConsolidationOrders')) return orderList(Array.from({length:6},(_,i)=>123456+i));
     const kind=url.hostname==='check.yandex.ru'?'receipts':'orders';
     peak[kind]=Math.max(peak[kind],++active[kind]); await new Promise(resolve=>setTimeout(resolve,10)); active[kind]--;
     if(kind==='receipts') return new Response(receipt);
@@ -42,10 +67,26 @@ test('Yandex resolver contracts, pagination, archive fallback and fiscal URLs', 
 test('Yandex rejects unknown payload instead of reporting successful empty collection', async () => {
   await assert.rejects(collectYandex({ fetch: async () => new Response(JSON.stringify({ error: 'expired' })) }), /формат списка заказов/);
 });
+
+test('failed API pagination keeps HTML orders but cannot claim complete history', async () => {
+  const result = await collectYandex({ fetch: async input => {
+    const url = new URL(String(input));
+    if (url.pathname === '/my/orders') return new Response('<a href="/my/order/123456">Заказ</a>');
+    if (url.searchParams.get('r')?.includes('resolveConsolidationOrders')) return new Response('', { status: 503 });
+    if (url.hostname === 'check.yandex.ru') return new Response(receipt);
+    return envelope({ result: ['r'], collections: { orderReceipt: { r: { fiscalUrl: 'https://check.yandex.ru/r', createdAt: 1767225600 } } } });
+  } });
+  assert.equal(result.rows.length, 1);
+  assert.equal(result.stats.orders, 1);
+  assert.equal(result.stats.pages, 1);
+  assert.equal(result.stats.incomplete, true);
+  assert.match(result.warnings.join(' '), /страницы заказов не прочитаны/);
+});
 test('Yandex reports partial receipt failure and retains parsed operations', async () => {
   const result = await collectYandex({ fetch: async input => {
     const url = new URL(String(input));
     if (url.pathname === '/my/orders') return new Response('<a href="/my/order/123456">Заказ</a>');
+    if (url.searchParams.get('r')?.includes('resolveConsolidationOrders')) return orderList([123456]);
     if (url.pathname === '/api/resolve/') return envelope({ result: ['a','b'], collections: { orderReceipt: {
       a: { fiscalUrl: 'https://check.yandex.ru/a', createdAt: 1767225600 }, b: { fiscalUrl: 'https://check.yandex.ru/b', createdAt: 1767225600 },
     } } });
@@ -75,6 +116,7 @@ test('missing receipt URL does not discard subsequent receipts of the same order
   const result = await collectYandex({ fetch: async input => {
     const url = new URL(String(input));
     if (url.pathname === '/my/orders') return new Response('<a href="/my/order/123456">Order</a>');
+    if (url.searchParams.get('r')?.includes('resolveConsolidationOrders')) return orderList([123456]);
     if (url.hostname === 'check.yandex.ru') return new Response(receipt);
     return envelope({ result: ['missing','valid'], collections: { orderReceipt: {
       missing: { id: 'missing' }, valid: { fiscalUrl: 'https://check.yandex.ru/valid', createdAt: 1767225600 }
@@ -105,6 +147,7 @@ test('unsafe or malformed receipt URL does not discard valid neighbours', async 
     const result = await collectYandex({ fetch: async input => {
       const url = new URL(String(input));
       if (url.pathname === '/my/orders') return new Response('<a href="/my/order/123456">Order</a>');
+      if (url.searchParams.get('r')?.includes('resolveConsolidationOrders')) return orderList([123456]);
       if (url.hostname === 'check.yandex.ru') return new Response(receipt);
       return envelope({ result: ['bad', 'valid'], collections: { orderReceipt: {
         bad: { fiscalUrl }, valid: { fiscalUrl: 'https://check.yandex.ru/valid', createdAt: 1767225600 }
@@ -136,6 +179,7 @@ test('Yandex passes raw receipt pairs to persisted reconciliation across batches
   const batch = (ids: string[]) => collectYandex({ fetch: async input => {
     const url = new URL(String(input));
     if (url.pathname === '/my/orders') return new Response('<a href="/my/order/123456">Заказ</a>');
+    if (url.searchParams.get('r')?.includes('resolveConsolidationOrders')) return orderList([123456]);
     if (url.pathname === '/api/resolve/') return envelope({ result: ids, collections: { orderReceipt: Object.fromEntries(ids.map(id => [id, {
       id, fiscalUrl: `https://check.yandex.ru/${id}`, createdAt: 1767225600, type: 'INCOME'
     }])) } });

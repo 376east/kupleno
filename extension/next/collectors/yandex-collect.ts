@@ -60,7 +60,8 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
   cap(orderIds.size);
   if (hasNext && !token) { incomplete = true; warnings.push('Яндекс Маркет: не найден указатель следующей страницы заказов.'); }
   const visited = new Set<string>();
-  let requestPage = !orderIds.size || (hasNext && !!token);
+  // Rendered orders are only a seed: missing HTML pagination metadata is not the end of history.
+  let requestPage = true;
   while (requestPage && pages < 2000) {
     if (visited.has(token)) { incomplete = true; warnings.push('Яндекс Маркет: повторилась страница заказов.'); break; }
     visited.add(token); pages++;
