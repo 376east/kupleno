@@ -19,3 +19,6 @@ export function largePurchases(rows: Purchase[], limit?: number): Group[];
 export function receiptKey(row: Purchase): string;
 export function sourceHealth(source: string, metadata?: Record<string, unknown>): { stats: Record<string, unknown>; warnings: string[]; state: 'partial' | 'ready' | 'unknown' };
 export function mergeCollection(existing: Purchase[], incoming: Purchase[], options: { source: Source; profile?: string; complete?: boolean; replace?: boolean; processedReceipts?: string[] }): Purchase[];
+
+export function reconcileSettlementReceipts(rows: Purchase[], activeReceipts?: Set<string>): { rows: Purchase[]; removed: number };
+export function settlementReplacements(rows: Purchase[]): Record<string, string>;

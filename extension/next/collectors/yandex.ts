@@ -1,11 +1,9 @@
 import type { Purchase } from '../model';
 import { identifyRows } from '../preferences.mjs';
-import { moneyDecimal, moneyMinor } from '../domain.mjs';
+import { moneyDecimal, moneyMinor, reconcileSettlementReceipts } from '../domain.mjs';
 
 type Receipt = { id: string; url: string; date?: string; orderId?: string; type?: string };
-type Row = Purchase & { yandex_settlement_kind?: string; yandex_order_id?: string; item_index?: string };
 const strip = (s: string) => s.normalize('NFC').replace(/<[^>]*>/g, ' ').replace(/&nbsp;/gi, ' ').replace(/&quot;/gi, '"').replace(/&amp;/gi, '&').replace(/\s+/g, ' ').trim();
-const key = (s: unknown) => String(s || '').toLowerCase().replace(/ё/g, 'е').replace(/[^0-9a-zа-я]+/gi, ' ').trim();
 function date(html: string, fallback?: string) { const m = strip(html).match(/(\d{2})\.(\d{2})\.(\d{2,4})\s+(\d{2}:\d{2})/); return m ? `${m[3]!.length === 2 ? `20${m[3]}` : m[3]}-${m[2]}-${m[1]} ${m[4]}` : String(fallback || ''); }
 
 export function parseYandexReceipt(html: string, receipt: Receipt): Purchase[] {
@@ -27,11 +25,5 @@ export function parseYandexReceipt(html: string, receipt: Receipt): Purchase[] {
 }
 
 export function reconcileYandexReceipts(input: Purchase[]): { rows: Purchase[]; removed: number } {
-  const rows = input.map((row) => ({ ...row })) as Row[]; const removed = new Set<Row>(); const consumed = new Set<Row>();
-  for (const early of rows.filter((r) => r.type !== 'refund' && r.yandex_settlement_kind === 'prepayment')) {
-    const cents = moneyMinor(early.amount); const order = String(early.yandex_order_id || ''); if (!order || cents === null) continue;
-    const final = rows.find((r) => !consumed.has(r) && r.type !== 'refund' && r.yandex_settlement_kind === 'full' && String(r.yandex_order_id || '') === order && String(r.profile || '') === String(early.profile || '') && key(r.title) === key(early.title) && moneyMinor(r.amount) === cents && String(early.date || '') <= String(r.date || ''));
-    if (final) { removed.add(early); consumed.add(final); }
-  }
-  return { rows: identifyRows(rows.filter((row) => !removed.has(row))), removed: removed.size };
+  return reconcileSettlementReceipts(identifyRows(input));
 }

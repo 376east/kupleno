@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createRequire } from 'node:module';
-import { rowId, identifyRows, effectiveRows, editOperations, removeProfile, settingsWithDefaults } from './preferences.mjs';
+import { rowId, identifyRows, effectiveRows, editOperations, removeProfile, settingsWithDefaults, applyCollectionRows } from './preferences.mjs';
+import { mergeCollection } from './domain.mjs';
+import { parseBackup, serializeBackup } from './storage.mjs';
 const require = createRequire(import.meta.url);
 require('../preferences.js');
 const legacy = globalThis.KuplenoPreferences;
@@ -44,4 +46,46 @@ test('удаление профиля переносит связи операц
   assert.deepEqual(next.settings.refundClaims[0].manualMatchRowIds, ['refund-1']);
   assert.equal(next.settings.warranties[0].rowId, 'one');
   assert.equal(source.rows[0].profile, 'work');
+});
+
+test('settlement migrates annotations and purchase links while retaining original backup fields', () => {
+  const prepayment = { ...row, rowId: 'pre', receipt_url: 'https://example.test/pre', ozon_order_id: 'order', ozon_settlement_kind: 'prepayment' };
+  const final = { ...prepayment, rowId: 'final', receipt_url: 'https://example.test/final', date: '2026-01-02', ozon_settlement_kind: 'full' };
+  const original = { rows: [prepayment], metadata: { future: true }, settings: {
+    overrides: { pre: { note: 'Старая заметка', category: 'Дом', future: ['keep'] }, final: { note: 'Заметка итогового чека' } },
+    warranties: [{ id: 'doc', rowId: 'pre', future: { keep: true } }],
+    refundClaims: [{ id: 'claim', rowId: 'pre', manualMatchRowIds: ['refund'], future: ['keep'] }],
+    future: { keep: true }
+  } };
+  const snapshot = structuredClone(original);
+  const merged = mergeCollection(original.rows, [final], { source: 'ozon', profile: 'personal' });
+  const next = applyCollectionRows(original, merged);
+  assert.equal(next.rows.length, 1);
+  assert.equal(next.settings.warranties[0].rowId, 'final');
+  assert.equal(next.settings.refundClaims[0].rowId, 'final');
+  assert.deepEqual(next.settings.refundClaims[0].manualMatchRowIds, ['refund']);
+  assert.equal(next.settings.overrides.final.note, 'Заметка итогового чека');
+  assert.equal(next.settings.overrides.final.category, 'Дом');
+  assert.deepEqual(next.settings.overrides.pre, original.settings.overrides.pre);
+  assert.deepEqual(parseBackup(serializeBackup(next)).state, next);
+  assert.deepEqual(original, snapshot);
+  const reset = structuredClone(next);
+  delete reset.settings.overrides.final;
+  const refreshed = applyCollectionRows(reset, mergeCollection(reset.rows, [], { source: 'wildberries' }));
+  assert.equal(refreshed.settings.overrides.final, undefined, 'Reset must not resurrect the old annotation');
+});
+
+test('settlement resolves source/profile/receipt/item rather than overlapping raw row IDs', () => {
+  const receipt = (rowId, profile, kind) => ({ ...row, rowId, profile, receipt_url: `https://example.test/${kind}`, ozon_order_id: 'order', ozon_settlement_kind: kind });
+  const work = receipt('pre', 'work', 'prepayment');
+  const personal = receipt('pre_2', 'personal', 'prepayment');
+  const original = { rows: [work, personal], metadata: {}, settings: {
+    overrides: { pre: { note: 'Рабочая' }, pre_2: { note: 'Личная' } },
+    warranties: [{ rowId: 'pre', profile: 'work' }, { rowId: 'pre_2', profile: 'personal' }]
+  } };
+  const merged = identifyRows(mergeCollection(original.rows, [receipt('pre', 'personal', 'prepayment'), receipt('final', 'personal', 'full')], { source: 'ozon', profile: 'personal' }));
+  const next = applyCollectionRows(original, merged);
+  assert.equal(next.settings.overrides.final.note, 'Личная');
+  assert.equal(next.settings.overrides.pre.note, 'Рабочая');
+  assert.deepEqual(next.settings.warranties.map(item => item.rowId), ['pre', 'final']);
 });

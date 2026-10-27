@@ -1,9 +1,25 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { collectOzon, ozonList } from './ozon-collect.ts';
+import { sourceHealth, mergeCollection, summarize } from '../domain.mjs';
 import { Worker } from 'node:worker_threads';
 const page = (ids: string[], nextPage = '') => JSON.stringify({ widgetStates: { checks: JSON.stringify({ cheques: ids.map(id => ({ link: `/_action/downloadCheque?id=${id}` })) }) }, nextPage });
 const readPdf = async () => '01.01.2026 10:00\n1. Товар\n≡ 100,00\nИТОГ ≡ 100,00';
+
+test('Ozon marks parsed PDF items without a receipt total as partial', async () => {
+  const result = await collectOzon({
+    fetch: async input => new Response(String(input).includes('downloadCheque') ? 'pdf' : page(['private-id'])),
+    readPdf: async () => '01.01.2026 10:00\n1. Товар\n≡ 100,00\n2. Другой товар\n≡ 50,00'
+  });
+  assert.equal(result.rows.length, 2);
+  assert.ok(result.rows.every(row => row.parse_quality === 'unverified'));
+  assert.equal(result.stats.unverifiedReceipts, 1);
+  assert.equal(result.stats.failedReceipts, 0);
+  assert.equal(result.stats.incomplete, true);
+  assert.ok(result.warnings.some(text => text.startsWith('Ozon:') && text.includes('не распознан итог')));
+  assert.doesNotMatch(result.warnings.join(' '), /private-id|downloadCheque/);
+  assert.equal(sourceHealth('ozon', { collection: { stats: { ozon: result.stats }, warnings: result.warnings } }).state, 'partial');
+});
 
 test('escaped Ozon receipt URLs retain PDF flags when found repeatedly', () => {
   const encoded = String.raw`<script>{"cheques":[{"link":"\u002f_action\u002fdownloadCheque\u003fid\u003dabc\u0026rawdata\u003d1\u0026download\u003d1"}]}</script><a href="/_action/downloadCheque?id=abc">Receipt</a>`;
@@ -92,4 +108,24 @@ test('Ozon reports the failure stage without leaking receipt URLs or contents', 
     assert.doesNotMatch(error.message, /private|secret/);
     return true;
   });
+});
+
+test('Ozon passes raw receipt pairs to persisted reconciliation across batches', async () => {
+  const pre = 'ORDER-12345678-1234-1234-1234-123456789abc';
+  const final = 'ORDER-22345678-1234-1234-1234-123456789abc';
+  const batch = (ids: string[]) => collectOzon({
+    fetch: async input => new Response(String(input).includes('downloadCheque') ? String(input) : page(ids)),
+    readPdf: async bytes => {
+      const kind = new TextDecoder().decode(bytes).includes(pre) ? 'ПРЕДОПЛАТА' : 'ПОЛНЫЙ РАСЧЕТ';
+      return `01.01.2026 10:00\n${kind}\n1. Товар\n≡ 100,00\nИТОГ ≡ 100,00`;
+    }
+  });
+  const pair = await batch([pre, final]);
+  assert.equal(pair.rows.length, 2);
+  assert.equal(pair.stats.removed, 0);
+  const first = await batch([pre]), second = await batch([final]);
+  const merged = mergeCollection(first.rows, second.rows, { source: 'ozon', processedReceipts: second.processedReceipts });
+  assert.equal(merged.length, 1);
+  assert.equal(summarize(merged).net, 10000);
+  assert.equal(mergeCollection(merged, pair.rows, { source: 'ozon', processedReceipts: pair.processedReceipts }).length, 1);
 });

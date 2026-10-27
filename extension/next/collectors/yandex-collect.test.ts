@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { collectYandex } from './yandex-collect.ts';
+import { mergeCollection, summarize } from '../domain.mjs';
 const envelope = (data: unknown) => new Response(JSON.stringify({ results: [{ data }] }));
 const receipt = '<table><tr><td>1</td><td>Книга</td><td>1</td><td>100,00</td></tr><tr><td>ИТОГ</td><td>100,00</td></tr></table>';
 
@@ -84,6 +85,21 @@ test('missing receipt URL does not discard subsequent receipts of the same order
   assert.match(result.warnings.join(' '), /не предоставил ссылку/);
 });
 
+test('repeated cursor with hasNext true stops and marks history incomplete', async () => {
+  let pages = 0;
+  const result = await collectYandex({ fetch: async input => {
+    const url = new URL(String(input));
+    if (url.pathname === '/my/orders') return new Response('<script>{"pageToken":"same","hasNext":true}</script>');
+    if (url.hostname === 'check.yandex.ru') return new Response(receipt);
+    if (url.searchParams.get('r')?.includes('resolveConsolidationOrders')) {
+      pages++; return envelope({ result: 'list', collections: { orderConsolidationResult: { list: { ordersGroupsIds: [123456], pageToken: 'same', hasNext: true } } } });
+    }
+    return envelope({ result: ['r'], collections: { orderReceipt: { r: { fiscalUrl: 'https://check.yandex.ru/r', createdAt: 1767225600 } } } });
+  } });
+  assert.equal(pages, 1); assert.equal(result.stats.incomplete, true); assert.match(result.warnings.join(' '), /повторилась страница/);
+  assert.equal(result.rows.length, 1);
+});
+
 test('unsafe or malformed receipt URL does not discard valid neighbours', async () => {
   for (const fiscalUrl of ['not a URL', 'https://example.com/private-check']) {
     const result = await collectYandex({ fetch: async input => {
@@ -114,4 +130,24 @@ test('API page promising more orders without a token is explicitly incomplete', 
   assert.equal(result.rows.length, 1);
   assert.equal(result.stats.incomplete, true);
   assert.match(result.warnings.join(' '), /следующей страницы/);
+});
+
+test('Yandex passes raw receipt pairs to persisted reconciliation across batches', async () => {
+  const batch = (ids: string[]) => collectYandex({ fetch: async input => {
+    const url = new URL(String(input));
+    if (url.pathname === '/my/orders') return new Response('<a href="/my/order/123456">Заказ</a>');
+    if (url.pathname === '/api/resolve/') return envelope({ result: ids, collections: { orderReceipt: Object.fromEntries(ids.map(id => [id, {
+      id, fiscalUrl: `https://check.yandex.ru/${id}`, createdAt: 1767225600, type: 'INCOME'
+    }])) } });
+    const kind = url.pathname === '/pre' ? 'ПРЕДОПЛАТА' : 'ПОЛНЫЙ РАСЧЕТ';
+    return new Response(`<table><tr><td>1.</td><td>Товар Признак способа расчета: ${kind}</td><td>100,00</td></tr><tr><td>ИТОГ</td><td>100,00</td></tr></table>`);
+  } });
+  const pair = await batch(['pre', 'final']);
+  assert.equal(pair.rows.length, 2);
+  assert.equal(pair.stats.removed, 0);
+  const first = await batch(['pre']), second = await batch(['final']);
+  const merged = mergeCollection(first.rows, second.rows, { source: 'yandex', processedReceipts: second.processedReceipts });
+  assert.equal(merged.length, 1);
+  assert.equal(summarize(merged).net, 10000);
+  assert.equal(mergeCollection(merged, pair.rows, { source: 'yandex', processedReceipts: pair.processedReceipts }).length, 1);
 });

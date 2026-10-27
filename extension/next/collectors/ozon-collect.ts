@@ -1,6 +1,6 @@
 import type { CollectionResult } from '../collection';
 import type { Purchase } from '../model';
-import { parseOzonReceipt, reconcileOzonReceipts } from './ozon.ts';
+import { parseOzonReceipt } from './ozon.ts';
 
 interface Receipt { id: string; url: string; date?: string; orderId?: string }
 const origin = 'https://www.ozon.ru';
@@ -133,6 +133,10 @@ export async function collectOzon(options: { fetch: typeof fetch; readPdf: (byte
   const failureDetails = [...failures].map(([reason, count]) => `${reason}: ${count}`).join('; ');
   if (!rows.length && failed) throw new Error(`${warnings.at(-1)} Причины: ${failureDetails}.${incomplete ? ` ${warnings[0]}` : ''}`);
   if (failureDetails) warnings.push(`Ozon: причины пропуска — ${failureDetails}.`);
-  const reconciled = reconcileOzonReceipts(rows);
-  return { rows: reconciled.rows, processedReceipts: [...new Set(rows.map(row => row.receipt_url || row.marketplace_id || '').filter(Boolean))], warnings, stats: { receipts: receipts.size, pages, failedReceipts: failed, incomplete, removed: reconciled.removed, fallbackReceipts: new Set(reconciled.rows.filter(row => row.parse_quality === 'fallback').map(row => row.marketplace_id)).size } };
+  const unverifiedReceipts = new Set(rows.filter(row => row.parse_quality === 'unverified').map(row => row.marketplace_id)).size;
+  if (unverifiedReceipts) {
+    incomplete = true;
+    warnings.push(`Ozon: у ${unverifiedReceipts} чеков не распознан итог. Суммы товаров требуют проверки.`);
+  }
+  return { rows, processedReceipts: [...new Set(rows.map(row => row.receipt_url || row.marketplace_id || '').filter(Boolean))], warnings, stats: { receipts: receipts.size, pages, failedReceipts: failed, incomplete, removed: 0, fallbackReceipts: new Set(rows.filter(row => row.parse_quality === 'fallback').map(row => row.marketplace_id)).size, unverifiedReceipts } };
 }

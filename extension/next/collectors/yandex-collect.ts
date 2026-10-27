@@ -1,6 +1,6 @@
 import type { CollectionResult } from '../collection';
 import type { Purchase } from '../model';
-import { parseYandexReceipt, reconcileYandexReceipts } from './yandex.ts';
+import { parseYandexReceipt } from './yandex.ts';
 import { mapConcurrent } from './pool.ts';
 
 export interface YandexContext { sk?: string; version?: string; marketFrontGlue?: string; pageId?: string; retpath?: string }
@@ -137,6 +137,5 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
   if (failedOrders || failedReceipts) warnings.push(`Яндекс Маркет: ошибки у ${failedOrders} заказов и ${failedReceipts} чеков. Ранее сохранённая история остаётся.`);
   if (!rows.length && (failedOrders || failedReceipts)) throw new Error(`${warnings.at(-1)} ${[...failures].slice(0,3).join(' ')}`.trim());
   if (failedOrders && failures.size) warnings.push(`Яндекс Маркет: причины пропуска — ${[...failures].slice(0,3).join(' ')}`);
-  const result = reconcileYandexReceipts(rows);
-  return { rows: result.rows, processedReceipts: [...new Set(rows.map(row => row.receipt_url || row.marketplace_id || '').filter(Boolean))], warnings, stats: { orders: orderIds.size, receipts: receipts.size, pages, failedOrders, failedReceipts, removed: result.removed, incomplete, fallbackReceipts: new Set(result.rows.filter(row => row.parse_quality === 'fallback').map(row => row.marketplace_id)).size, unverifiedReceipts: new Set(result.rows.filter(row => row.parse_quality === 'unverified').map(row => row.marketplace_id)).size } };
+  return { rows, processedReceipts: [...new Set(rows.map(row => row.receipt_url || row.marketplace_id || '').filter(Boolean))], warnings, stats: { orders: orderIds.size, receipts: receipts.size, pages, failedOrders, failedReceipts, removed: 0, incomplete, fallbackReceipts: new Set(rows.filter(row => row.parse_quality === 'fallback').map(row => row.marketplace_id)).size, unverifiedReceipts: new Set(rows.filter(row => row.parse_quality === 'unverified').map(row => row.marketplace_id)).size } };
 }

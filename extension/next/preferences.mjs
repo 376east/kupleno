@@ -1,4 +1,4 @@
-import { moneyMinor, moneyDecimal, sourceOf, isRefund } from './domain.mjs';
+import { moneyMinor, moneyDecimal, sourceOf, isRefund, settlementReplacements } from './domain.mjs';
 import { classify } from './categories.ts';
 
 // Retain the public row identity contract so historical annotations stay attached.
@@ -108,6 +108,32 @@ export function removeProfile(state, id) {
   if (settings.activeProfile === id) settings.activeProfile = fallback;
   if (settings.dataProfile === id) settings.dataProfile = fallback;
   return next;
+}
+
+export function applyCollectionRows(state, rows) {
+  const replacements = settlementReplacements(rows);
+  const settings = structuredClone(state.settings);
+  const currentRows = new Map(rows.map(row => [row.rowId, row]));
+  const key = (row, receipt = row.receipt_url || row.marketplace_id, item = row.item_index) => JSON.stringify([sourceOf(row), row.profile || 'personal', receipt, item]);
+  const previousRows = new Map();
+  for (const row of state.rows) if (row[`${sourceOf(row)}_settlement_kind`] === 'prepayment') {
+    const identity = key(row);
+    previousRows.set(identity, previousRows.has(identity) ? null : row);
+  }
+  for (const current of Object.values(replacements)) {
+    const finalRow = currentRows.get(current);
+    const link = finalRow.settlement_predecessor;
+    const oldRow = previousRows.get(key(finalRow, link.receipt, link.item));
+    if (!oldRow || currentRows.has(oldRow.rowId)) continue;
+    const previous = oldRow.rowId;
+    const patch = settings.overrides?.[previous];
+    // Keep the old annotation too; an existing final-receipt edit takes precedence.
+    if (patch) settings.overrides[current] = { ...patch, ...settings.overrides[current] };
+    for (const key of ['refundClaims', 'warranties']) for (const record of settings[key] || []) {
+      if (record.rowId === previous) record.rowId = current;
+    }
+  }
+  return { ...state, rows, settings };
 }
 
 export const budgetKey = (month, profile = 'all') => profile === 'all' ? month : `${profile}\u0001${month}`;

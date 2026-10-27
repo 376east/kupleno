@@ -104,11 +104,77 @@ export function receiptKey(row) {
   return identity ? `${sourceOf(row)}\u0001${row.profile || 'personal'}\u0001${identity}` : '';
 }
 
+// Reconcile only explicit receipt evidence; sparse legacy rows remain visible.
+const settlementIdentity = row => typeof row.receipt_url === 'string' && row.receipt_url
+  ? row.receipt_url : typeof row.marketplace_id === 'string' ? row.marketplace_id : '';
+const settlementKind = row => row[`${sourceOf(row)}_settlement_kind`];
+function settlementSignature(row) {
+  const source = sourceOf(row), order = row[`${source}_order_id`];
+  const amount = moneyMinor(row.amount), item = row.item_index;
+  if (!['ozon', 'yandex'].includes(source) || typeof order !== 'string' || !order.trim()
+    || typeof item !== 'string' || !item || !settlementIdentity(row) || !normalizedText(row.title)
+    || typeof row.rowId !== 'string' || !row.rowId
+    || amount === null || amount <= 0 || isRefund(row) || row.parse_quality === 'fallback'
+    || row.parse_quality === 'unverified' || !/^\d{4}-\d{2}-\d{2}(?:$|[ T])/.test(String(row.date || ''))) return '';
+  return JSON.stringify([source, row.profile || 'personal', order, item, normalizedText(row.title), amount, currencyOf(row)]);
+}
+function predecessor(row) {
+  const value = row.settlement_predecessor;
+  return value && typeof value === 'object' && !Array.isArray(value)
+    && typeof value.receipt === 'string' && value.receipt && typeof value.item === 'string' && value.item
+    && typeof value.rowId === 'string' && value.rowId ? value : null;
+}
+const predecessorKey = value => JSON.stringify([value.receipt, value.item]);
+const settlementDate = row => String(row.date).replace('T', ' ').slice(0, 16);
+
+export function reconcileSettlementReceipts(input, activeReceipts) {
+  const rows = input.map(row => ({ ...row })), groups = new Map(), removed = new Set();
+  for (const row of rows) {
+    const signature = settlementSignature(row);
+    if (!signature || settlementKind(row) !== 'full') continue;
+    if (!groups.has(signature)) groups.set(signature, []);
+    groups.get(signature).push(row);
+  }
+  for (const early of rows) {
+    const signature = settlementSignature(early);
+    if (!signature || settlementKind(early) !== 'prepayment') continue;
+    const identity = predecessorKey({ receipt: settlementIdentity(early), item: early.item_index });
+    const candidates = groups.get(signature) || [];
+    const known = candidates.find(row => predecessor(row) && predecessorKey(predecessor(row)) === identity);
+    const final = (known ? [known] : candidates).find(row => {
+      if (activeReceipts && !activeReceipts.has(receiptKey(early)) && !activeReceipts.has(receiptKey(row))) return false;
+      if (settlementIdentity(row) === settlementIdentity(early) || settlementDate(early) > settlementDate(row)) return false;
+      const previous = predecessor(row);
+      return previous ? predecessorKey(previous) === identity : !Object.hasOwn(row, 'settlement_predecessor');
+    });
+    if (final) {
+      // The final stays consumed on future batches, including a refresh of either receipt.
+      if (!predecessor(final)) final.settlement_predecessor = { receipt: settlementIdentity(early), item: early.item_index, rowId: early.rowId };
+      removed.add(early);
+    }
+  }
+  return { rows: rows.filter(row => !removed.has(row)), removed: removed.size };
+}
+
+export function settlementReplacements(rows) {
+  return Object.fromEntries(rows.flatMap(row => {
+    const previous = predecessor(row);
+    return previous && settlementSignature(row) && settlementKind(row) === 'full' && row.rowId && previous.rowId !== row.rowId
+      ? [[previous.rowId, row.rowId]] : [];
+  }));
+}
+
 // A partial fetch may update known receipts, but cannot erase unvisited history.
 export function mergeCollection(existing, incoming, { source, profile = 'personal', complete = false, replace = false, processedReceipts = [] } = {}) {
   if (!Object.hasOwn(SOURCES, source)) throw new TypeError('Неизвестный магазин.');
   if (incoming.some(row => sourceOf(row) !== source)) throw new TypeError('В результате смешаны разные магазины.');
-  const additions = incoming.map(row => ({ ...row, source, profile }));
+  const priorFinals = new Map(existing.filter(row => predecessor(row) && settlementSignature(row) && settlementKind(row) === 'full')
+    .map(row => [JSON.stringify([receiptKey(row), settlementSignature(row)]), row]));
+  const additions = incoming.map(row => {
+    const addition = { ...row, source, profile };
+    const previous = priorFinals.get(JSON.stringify([receiptKey(addition), settlementSignature(addition)]));
+    return previous ? { ...addition, settlement_predecessor: previous.settlement_predecessor } : addition;
+  });
   const incomingReceipts = new Set(additions.map(receiptKey).filter(Boolean));
   for (const identity of processedReceipts) {
     if (typeof identity !== 'string' || !identity || identity.length > 8192) throw new TypeError('Некорректная ссылка обработанного чека.');
@@ -122,7 +188,7 @@ export function mergeCollection(existing, incoming, { source, profile = 'persona
     return key ? !incomingReceipts.has(key) : !incomingIds.has(row.rowId);
   });
   if (retained.length + additions.length > 100000) throw new RangeError('Сбор остановлен: больше 100 000 операций.');
-  return [...retained, ...additions];
+  return reconcileSettlementReceipts([...retained, ...additions], incomingReceipts).rows;
 }
 
 export function sourceHealth(source, metadata = {}) {

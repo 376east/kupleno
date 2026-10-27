@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { browser } from 'wxt/browser';
 import { SOURCES, mergeCollection, sourceHealth, sourceOf } from '../domain.mjs';
 import { storeOrigins, type Command, type Job, type JobResponse } from '../collection';
-import { identifyRows, settingsWithDefaults } from '../preferences.mjs';
+import { applyCollectionRows, identifyRows, settingsWithDefaults } from '../preferences.mjs';
 import type { Purchase, State, Source } from '../model';
 import { StoreMark, Dialog, operationCount } from './components';
 import { clearSource } from '../source-data';
@@ -48,9 +48,10 @@ export function Stores({ state, rows, save, onSelect }: { state: State; rows: Pu
         if (state.metadata.lastAppliedCollection !== finished.id) {
           const merged = mergeCollection(state.rows, result.rows, { source: finished.source, profile: finished.profile, processedReceipts: result.processedReceipts });
           const previous = state.metadata.collection as { sources?: string[]; stats?: Record<string, unknown>; warnings?: string[] } | undefined;
-          await save({ ...state, rows: identifyRows(merged), metadata: {
+          await save({ ...applyCollectionRows(state, identifyRows(merged)), metadata: {
             ...state.metadata, lastAppliedCollection: finished.id, lastRunAt: finished.updatedAt,
             collection: {
+              ...previous,
               sources: [...new Set([...(previous?.sources || []), finished.source])],
               stats: { ...previous?.stats, [finished.source]: result.stats },
               warnings: [...(previous?.warnings || []).filter(text => !text.startsWith(SOURCES[finished.source].name)), ...result.warnings],
@@ -58,7 +59,7 @@ export function Stores({ state, rows, save, onSelect }: { state: State; rows: Pu
           } });
         }
         await command({ type: 'KUPLENO_JOB', action: 'ack', id: finished.id });
-        if (alive.current) { setJob(null); setSuccess(`История обновлена: ${operationCount(result.rows.length)}.`); setError(''); }
+        if (alive.current) { setJob(null); setSuccess('История обновлена.'); setError(''); }
       } catch (e) { if (alive.current) { setErrorSource(finished.source); setError(e instanceof Error ? e.message : 'Не удалось сохранить сбор. Результат остаётся в расширении.'); } }
       finally { if (alive.current) setApplying(false); }
     })();

@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { collectWildberries, normalizeReceiptList, parseReceiptHtml } from './wildberries.ts';
 import { rowId } from '../preferences.mjs';
+import { sourceHealth } from '../domain.mjs';
 
 const receipt = { id: 'r-1', url: 'https://receipt.wb.ru/r-1', date: '2026-09-14T10:00:00Z', operationSum: 100, operationTypeId: 1 };
 const item = (title: string, price: string) => `<div class="products-item"><div class="products-cell products-cell_name"><div class="products-prop-value">Наименование ${title}</div></div><div class="products-cell products-cell_price"></div><div class="products-cell products-cell_cost"><div class="products-prop-value">${price}</div></div></div>`;
@@ -47,4 +48,21 @@ test('collects two API pages and retains success when one receipt fails', async 
   assert.equal(result.stats.failedReceipts, 1);
   assert.equal(result.stats.incomplete, false);
   assert.equal(requests.filter((url) => url.startsWith('https://astro.wildberries.ru/')).length, 2);
+  assert.equal(sourceHealth('wildberries', { collection: { stats: { wildberries: result.stats }, warnings: result.warnings } }).state, 'partial');
+});
+
+test('empty end, repeated cursor, list failure, missing document and cancellation stay distinct', async () => {
+  const empty = await collectWildberries({ token: 'synthetic', fetch: async () => new Response(JSON.stringify({ receipts: [] })) });
+  assert.equal(empty.stats.incomplete, false); assert.equal(empty.rows.length, 0); assert.deepEqual(empty.warnings, []);
+  let pages = 0;
+  const repeated = await collectWildberries({ token: 'synthetic', fetch: async () => {
+    pages++; return new Response(JSON.stringify({ receipts: [], nextReceiptUid: 'same' }));
+  } });
+  assert.equal(pages, 2); assert.equal(repeated.stats.incomplete, true); assert.match(repeated.warnings.join(' '), /повторилась страница/);
+  await assert.rejects(collectWildberries({ token: 'synthetic', fetch: async () => new Response('', { status: 503 }) }), /WB_LIST_HTTP_503/);
+  await assert.rejects(collectWildberries({ token: 'synthetic', fetch: async () => new Response(JSON.stringify({ receipts: [{ receiptUid: 'missing' }] })) }), /не распознаны ссылки/);
+  const controller = new AbortController(); controller.abort(new DOMException('synthetic cancel', 'AbortError'));
+  let requests = 0;
+  await assert.rejects(collectWildberries({ token: 'synthetic', signal: controller.signal, fetch: async () => { requests++; return new Response(); } }), { name: 'AbortError' });
+  assert.equal(requests, 0);
 });

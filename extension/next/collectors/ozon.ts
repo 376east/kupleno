@@ -1,24 +1,10 @@
 import type { Purchase } from '../model';
 import { identifyRows } from '../preferences.mjs';
-import { moneyDecimal, moneyMinor } from '../domain.mjs';
+import { moneyDecimal, moneyMinor, reconcileSettlementReceipts } from '../domain.mjs';
 
 type Receipt = { id: string; url: string; date?: string; orderId?: string };
-type OzonRow = Purchase & { ozon_settlement_kind?: string; ozon_order_id?: string; item_index?: string; raw_amount?: string };
-const settlementOf = (row: OzonRow) => String(row.ozon_settlement_kind || (row as Record<string, unknown>).__ozonSettlementKind || 'unknown');
-
-const titleKey = (title: unknown) => String(title || '').toLowerCase().replace(/ё/g, 'е').replace(/[^0-9a-zа-я]+/gi, ' ').trim();
 const dateValue = (value: string | undefined) => String(value || '').replace('T', ' ').replace(/Z$/, '').slice(0, 16);
 const orderFrom = (receipt: Receipt) => receipt.orderId || receipt.id.match(/^(.+?)-[0-9a-f]{8}-[0-9a-f-]{27,}/i)?.[1] || '';
-function rowOrder(row: OzonRow): string {
-  const explicit = String(row.ozon_order_id || '').trim();
-  if (explicit) return explicit;
-  const title = String(row.raw_title || '').match(/Заказ\s*№\s*(\S+)/iu)?.[1];
-  if (title) return title;
-  const marketplace = String(row.marketplace_id || '').trim();
-  if (marketplace) return marketplace;
-  const receipt = String(row.receipt_url || '').match(/[?&](?:chequeId|id)=([^&#]+)/i)?.[1] || '';
-  return receipt.match(/^(.+?)-[0-9a-f]{8}-[0-9a-f-]{27,}/i)?.[1] || '';
-}
 const totalFrom = (text: string) => moneyMinor((text.match(/ИТОГ[\s\S]{0,80}?(-?\d[\d\s]*(?:[,.]\d{1,2})?)/i) || [])[1] || '');
 
 export function parseOzonReceipt(text: string, receipt: Receipt): Purchase[] {
@@ -64,23 +50,5 @@ export function parseOzonReceipt(text: string, receipt: Receipt): Purchase[] {
 }
 
 export function reconcileOzonReceipts(input: Purchase[]): { rows: Purchase[]; removed: number } {
-  const rows = input.map((row) => ({ ...row })) as OzonRow[];
-  const remove = new Set<OzonRow>();
-  const consumedFinals = new Set<OzonRow>();
-  const finals = rows.filter((row) => row.type !== 'refund' && settlementOf(row) === 'full');
-  for (const early of rows) {
-    if (early.type === 'refund' || settlementOf(early) === 'full') continue;
-    const order = rowOrder(early);
-    if (!order) continue;
-    const cents = moneyMinor(early.amount);
-    if (cents === null) continue;
-    const match = finals.find((final) => !consumedFinals.has(final)
-      && rowOrder(final) === order
-      && titleKey(final.title) === titleKey(early.title)
-      && moneyMinor(final.amount) === cents
-      && String(final.item_index || '') === String(early.item_index || '')
-      && String(early.date || '') <= String(final.date || ''));
-    if (match) { remove.add(early); consumedFinals.add(match); }
-  }
-  return { rows: identifyRows(rows.filter((row) => !remove.has(row))), removed: remove.size };
+  return reconcileSettlementReceipts(identifyRows(input));
 }

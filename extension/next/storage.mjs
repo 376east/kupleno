@@ -253,6 +253,12 @@ function validateState(state) {
       if (row[field] != null && typeof row[field] !== 'string') throw storageError('INVALID_ROW', `Некорректное поле покупки: ${field}.`);
     }
     if (row.excluded != null && typeof row.excluded !== 'boolean') throw storageError('INVALID_ROW', 'Некорректная отметка исключения покупки.');
+    if (own(row, 'settlement_predecessor')) {
+      const link = row.settlement_predecessor;
+      if (!isPlainObject(link) || ['receipt', 'item', 'rowId'].some(key => typeof link[key] !== 'string' || !link[key].trim())) {
+        throw storageError('INVALID_ROW', 'Некорректная связь предоплаты и окончательного чека.');
+      }
+    }
   });
   return cloneJson(state);
 }

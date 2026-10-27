@@ -24,11 +24,11 @@ test('reconciles only proven same-order prepayment/final pair', () => {
   assert.equal(oneFinal.rows.length, 2);
 });
 
-test('reconciles proven unknown settlement duplicates without consuming a final twice', () => {
+test('preserves unknown settlement rows without guessing a prepayment', () => {
   const row = (kind: string, id: string, index: string) => ({ rowId: '', source: 'ozon', date: '2026-01-01', title: 'Товар', amount: '100.00', marketplace_id: id, ozon_order_id: 'ORDER-1', item_index: index, ozon_settlement_kind: kind, type: 'purchase' });
   const result = reconcileOzonReceipts([row('unknown', 'early-a', '1'), row('unknown', 'early-b', '2'), row('full', 'final', '1')]);
-  assert.equal(result.removed, 1);
-  assert.equal(result.rows.length, 2);
+  assert.equal(result.removed, 0);
+  assert.equal(result.rows.length, 3);
 });
 
 test('full settlement wins over advance wording and title stops at amount', () => {

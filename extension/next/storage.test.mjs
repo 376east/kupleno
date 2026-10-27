@@ -78,6 +78,19 @@ test('purchase fields reject UI-breaking types and misleading exclusion flags', 
   }
 });
 
+test('settlement links reject malformed consumed fields in v1/v2 and preserve extensions', () => {
+  for (const link of [null, [], true, {}, { receipt: 'pre', item: '1', rowId: 7 }, { receipt: '', item: '1', rowId: 'pre' }]) {
+    const sample = { ...state, rows: [{ ...state.rows[0], settlement_predecessor: link }] };
+    for (const version of [1, 2]) {
+      const backup = version === 1 ? { format: 'kupleno-backup', version, ...sample } : { format: 'kupleno-backup', version, state: sample };
+      assert.throws(() => parseBackup(JSON.stringify(backup)), error => error.code === 'INVALID_ROW');
+    }
+    assert.throws(() => serializeBackup(sample), error => error.code === 'INVALID_ROW');
+  }
+  const sample = { ...state, rows: [{ ...state.rows[0], settlement_predecessor: { receipt: 'pre', item: '1', rowId: 'pre', future: { keep: true } } }] };
+  assert.deepEqual(parseBackup(serializeBackup(sample)).state, sample);
+});
+
 test('backup rejects dangerous JSON keys', () => {
   assert.throws(
     () => parseBackup('{"format":"kupleno-backup","version":2,"state":{"rows":[],"settings":{"__proto__":{}},"metadata":{}}}'),
