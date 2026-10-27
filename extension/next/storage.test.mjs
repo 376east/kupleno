@@ -46,6 +46,22 @@ test('v1 backup remains readable without changing purchase fields', () => {
   });
 });
 
+test('collection metadata consumed by store actions is validated without dropping future fields', () => {
+  for (const collection of [true, [], 'broken', { sources: {} }, { sources: [7] }, { warnings: 'broken' },
+    { warnings: [null] }, { stats: [] }, { stats: { ozon: false } }]) {
+    const sample = { ...state, metadata: { collection } };
+    for (const version of [1, 2]) {
+      const backup = version === 1 ? { format: 'kupleno-backup', version, ...sample } : { format: 'kupleno-backup', version, state: sample };
+      assert.throws(() => parseBackup(JSON.stringify(backup)), error => error.code === 'INVALID_METADATA');
+    }
+    assert.throws(() => serializeBackup(sample), error => error.code === 'INVALID_METADATA');
+  }
+  for (const collection of [null, {}, { sources: ['wb', 'future'], warnings: ['Неполная история'], stats: { ozon: { future: ['keep'] } }, future: { keep: true } }]) {
+    const sample = { ...state, metadata: { collection, future: ['keep'] } };
+    assert.deepEqual(parseBackup(serializeBackup(sample)).state, sample);
+  }
+});
+
 test('purchase fields reject UI-breaking types and misleading exclusion flags', () => {
   for (const patch of [{ category: {} }, { note: [] }, { profile: 1 }, { currency: false }, { type: {} }, { parse_quality: [] }, { excluded: 'false' }]) for (const version of [1, 2]) {
     const sample = { ...state, rows: [{ ...state.rows[0], ...patch }] };
@@ -296,6 +312,19 @@ test('IndexedDB store keeps epochs, history and legacy database read-only', asyn
       if (legacySnapshot.state.rows[0].amount !== '001.50') fail('Legacy amount was changed');
       const first = await store.write(sampleState, { expectedRevision: 0, expectedEpoch: 0 });
       if (first.revision !== 1 || first.epoch !== 0) fail('First write version is wrong');
+      const originalPut = IDBObjectStore.prototype.put;
+      IDBObjectStore.prototype.put = function (...args) {
+        if (this.name === 'history') throw new DOMException('Injected history write failure', 'QuotaExceededError');
+        return originalPut.apply(this, args);
+      };
+      try {
+        try { await store.write({ ...sampleState, metadata: { changed: 'must roll back' } }, { expectedRevision: 1, expectedEpoch: 0 }); fail('Expected injected failure'); }
+        catch (error) { if (error.name !== 'QuotaExceededError') throw error; }
+      } finally { IDBObjectStore.prototype.put = originalPut; }
+      // Let an accidentally un-aborted transaction commit before checking all stores.
+      await new Promise(resolve => setTimeout(resolve, 20));
+      if (JSON.stringify(await store.read()) !== JSON.stringify(first)) fail('Failed history write partially replaced current state');
+      if ((await store.history()).length !== 1) fail('Failed write changed history');
       for (const settings of [
         { customRules: [{ category: {} }] }, { budgets: { '2026-10': { total: true } } },
         { refundClaims: [{ manualMatchRowIds: ['refund', 'refund'] }] },

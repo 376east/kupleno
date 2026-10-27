@@ -225,6 +225,18 @@ function validateState(state) {
   if (state.rows.length > MAX_ROWS) throw storageError('TOO_MANY_ROWS', 'Слишком много покупок.');
   validateJson(state);
   validateSettings(state.settings);
+  const collection = state.metadata.collection;
+  if (collection != null) {
+    if (!isPlainObject(collection)) throw storageError('INVALID_METADATA', 'Некорректная диагностика сбора.');
+    for (const key of ['sources', 'warnings']) {
+      if (collection[key] != null && (!Array.isArray(collection[key]) || collection[key].some(value => typeof value !== 'string'))) {
+        throw storageError('INVALID_METADATA', `Некорректная диагностика сбора: ${key}.`);
+      }
+    }
+    if (collection.stats != null && (!isPlainObject(collection.stats) || ['ozon', 'wildberries', 'wb', 'yandex'].some(key => collection.stats[key] != null && !isPlainObject(collection.stats[key])))) {
+      throw storageError('INVALID_METADATA', 'Некорректная статистика сбора.');
+    }
+  }
   const rowIds = new Set();
   state.rows.forEach((row, index) => {
     if (!isPlainObject(row)) throw storageError('INVALID_ROW', `Некорректная покупка ${index + 1}.`);
@@ -418,22 +430,29 @@ export function createStore({ indexedDB = globalThis.indexedDB, dbName = DEFAULT
     const currentStore = transaction.objectStore(STORE.current);
     const historyStore = transaction.objectStore(STORE.history);
     const metaStore = transaction.objectStore(STORE.meta);
-    const actual = await versionFromMeta(metaStore);
-    assertCurrentVersion(actual, expected);
-    const revision = actual.revision + 1;
-    const epoch = nextEpoch === null ? actual.epoch : nextEpoch;
-    const createdAt = new Date().toISOString();
-    currentStore.put({ key: CURRENT_KEY, state: safeState, revision, epoch, createdAt });
-    if (clearHistory) {
-      historyStore.clear();
-    } else {
-      historyStore.put({ id: makeHistoryId(), createdAt, rows: safeState.rows, state: safeState, revision });
-      await trimHistory(historyStore);
+    try {
+      const actual = await versionFromMeta(metaStore);
+      assertCurrentVersion(actual, expected);
+      const revision = actual.revision + 1;
+      const epoch = nextEpoch === null ? actual.epoch : nextEpoch;
+      const createdAt = new Date().toISOString();
+      currentStore.put({ key: CURRENT_KEY, state: safeState, revision, epoch, createdAt });
+      if (clearHistory) {
+        historyStore.clear();
+      } else {
+        historyStore.put({ id: makeHistoryId(), createdAt, rows: safeState.rows, state: safeState, revision });
+        await trimHistory(historyStore);
+      }
+      metaStore.put({ key: META_EPOCH, value: epoch });
+      metaStore.put({ key: META_REVISION, value: revision });
+      await completed;
+      return envelope(safeState, revision, epoch);
+    } catch (error) {
+      // A synchronous request failure does not automatically abort IndexedDB.
+      try { transaction.abort(); } catch { /* Already completed or aborted. */ }
+      await completed.catch(() => {});
+      throw error;
     }
-    metaStore.put({ key: META_EPOCH, value: epoch });
-    metaStore.put({ key: META_REVISION, value: revision });
-    await completed;
-    return envelope(safeState, revision, epoch);
   }
 
   return Object.freeze({
