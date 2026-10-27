@@ -26,7 +26,15 @@ function resultData(payload: unknown, diagnostics: Record<string, number>, index
   const value = entry.data || (index === 0 ? root.data : undefined), data = object(value);
   if (!errors.length && !Object.keys(data).length) {
     if (value && typeof value === 'object' && !Array.isArray(value)) diagnostics.responseEmptyData!++;
-    else diagnostics.responseMalformedData!++;
+    else {
+      diagnostics.responseMalformedData!++;
+      const raw = Object.hasOwn(entry, 'data') ? entry.data : index === 0 ? root.data : undefined;
+      const counter = raw === undefined ? 'responseDataMissing' : raw === null ? 'responseDataNull' : Array.isArray(raw) ? 'responseDataArray' : 'responseDataPrimitive';
+      diagnostics[counter]!++;
+      if (root.results === undefined) diagnostics.responseResultsMissing!++;
+      else if (Array.isArray(root.results) && !root.results.length) diagnostics.responseResultsEmpty!++;
+      else if (!Array.isArray(root.results)) diagnostics.responseResultsMalformed!++;
+    }
   }
   if (!Object.keys(data).length || errors.length) throw new Error('Яндекс Маркет вернул неизвестный формат ответа.');
   return data;
@@ -45,9 +53,10 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
   };
   let pages = 0, incomplete = false, failedOrders = 0;
   const diagnostics = { responseRootErrors: 0, responseEntryErrors: 0, responseEmptyData: 0, responseMalformedData: 0, responseMalformedResult: 0,
+    responseDataMissing: 0, responseDataNull: 0, responseDataArray: 0, responseDataPrimitive: 0, responseResultsMissing: 0, responseResultsEmpty: 0, responseResultsMalformed: 0,
     resolverNotFoundErrors: 0, resolverForbiddenErrors: 0, resolverUnauthorizedErrors: 0, resolverRateLimitErrors: 0, resolverOtherErrors: 0,
     missingUrlOrders: 0, unsafeUrlOrders: 0, responseErrorOrders: 0, noReceiptOrders: 0 };
-  const pagination = { lastPageIds: 0, lastPageNewIds: 0, lastPageHasNextKnown: false, lastPageHasNext: false, lastPageCursorPresent: false, lastPageCursorMatchesRequest: false, repeatedCursor: false };
+  const pagination = { lastPageItems: 0, lastPageIds: 0, lastPageNewIds: 0, lastPageHasNextKnown: false, lastPageHasNext: false, lastPageCursorPresent: false, lastPageCursorMatchesRequest: false, repeatedCursor: false };
   const headers: Record<string, string> = { accept: '*/*', 'content-type': 'application/json', 'x-market-apphost-target': 'WEB', 'x-market-core-service': '<UNKNOWN>', 'x-market-page-id': options.context?.pageId || 'market:orders', 'x-requested-with': 'XMLHttpRequest', 'x-retpath-y': origin + ordersPath };
   if (options.context?.sk) headers.sk = options.context.sk;
   if (options.context?.version) headers['x-market-app-version'] = options.context.version;
@@ -90,7 +99,9 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
       } catch (e) { if (options.signal?.aborted) throw e; }
     }
     if (!page) { if (!orderIds.size) throw new Error('Яндекс Маркет: формат списка заказов не распознан. Проверьте вход и повторите сбор.'); incomplete = true; warnings.push('Яндекс Маркет: следующие страницы заказов не прочитаны.'); break; }
-    const ids = array(page.ordersGroupsIds || page.orderGroupIds).map(String).filter(id => /^\d+$/.test(id));
+    const items = Array.isArray(page.ordersGroupsIds) ? page.ordersGroupsIds : array(page.orderGroupIds);
+    const ids = items.map(String).filter(id => /^\d+$/.test(id));
+    pagination.lastPageItems = items.length;
     pagination.lastPageIds = ids.length;
     pagination.lastPageNewIds = new Set(ids.filter(id => !orderIds.has(id))).size;
     pagination.lastPageHasNextKnown = typeof page.hasNext === 'boolean';
@@ -104,7 +115,7 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
       incomplete = true;
       warnings.push('Яндекс Маркет: не найден указатель следующей страницы заказов.');
     }
-    requestPage = page.hasNext !== false && !!token;
+    requestPage = page.hasNext !== false && !!token && (items.length > 0 || page.hasNext === true);
     await options.onProgress?.({ done: pages, total: 0, message: `Яндекс Маркет: найдено ${orderIds.size} заказов.` });
   }
   if (requestPage && pages >= 2000) { incomplete = true; warnings.push('Яндекс Маркет: достигнут лимит страниц заказов.'); }

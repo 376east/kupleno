@@ -12,6 +12,24 @@ function safeUrl(value: string, receipt = false) {
   return url.href;
 }
 const decode = (value: string) => value.replace(/&quot;/g, '"').replace(/&amp;/g, '&').replace(/\\u(002d|005f|002f|003a|003f|003d|0026|0025)|\\\//gi, (_match, code: string | undefined) => code ? String.fromCharCode(parseInt(code,16)) : '/');
+const metadataFields = ['browser', 'client', 'layoutTrackingInfo', 'location', 'seo', 'userInfo', 'shared', 'segments', 'pageInfo', 'pageToken', 'serverTiming', 'userToken', 'experimentsConfig', 'requestID', 'verticalInfo', 'resolveParams', 'isPrefetched'];
+const isObject = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
+function listContext(value: unknown) {
+  if (!isObject(value) || !isObject(value.pageInfo) || !isObject(value.userInfo) || !Object.keys(value.userInfo).length) return { pageIdentity: '', metadataOnly: false };
+  const info = value.pageInfo;
+  if (typeof info.url !== 'string' || typeof info.pageType !== 'string' || !info.pageType || typeof info.pageTypeTracking !== 'string'
+    || !['layoutId', 'layoutVersion', 'ruleId'].every(key => typeof info[key] === 'number' && Number.isFinite(info[key]))) return { pageIdentity: '', metadataOnly: false };
+  try {
+    if (new URL(safeUrl(info.url)).pathname.replace(/\/$/, '') !== '/my/e-check') return { pageIdentity: '', metadataOnly: false };
+  } catch { return { pageIdentity: '', metadataOnly: false }; }
+  // Account context is compared only in memory; it never enters diagnostics or the saved result.
+  const pageIdentity = JSON.stringify([info.pageType, info.pageTypeTracking, info.layoutId, info.layoutVersion, info.ruleId, value.userInfo]);
+  const metadataOnly = Object.keys(value).length === metadataFields.length && metadataFields.every(key => Object.hasOwn(value, key))
+    && value.isPrefetched === false && ['browser', 'client', 'location', 'seo', 'userInfo', 'experimentsConfig', 'verticalInfo', 'resolveParams'].every(key => isObject(value[key]))
+    && ['layoutTrackingInfo', 'shared', 'pageToken', 'userToken', 'requestID'].every(key => typeof value[key] === 'string')
+    && Array.isArray(value.segments) && Array.isArray(value.serverTiming);
+  return { pageIdentity, metadataOnly };
+}
 export function ozonList(text: string) {
   const records = new Map<string, Receipt>();
   let next = '', knownShape = false, nodes = 0;
@@ -51,13 +69,14 @@ export function ozonList(text: string) {
     for (const child of Object.values(object)) walk(child, depth + 1);
   }
   const normalized = decode(text);
-  try { walk(JSON.parse(text)); } catch (e) { if (!(e instanceof SyntaxError)) throw e; }
+  let context = { pageIdentity: '', metadataOnly: false };
+  try { const value: unknown = JSON.parse(text); walk(value); context = listContext(value); } catch (e) { if (!(e instanceof SyntaxError)) throw e; }
   if (!next) {
     const encoded = normalized.match(/"nextPage"\s*:\s*("(?:\\.|[^"\\])*")/);
     if (encoded) { try { next = JSON.parse(encoded[1]!); } catch { /* Unknown, not a guessed URL. */ } }
   }
   scanLinks(normalized);
-  return { records: [...records.values()], next, knownShape };
+  return { records: [...records.values()], next, knownShape, ...context };
 }
 
 export async function collectOzon(options: { fetch: typeof fetch; readPdf: (bytes: Uint8Array, signal?: AbortSignal) => Promise<string>; signal?: AbortSignal; onProgress?: (p: { done: number; total: number; message: string }) => void | Promise<void> }): Promise<CollectionResult> {
@@ -66,11 +85,11 @@ export async function collectOzon(options: { fetch: typeof fetch; readPdf: (byte
     unrecognizedListResponses: 0, unrecognizedListJsonResponses: 0, unrecognizedListHtmlResponses: 0,
     unrecognizedListEmptyResponses: 0, unrecognizedListErrorResponses: 0,
     unrecognizedListWidgetResponses: 0, unrecognizedListEmptyWidgets: 0,
-    failedCurrentListPage: 0, failedArchiveListPage: 0,
+    failedCurrentListPage: 0, failedArchiveListPage: 0, metadataListEnds: 0,
   };
   let pages = 0, incomplete = false, emptyKnown = 0;
   for (const start of ['/my/e-check', '/my/e-check?archive=1']) {
-    let url = safeUrl(start), count = 0;
+    let url = safeUrl(start), count = 0, previousPageIdentity = '';
     const visited = new Set<string>();
     while (url) {
       options.signal?.throwIfAborted();
@@ -84,6 +103,8 @@ export async function collectOzon(options: { fetch: typeof fetch; readPdf: (byte
         const body = await response.text(); if (body.length > 8 * 1024 * 1024) throw new Error('Слишком большой ответ.');
         const page = ozonList(body);
         if (!page.records.length && !page.next && !page.knownShape) {
+          // Observed list ends retain the preceding page's metadata but omit all content fields.
+          if (page.metadataOnly && previousPageIdentity && page.pageIdentity === previousPageIdentity) { diagnostics.metadataListEnds++; break; }
           diagnostics.unrecognizedListResponses++;
           if (!body.trim()) diagnostics.unrecognizedListEmptyResponses++;
           if (/^\s*(?:<!doctype\s+html|<html(?:\s|>))/i.test(body)) diagnostics.unrecognizedListHtmlResponses++;
@@ -103,6 +124,7 @@ export async function collectOzon(options: { fetch: typeof fetch; readPdf: (byte
         }
         if (page.knownShape && !page.records.length) emptyKnown++;
         for (const receipt of page.records) receipts.set(receipt.id, receipt);
+        if (page.records.length && page.pageIdentity) previousPageIdentity = page.pageIdentity;
         cap(receipts.size);
         url = page.next ? safeUrl(`/api/entrypoint-api.bx/page/json/v2?url=${encodeURIComponent(new URL(safeUrl(page.next)).pathname + new URL(safeUrl(page.next)).search)}`) : '';
         await options.onProgress?.({ done: pages, total: 0, message: `Ozon: найдено ${receipts.size} чеков.` });

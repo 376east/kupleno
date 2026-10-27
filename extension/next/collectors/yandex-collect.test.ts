@@ -185,6 +185,41 @@ test('repeated cursor with hasNext true stops and marks history incomplete', asy
   assert.equal(result.stats.repeatedCursor, true);
 });
 
+test('only a raw empty final list ends pagination when the store echoes its cursor', async () => {
+  for (const { items, hasNext, incomplete } of [
+    { items: [], hasNext: undefined, incomplete: false },
+    { items: [], hasNext: false, incomplete: false },
+    { items: [], hasNext: true, incomplete: true },
+    { items: ['invalid-order-id'], hasNext: undefined, incomplete: true },
+  ]) {
+    let pages = 0;
+    const result = await collectYandex({ fetch: async input => {
+      const url = new URL(String(input));
+      if (url.pathname === '/my/orders') return new Response('');
+      if (url.hostname === 'check.yandex.ru') return new Response(receipt);
+      if (url.searchParams.get('r')?.includes('resolveConsolidationOrders')) {
+        pages++;
+        return envelope({ result: 'list', collections: { orderConsolidationResult: { list: pages === 1
+          ? { ordersGroupsIds: [123456], pageToken: 'private-cursor', hasNext: true }
+          : { ordersGroupsIds: items, pageToken: 'private-cursor', ...(hasNext === undefined ? {} : { hasNext }) }
+        } } });
+      }
+      return envelope({ result: ['r'], collections: { orderReceipt: { r: { fiscalUrl: 'https://check.yandex.ru/r', createdAt: 1767225600 } } } });
+    } });
+    assert.equal(pages, 2);
+    assert.equal(result.rows.length, 1);
+    assert.equal(result.stats.lastPageItems, items.length);
+    assert.equal(result.stats.lastPageIds, 0);
+    assert.equal(result.stats.lastPageNewIds, 0);
+    assert.equal(result.stats.lastPageHasNextKnown, hasNext !== undefined);
+    assert.equal(result.stats.lastPageCursorMatchesRequest, true);
+    assert.equal(result.stats.incomplete, incomplete);
+    assert.equal(result.stats.repeatedCursor, incomplete);
+    if (!incomplete) assert.deepEqual(result.warnings, []);
+    assert.ok(!JSON.stringify(result.stats).includes('private-cursor'));
+  }
+});
+
 test('Yandex diagnostics distinguish resolver envelopes and malformed data without retaining their contents', async () => {
   const secret = 'private-response-secret';
   const cases: Array<{ payload: unknown; counters: Record<string, number> }> = [
@@ -195,8 +230,15 @@ test('Yandex diagnostics distinguish resolver envelopes and malformed data witho
     { payload: { error: { code: secret, message: secret } }, counters: { responseRootErrors: 2, resolverOtherErrors: 2 } },
     { payload: { error: { code: '__proto__', message: secret } }, counters: { responseRootErrors: 2, resolverOtherErrors: 2 } },
     { payload: { results: [{ data: {} }] }, counters: { responseEmptyData: 2 } },
-    { payload: { results: [{ data: null }] }, counters: { responseMalformedData: 2 } },
-    { payload: { results: [{ data: [secret] }] }, counters: { responseMalformedData: 2 } },
+    { payload: {}, counters: { responseMalformedData: 2, responseDataMissing: 2, responseResultsMissing: 2 } },
+    { payload: { results: [] }, counters: { responseMalformedData: 2, responseDataMissing: 2, responseResultsEmpty: 2 } },
+    { payload: { results: null }, counters: { responseMalformedData: 2, responseDataMissing: 2, responseResultsMalformed: 2 } },
+    { payload: { results: [{}] }, counters: { responseMalformedData: 2, responseDataMissing: 2 } },
+    { payload: { results: [{ data: null }] }, counters: { responseMalformedData: 2, responseDataNull: 2 } },
+    { payload: { results: [{ data: [secret] }] }, counters: { responseMalformedData: 2, responseDataArray: 2 } },
+    { payload: { data: null }, counters: { responseMalformedData: 2, responseDataNull: 2, responseResultsMissing: 2 } },
+    { payload: { results: [{ data: secret }] }, counters: { responseMalformedData: 2, responseDataPrimitive: 2 } },
+    { payload: { results: [{ data: false }] }, counters: { responseMalformedData: 2, responseDataPrimitive: 2 } },
     { payload: { results: [{ data: { result: secret } }] }, counters: { responseMalformedResult: 2 } },
   ];
   for (const { payload, counters } of cases) {
