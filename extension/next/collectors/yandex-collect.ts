@@ -11,11 +11,24 @@ const receiptResolver = 'src/resolvers/orderDocuments/resolveOrderReceiptsByOrde
 const object = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const array = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
 const cap = (size: number) => { if (size > 100000) throw Object.assign(new Error('В сборе больше 100 000 операций.'), { code: 'ROW_LIMIT_EXCEEDED' }); };
-function resultData(payload: unknown, index = 0) {
+function resultData(payload: unknown, diagnostics: Record<string, number>, index = 0) {
   const root = object(payload), entries = array(root.results);
   const entry = object(entries[index]);
-  const data = object(entry.data || (index === 0 ? root.data : undefined));
-  if (!Object.keys(data).length || root.error || entry.error) throw new Error('Яндекс Маркет вернул неизвестный формат ответа.');
+  const errors = [root.error, entry.error].filter(Boolean);
+  if (root.error) diagnostics.responseRootErrors!++;
+  if (entry.error) diagnostics.responseEntryErrors!++;
+  const codes = { NOT_FOUND: 'resolverNotFoundErrors', FORBIDDEN: 'resolverForbiddenErrors', UNAUTHORIZED: 'resolverUnauthorizedErrors', TOO_MANY_REQUESTS: 'resolverRateLimitErrors' } as const;
+  for (const error of errors) {
+    const code = typeof error === 'string' ? error : object(error).code;
+    const counter = typeof code === 'string' && Object.hasOwn(codes, code) ? codes[code as keyof typeof codes] : 'resolverOtherErrors';
+    diagnostics[counter]!++;
+  }
+  const value = entry.data || (index === 0 ? root.data : undefined), data = object(value);
+  if (!errors.length && !Object.keys(data).length) {
+    if (value && typeof value === 'object' && !Array.isArray(value)) diagnostics.responseEmptyData!++;
+    else diagnostics.responseMalformedData!++;
+  }
+  if (!Object.keys(data).length || errors.length) throw new Error('Яндекс Маркет вернул неизвестный формат ответа.');
   return data;
 }
 function safeReceipt(value: string) {
@@ -31,6 +44,10 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
     failures.add(!/[\r\n]|https?:|token|Bearer/i.test(message) && message.length < 180 ? message : 'Не удалось обработать ответ магазина.');
   };
   let pages = 0, incomplete = false, failedOrders = 0;
+  const diagnostics = { responseRootErrors: 0, responseEntryErrors: 0, responseEmptyData: 0, responseMalformedData: 0, responseMalformedResult: 0,
+    resolverNotFoundErrors: 0, resolverForbiddenErrors: 0, resolverUnauthorizedErrors: 0, resolverRateLimitErrors: 0, resolverOtherErrors: 0,
+    missingUrlOrders: 0, unsafeUrlOrders: 0, responseErrorOrders: 0, noReceiptOrders: 0 };
+  const pagination = { lastPageIds: 0, lastPageNewIds: 0, lastPageHasNextKnown: false, lastPageHasNext: false, lastPageCursorPresent: false, lastPageCursorMatchesRequest: false, repeatedCursor: false };
   const headers: Record<string, string> = { accept: '*/*', 'content-type': 'application/json', 'x-market-apphost-target': 'WEB', 'x-market-core-service': '<UNKNOWN>', 'x-market-page-id': options.context?.pageId || 'market:orders', 'x-requested-with': 'XMLHttpRequest', 'x-retpath-y': origin + ordersPath };
   if (options.context?.sk) headers.sk = options.context.sk;
   if (options.context?.version) headers['x-market-app-version'] = options.context.version;
@@ -59,21 +76,28 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
   // Rendered orders are only a seed: missing HTML pagination metadata is not the end of history.
   let requestPage = true;
   while (requestPage && pages < 2000) {
-    if (visited.has(token)) { incomplete = true; warnings.push('Яндекс Маркет: повторилась страница заказов.'); break; }
+    if (visited.has(token)) { pagination.repeatedCursor = true; incomplete = true; warnings.push('Яндекс Маркет: повторилась страница заказов.'); break; }
     visited.add(token); pages++;
     let page: Record<string, unknown> | null = null;
     for (const resolver of orderResolvers) {
       try {
-        const data = resultData(await resolve(resolver, [{ ...(token ? { pageToken: token } : {}), filter: 'COMPLETED', size: 18 }]));
+        const data = resultData(await resolve(resolver, [{ ...(token ? { pageToken: token } : {}), filter: 'COMPLETED', size: 18 }]), diagnostics);
         const collection = object(object(data.collections).orderConsolidationResult);
         const id = Array.isArray(data.result) ? data.result[0] : data.result;
         const candidate = object(collection[String(id)] || Object.values(collection)[0]);
-        if (!Array.isArray(candidate.ordersGroupsIds) && !Array.isArray(candidate.orderGroupIds)) throw new Error('Список заказов не распознан.');
+        if (!Array.isArray(candidate.ordersGroupsIds) && !Array.isArray(candidate.orderGroupIds)) { diagnostics.responseMalformedResult++; throw new Error('Список заказов не распознан.'); }
         page = candidate; break;
       } catch (e) { if (options.signal?.aborted) throw e; }
     }
     if (!page) { if (!orderIds.size) throw new Error('Яндекс Маркет: формат списка заказов не распознан. Проверьте вход и повторите сбор.'); incomplete = true; warnings.push('Яндекс Маркет: следующие страницы заказов не прочитаны.'); break; }
-    for (const id of array(page.ordersGroupsIds || page.orderGroupIds)) if (/^\d+$/.test(String(id))) orderIds.add(String(id));
+    const ids = array(page.ordersGroupsIds || page.orderGroupIds).map(String).filter(id => /^\d+$/.test(id));
+    pagination.lastPageIds = ids.length;
+    pagination.lastPageNewIds = new Set(ids.filter(id => !orderIds.has(id))).size;
+    pagination.lastPageHasNextKnown = typeof page.hasNext === 'boolean';
+    pagination.lastPageHasNext = page.hasNext === true;
+    pagination.lastPageCursorPresent = typeof page.pageToken === 'string' && !!page.pageToken;
+    pagination.lastPageCursorMatchesRequest = pagination.lastPageCursorPresent && page.pageToken === token;
+    for (const id of ids) orderIds.add(id);
     cap(orderIds.size);
     token = typeof page.pageToken === 'string' ? page.pageToken : '';
     if (page.hasNext === true && !token) {
@@ -87,23 +111,24 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
   const receipts = new Map<string, { id: string; url: string; orderId: string; type: string; date?: string }>();
   let checked = 0;
   await mapConcurrent([...orderIds], 4, async orderId => {
-    let found = false;
-    const validIds = new Set<string>(), unresolved = new Map<string, Error>(), resolverErrors: unknown[] = [];
+    let found = false, emptyLists = 0;
+    const validIds = new Set<string>(), unresolved = new Map<string, 'missing' | 'unsafe'>(), resolverErrors: unknown[] = [];
     for (const archived of [false, true]) {
       try {
-        const data = resultData(await resolve(receiptResolver, [{ orderId: Number(orderId), archived }]));
-        if (!Array.isArray(data.result)) throw new Error('Список чеков заказа не распознан.');
+        const data = resultData(await resolve(receiptResolver, [{ orderId: Number(orderId), archived }]), diagnostics);
+        if (!Array.isArray(data.result)) { diagnostics.responseMalformedResult++; throw new Error('Список чеков заказа не распознан.'); }
+        if (!data.result.length) emptyLists++;
         const collection = object(object(data.collections).orderReceipt);
         for (const receiptId of data.result) {
           const id = String(receiptId), receipt = object(collection[id]);
           if (typeof receipt.fiscalUrl !== 'string' || !receipt.fiscalUrl.trim()) {
-            if (!validIds.has(id)) unresolved.set(id, new Error('Магазин не предоставил ссылку на часть чеков.'));
+            if (!validIds.has(id)) unresolved.set(id, 'missing');
             continue;
           }
           let url: string;
           try { url = safeReceipt(receipt.fiscalUrl); }
           catch {
-            if (!validIds.has(id)) unresolved.set(id, new Error('Магазин предоставил некорректную ссылку на часть чеков.'));
+            if (!validIds.has(id)) unresolved.set(id, 'unsafe');
             continue;
           }
           const created = typeof receipt.createdAt === 'number' ? new Date(receipt.createdAt < 1e12 ? receipt.createdAt * 1000 : receipt.createdAt) : null;
@@ -116,9 +141,13 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
     }
     if (unresolved.size || (resolverErrors.length && !found)) {
       failedOrders++;
-      for (const error of unresolved.values()) rememberFailure(error);
+      if ([...unresolved.values()].includes('missing')) diagnostics.missingUrlOrders++;
+      if ([...unresolved.values()].includes('unsafe')) diagnostics.unsafeUrlOrders++;
+      if (resolverErrors.length) diagnostics.responseErrorOrders++;
+      for (const reason of unresolved.values()) rememberFailure(new Error(reason === 'missing' ? 'Магазин не предоставил ссылку на часть чеков.' : 'Магазин предоставил некорректную ссылку на часть чеков.'));
       for (const error of resolverErrors) rememberFailure(error);
     }
+    if (emptyLists === 2) diagnostics.noReceiptOrders++;
     await options.onProgress?.({ done: ++checked, total: orderIds.size, message: `Яндекс Маркет: проверено ${checked} из ${orderIds.size} заказов.` });
   }, options.signal);
   let rowCount = 0;
@@ -142,5 +171,5 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
   if (failedOrders || failedReceipts) warnings.push(`Яндекс Маркет: ошибки у ${failedOrders} заказов и ${failedReceipts} чеков. Ранее сохранённая история остаётся.`);
   if (!rows.length && (failedOrders || failedReceipts)) throw new Error(`${warnings.at(-1)} ${[...failures].slice(0,3).join(' ')}`.trim());
   if (failedOrders && failures.size) warnings.push(`Яндекс Маркет: причины пропуска — ${[...failures].slice(0,3).join(' ')}`);
-  return { rows, processedReceipts: [...new Set(rows.map(row => row.receipt_url || row.marketplace_id || '').filter(Boolean))], warnings, stats: { orders: orderIds.size, receipts: receipts.size, pages, failedOrders, failedReceipts, removed: 0, incomplete, fallbackReceipts: new Set(rows.filter(row => row.parse_quality === 'fallback').map(row => row.marketplace_id)).size, unverifiedReceipts: new Set(rows.filter(row => row.parse_quality === 'unverified').map(row => row.marketplace_id)).size } };
+  return { rows, processedReceipts: [...new Set(rows.map(row => row.receipt_url || row.marketplace_id || '').filter(Boolean))], warnings, stats: { orders: orderIds.size, receipts: receipts.size, pages, failedOrders, failedReceipts, removed: 0, incomplete, ...diagnostics, ...pagination, fallbackReceipts: new Set(rows.filter(row => row.parse_quality === 'fallback').map(row => row.marketplace_id)).size, unverifiedReceipts: new Set(rows.filter(row => row.parse_quality === 'unverified').map(row => row.marketplace_id)).size } };
 }

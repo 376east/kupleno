@@ -101,9 +101,18 @@ async function main() {
       assert.equal(await page.evaluate(id => chrome.tabs.get(id).then(() => true, () => false), result.job.marketTabId), false, 'Owned tab closes before acknowledgement');
       assert.equal(result.job.result.rows.length, 1);
       assert.equal(result.job.result.rows[0].amount, '100.00');
+      assert.ok(Object.values(result.job.result.stats).every(value => typeof value === 'boolean' || (typeof value === 'number' && Number.isFinite(value))));
+      if (source === 'ozon') assert.equal(result.job.result.stats.unrecognizedListResponses, 0);
+      if (source === 'yandex') {
+        assert.equal(result.job.result.stats.responseRootErrors, 0);
+        assert.equal(result.job.result.stats.lastPageIds, 1);
+        assert.equal(result.job.result.stats.lastPageHasNextKnown, true);
+        assert.equal(result.job.result.stats.repeatedCursor, false);
+      }
       // Result survives the app being closed/reopened, and is removed only after explicit acknowledgement.
       await page.reload();
       assert.equal((await command({ action: 'status', ...scope })).job.id, result.job.id);
+      assert.deepEqual((await command({ action: 'status', ...scope })).job.result.stats, result.job.result.stats, 'Safe diagnostics survive worker delivery and app reopen');
       await command({ action: 'ack', id: result.job.id });
       assert.equal((await command({ action: 'status', ...scope })).job, null);
     }

@@ -98,6 +98,33 @@ test('unknown terminal list responses identify each section without declaring th
   assert.match(result.warnings[1]!, /архив, страница 2/);
   assert.doesNotMatch(result.warnings.join(' '), /проверьте вход|private-token/);
 });
+
+test('unknown Ozon responses expose only structural counters, never response contents', async () => {
+  const secret = 'private-response-token-and-receipt';
+  for (const empty of [false, true]) {
+    const result = await collectOzon({ fetch: async input => {
+      const url = new URL(String(input));
+      if (url.pathname.includes('downloadCheque')) return new Response('pdf');
+      if (!url.pathname.includes('entrypoint')) return new Response(page(['a'], `/my/e-check?page=2${url.searchParams.has('archive') ? '&archive=1' : ''}`));
+      if (empty) return new Response('');
+      const archive = new URL(url.searchParams.get('url')!, 'https://www.ozon.ru').searchParams.has('archive');
+      return new Response(archive ? `<html><body>${secret}</body></html>` : JSON.stringify({ widgetStates: {}, error: { message: secret } }));
+    }, readPdf });
+    assert.equal(result.rows.length, 1);
+    assert.equal(result.stats.incomplete, true);
+    assert.equal(result.stats.unrecognizedListResponses, 2);
+    assert.equal(result.stats.unrecognizedListJsonResponses, empty ? 0 : 1);
+    assert.equal(result.stats.unrecognizedListHtmlResponses, empty ? 0 : 1);
+    assert.equal(result.stats.unrecognizedListEmptyResponses, empty ? 2 : 0);
+    assert.equal(result.stats.unrecognizedListErrorResponses, empty ? 0 : 1);
+    assert.equal(result.stats.unrecognizedListWidgetResponses, empty ? 0 : 1);
+    assert.equal(result.stats.unrecognizedListEmptyWidgets, empty ? 0 : 1);
+    assert.equal(result.stats.failedCurrentListPage, 2);
+    assert.equal(result.stats.failedArchiveListPage, 2);
+    assert.ok(Object.values(result.stats).every(value => typeof value === 'boolean' || (typeof value === 'number' && Number.isFinite(value))));
+    assert.doesNotMatch(JSON.stringify({ stats: result.stats, warnings: result.warnings }), new RegExp(secret));
+  }
+});
 test('Ozon distinguishes known empty history from login and all-PDF failure', async () => {
   assert.equal((await collectOzon({ fetch: async () => new Response(page([])), readPdf })).rows.length, 0);
   await assert.rejects(collectOzon({ fetch: async () => new Response('<html>Войти</html>'), readPdf }), /не полностью/);

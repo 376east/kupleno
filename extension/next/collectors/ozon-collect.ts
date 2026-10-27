@@ -62,6 +62,12 @@ export function ozonList(text: string) {
 
 export async function collectOzon(options: { fetch: typeof fetch; readPdf: (bytes: Uint8Array, signal?: AbortSignal) => Promise<string>; signal?: AbortSignal; onProgress?: (p: { done: number; total: number; message: string }) => void | Promise<void> }): Promise<CollectionResult> {
   const receipts = new Map<string, Receipt>(), warnings: string[] = [];
+  const diagnostics = {
+    unrecognizedListResponses: 0, unrecognizedListJsonResponses: 0, unrecognizedListHtmlResponses: 0,
+    unrecognizedListEmptyResponses: 0, unrecognizedListErrorResponses: 0,
+    unrecognizedListWidgetResponses: 0, unrecognizedListEmptyWidgets: 0,
+    failedCurrentListPage: 0, failedArchiveListPage: 0,
+  };
   let pages = 0, incomplete = false, emptyKnown = 0;
   for (const start of ['/my/e-check', '/my/e-check?archive=1']) {
     let url = safeUrl(start), count = 0;
@@ -77,7 +83,24 @@ export async function collectOzon(options: { fetch: typeof fetch; readPdf: (byte
         if (response.url) safeUrl(response.url);
         const body = await response.text(); if (body.length > 8 * 1024 * 1024) throw new Error('Слишком большой ответ.');
         const page = ozonList(body);
-        if (!page.records.length && !page.next && !page.knownShape) throw new Error('Неизвестный формат ответа списка чеков.');
+        if (!page.records.length && !page.next && !page.knownShape) {
+          diagnostics.unrecognizedListResponses++;
+          if (!body.trim()) diagnostics.unrecognizedListEmptyResponses++;
+          if (/^\s*(?:<!doctype\s+html|<html(?:\s|>))/i.test(body)) diagnostics.unrecognizedListHtmlResponses++;
+          try {
+            const value: unknown = JSON.parse(body);
+            diagnostics.unrecognizedListJsonResponses++;
+            if (value && typeof value === 'object' && !Array.isArray(value)) {
+              const root = value as Record<string, unknown>;
+              if (root.error || root.errors) diagnostics.unrecognizedListErrorResponses++;
+              if (root.widgetStates && typeof root.widgetStates === 'object' && !Array.isArray(root.widgetStates)) {
+                diagnostics.unrecognizedListWidgetResponses++;
+                if (!Object.keys(root.widgetStates).length) diagnostics.unrecognizedListEmptyWidgets++;
+              }
+            }
+          } catch { /* Only counters leave this scope; response contents stay private. */ }
+          throw new Error('Неизвестный формат ответа списка чеков.');
+        }
         if (page.knownShape && !page.records.length) emptyKnown++;
         for (const receipt of page.records) receipts.set(receipt.id, receipt);
         cap(receipts.size);
@@ -92,6 +115,8 @@ export async function collectOzon(options: { fetch: typeof fetch; readPdf: (byte
           break;
         }
         const section = start.includes('archive=1') ? 'архив' : 'текущие чеки';
+        if (start.includes('archive=1')) diagnostics.failedArchiveListPage = count;
+        else diagnostics.failedCurrentListPage = count;
         incomplete = true; warnings.push(`Ozon: список получен не полностью (${section}, страница ${count}: ${e instanceof Error ? e.message : 'ошибка ответа'}).`); break;
       }
     }
@@ -139,5 +164,5 @@ export async function collectOzon(options: { fetch: typeof fetch; readPdf: (byte
     incomplete = true;
     warnings.push(`Ozon: у ${unverifiedReceipts} чеков не распознан итог. Суммы товаров требуют проверки.`);
   }
-  return { rows, processedReceipts: [...new Set(rows.map(row => row.receipt_url || row.marketplace_id || '').filter(Boolean))], warnings, stats: { receipts: receipts.size, pages, failedReceipts: failed, incomplete, removed: 0, fallbackReceipts: new Set(rows.filter(row => row.parse_quality === 'fallback').map(row => row.marketplace_id)).size, unverifiedReceipts } };
+  return { rows, processedReceipts: [...new Set(rows.map(row => row.receipt_url || row.marketplace_id || '').filter(Boolean))], warnings, stats: { receipts: receipts.size, pages, failedReceipts: failed, incomplete, removed: 0, fallbackReceipts: new Set(rows.filter(row => row.parse_quality === 'fallback').map(row => row.marketplace_id)).size, unverifiedReceipts, ...diagnostics } };
 }

@@ -113,6 +113,7 @@ test('explicit final page stops even when token repeats; archived recovery is no
     return envelope({result:['r'],collections:{orderReceipt:{r:{fiscalUrl:'https://check.yandex.ru/r',createdAt:1767225600}}}});
   }});
   assert.equal(pages,1); assert.equal(result.stats.failedOrders,0); assert.equal(result.stats.incomplete,false); assert.deepEqual(result.warnings,[]);
+  assert.equal(result.stats.responseErrorOrders, 0);
 });
 
 test('missing receipt URL does not discard subsequent receipts of the same order', async () => {
@@ -151,6 +152,9 @@ test('archived URL recovery clears only the matching receipt failure', async () 
       assert.equal(result.stats.receipts, 1);
       assert.equal(result.stats.failedOrders, unrecovered ? 1 : 0);
       assert.equal(result.stats.failedReceipts, 0);
+      assert.equal(result.stats.missingUrlOrders, unrecovered ? 1 : 0);
+      assert.equal(result.stats.unsafeUrlOrders, 0);
+      assert.equal(result.stats.responseErrorOrders, 0);
       if (unrecovered) {
         assert.match(result.warnings.join(' '), /не предоставил ссылку/);
         assert.doesNotMatch(result.warnings.join(' '), /некорректную ссылку/);
@@ -172,6 +176,56 @@ test('repeated cursor with hasNext true stops and marks history incomplete', asy
   } });
   assert.equal(pages, 2); assert.equal(result.stats.incomplete, true); assert.match(result.warnings.join(' '), /повторилась страница/);
   assert.equal(result.rows.length, 1);
+  assert.equal(result.stats.lastPageIds, 1);
+  assert.equal(result.stats.lastPageNewIds, 0);
+  assert.equal(result.stats.lastPageHasNextKnown, true);
+  assert.equal(result.stats.lastPageHasNext, true);
+  assert.equal(result.stats.lastPageCursorPresent, true);
+  assert.equal(result.stats.lastPageCursorMatchesRequest, true);
+  assert.equal(result.stats.repeatedCursor, true);
+});
+
+test('Yandex diagnostics distinguish resolver envelopes and malformed data without retaining their contents', async () => {
+  const secret = 'private-response-secret';
+  const cases: Array<{ payload: unknown; counters: Record<string, number> }> = [
+    { payload: { error: { code: 'NOT_FOUND', message: secret } }, counters: { responseRootErrors: 2, resolverNotFoundErrors: 2 } },
+    { payload: { results: [{ error: { code: 'FORBIDDEN', message: secret } }] }, counters: { responseEntryErrors: 2, resolverForbiddenErrors: 2 } },
+    { payload: { results: [{ error: 'UNAUTHORIZED', message: secret }] }, counters: { responseEntryErrors: 2, resolverUnauthorizedErrors: 2 } },
+    { payload: { error: { code: 'TOO_MANY_REQUESTS', details: secret } }, counters: { responseRootErrors: 2, resolverRateLimitErrors: 2 } },
+    { payload: { error: { code: secret, message: secret } }, counters: { responseRootErrors: 2, resolverOtherErrors: 2 } },
+    { payload: { error: { code: '__proto__', message: secret } }, counters: { responseRootErrors: 2, resolverOtherErrors: 2 } },
+    { payload: { results: [{ data: {} }] }, counters: { responseEmptyData: 2 } },
+    { payload: { results: [{ data: null }] }, counters: { responseMalformedData: 2 } },
+    { payload: { results: [{ data: [secret] }] }, counters: { responseMalformedData: 2 } },
+    { payload: { results: [{ data: { result: secret } }] }, counters: { responseMalformedResult: 2 } },
+  ];
+  for (const { payload, counters } of cases) {
+    const result = await collectYandex({ fetch: async (input, init) => {
+      const url = new URL(String(input));
+      if (url.pathname === '/my/orders') return new Response('');
+      if (url.hostname === 'check.yandex.ru') return new Response(receipt);
+      if (url.searchParams.get('r')?.includes('resolveConsolidationOrders')) return orderList([123456, 234567, 345678]);
+      const { orderId } = JSON.parse(String(init?.body)).params[0];
+      if (orderId === 234567) return new Response(JSON.stringify(payload));
+      if (orderId === 345678) return envelope({ result: [], collections: {} });
+      return envelope({ result: ['r'], collections: { orderReceipt: { r: { fiscalUrl: 'https://check.yandex.ru/r', createdAt: 1767225600 } } } });
+    } });
+    for (const [key, value] of Object.entries(counters)) assert.equal(result.stats[key], value, key);
+    assert.equal(result.stats.responseErrorOrders, 1);
+    assert.equal(result.stats.noReceiptOrders, 1);
+    assert.equal(result.stats.missingUrlOrders, 0);
+    assert.equal(result.stats.unsafeUrlOrders, 0);
+    assert.equal(result.stats.failedOrders, 1);
+    assert.equal(result.stats.lastPageIds, 3);
+    assert.equal(result.stats.lastPageNewIds, 3);
+    assert.equal(result.stats.lastPageHasNextKnown, true);
+    assert.equal(result.stats.lastPageHasNext, false);
+    assert.equal(result.stats.lastPageCursorPresent, false);
+    assert.equal(result.stats.lastPageCursorMatchesRequest, false);
+    assert.equal(result.stats.repeatedCursor, false);
+    assert.ok(Object.values(result.stats).every(value => typeof value === 'boolean' || (typeof value === 'number' && Number.isFinite(value))));
+    assert.ok(!JSON.stringify({ stats: result.stats, warnings: result.warnings }).includes(secret));
+  }
 });
 
 test('unsafe or malformed receipt URL does not discard valid neighbours', async () => {
@@ -187,6 +241,8 @@ test('unsafe or malformed receipt URL does not discard valid neighbours', async 
     } });
     assert.equal(result.rows.length, 1);
     assert.equal(result.stats.failedOrders, 1);
+    assert.equal(result.stats.unsafeUrlOrders, 1);
+    assert.equal(result.stats.missingUrlOrders, 0);
     assert.ok(result.warnings.length > 0);
     assert.ok(!result.warnings.join(' ').includes('private-check'));
   }
