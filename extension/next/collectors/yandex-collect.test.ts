@@ -329,3 +329,130 @@ test('Yandex passes raw receipt pairs to persisted reconciliation across batches
   assert.equal(summarize(merged).net, 10000);
   assert.equal(mergeCollection(merged, pair.rows, { source: 'yandex', processedReceipts: pair.processedReceipts }).length, 1);
 });
+
+test('unknown root shape captures fixed fields once and ignores changing contents and collection counts', async () => {
+  const secret = 'private-shape-secret';
+  for (const different of [false, true]) {
+    const result = await collectYandex({ fetch: async (input, init) => {
+      const url = new URL(String(input));
+      if (url.pathname === '/my/orders') return new Response('');
+      if (url.hostname === 'check.yandex.ru') return new Response(receipt);
+      if (url.searchParams.get('r')?.includes('resolveConsolidationOrders')) return orderList([123456, 234567]);
+      const { orderId, archived } = JSON.parse(String(init?.body)).params[0];
+      if (orderId === 123456) return envelope({ result: ['r'], collections: { orderReceipt: { r: { fiscalUrl: 'https://check.yandex.ru/r', createdAt: 1767225600 } } } });
+      return new Response(JSON.stringify({ result: archived ? [secret, 'another'] : [secret],
+        collections: { orderReceipt: archived ? { [secret]: {}, another: {} } : { [secret]: {} } },
+        type: archived ? 'changed-value' : secret, [secret]: secret, ...(archived && different ? { status: secret } : {}) }));
+    } });
+    assert.equal(result.stats.responseShapeCaptured, 1);
+    assert.equal(result.stats.responseShapeKeyMask, 7);
+    assert.equal(result.stats.responseShapeKeyCount, 4);
+    assert.equal(result.stats.responseShapeResultType, 2);
+    assert.equal(result.stats.responseShapeCollectionsType, 3);
+    assert.equal(result.stats.responseShapeOrderReceiptType, 3);
+    assert.equal(result.stats.responseShapeResultCount, 1);
+    assert.equal(result.stats.responseShapeReceiptCount, 1);
+    assert.equal(result.stats.responseShapeDifferent, different ? 1 : 0);
+    assert.equal(result.stats.failedOrders, 1);
+    assert.ok(Object.values(result.stats).every(value => typeof value === 'boolean' || (typeof value === 'number' && Number.isFinite(value))));
+    assert.ok(!JSON.stringify({ stats: result.stats, warnings: result.warnings }).includes(secret));
+  }
+});
+
+test('explicit challenge stops order pagination without retrying another resolver or exposing its URL', async () => {
+  const secret = 'private-challenge-secret';
+  for (const payload of [
+    { type: 'captcha' }, { status: 'CAPTCHA_REQUIRED' }, { type: 'SHOW_CAPTCHA' },
+    { captcha: true }, { captcha: { url: secret } }, { captcha: secret },
+    { status: 'redirect', url: `https://yandex.ru/showcaptcha?secret=${secret}` },
+    { redirect: `https://market.yandex.com/CAPTCHA/check?secret=${secret}` },
+    { url: `/showcaptcha?secret=${secret}` }, { redirect: `/checkcaptcha/verify?secret=${secret}` },
+  ]) {
+    let calls = 0;
+    await assert.rejects(collectYandex({ fetch: async input => {
+      if (new URL(String(input)).pathname === '/my/orders') return new Response('<a href="/my/order/123456">Order</a>');
+      calls++;
+      return new Response(JSON.stringify(payload));
+    } }), error => {
+      assert.match((error as Error).message, /откройте магазин и пройдите проверку/);
+      assert.ok(!(error as Error).message.includes(secret));
+      return true;
+    });
+    assert.equal(calls, 1);
+  }
+});
+
+test('challenge stops queued metadata work after at most four in-flight requests', async () => {
+  let calls = 0;
+  await assert.rejects(collectYandex({ fetch: async input => {
+    const url = new URL(String(input));
+    if (url.pathname === '/my/orders') return new Response('');
+    if (url.searchParams.get('r')?.includes('resolveConsolidationOrders')) return orderList(Array.from({ length: 20 }, (_, index) => 123456 + index));
+    calls++;
+    return new Response(JSON.stringify({ captcha: true }));
+  } }), /пройдите проверку/);
+  assert.ok(calls > 0 && calls <= 4);
+});
+
+test('metadata challenge preserves discovered receipts and marks unchecked orders incomplete', async () => {
+  const result = await collectYandex({ fetch: async (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname === '/my/orders') return new Response('');
+    if (url.hostname === 'check.yandex.ru') return new Response(receipt);
+    if (url.searchParams.get('r')?.includes('resolveConsolidationOrders')) return orderList([123456, 234567, 345678, 456789, 567890]);
+    const { orderId } = JSON.parse(String(init?.body)).params[0];
+    if (orderId === 123456) return envelope({ result: ['r'], collections: { orderReceipt: { r: { fiscalUrl: 'https://check.yandex.ru/r', createdAt: 1767225600 } } } });
+    return new Response(JSON.stringify({ status: 'CAPTCHA_REQUIRED', url: 'private-challenge-secret' }));
+  } });
+  assert.equal(result.rows.length, 1);
+  assert.equal(result.stats.incomplete, true);
+  assert.equal(result.stats.uncheckedOrders, 4);
+  assert.equal(result.stats.challengeResponses, 3);
+  assert.match(result.warnings.join(' '), /пройдите проверку/);
+  assert.ok(!JSON.stringify({ stats: result.stats, warnings: result.warnings }).includes('private-challenge-secret'));
+});
+
+test('empty captcha metadata and unrelated redirect URLs do not block valid envelopes', async () => {
+  for (const metadata of [
+    { captcha: false }, { captcha: null }, { captcha: {} }, { captcha: '' },
+    { status: 'redirect', url: 'https://check.yandex.ru/receipt' },
+    { status: 'redirect', url: '/receipt' },
+    { url: 'https://yandex.ru.example.com/showcaptcha' }, { redirect: 'https://user@yandex.ru/showcaptcha' },
+  ]) {
+    const result = await collectYandex({ fetch: async input => {
+      const url = new URL(String(input));
+      if (url.pathname === '/my/orders') return new Response('');
+      if (url.hostname === 'check.yandex.ru') return new Response(receipt);
+      if (url.searchParams.get('r')?.includes('resolveConsolidationOrders')) return orderList([123456]);
+      return new Response(JSON.stringify({ ...metadata, results: [{ data: { result: ['r'], collections: { orderReceipt: { r: { fiscalUrl: 'https://check.yandex.ru/r', createdAt: 1767225600 } } } } }] }));
+    } });
+    assert.equal(result.rows.length, 1);
+    assert.equal(result.stats.challengeResponses, 0);
+    assert.equal(result.stats.responseShapeCaptured, 0);
+    assert.deepEqual(result.warnings, []);
+  }
+});
+
+test('concurrent challenge does not swallow cancellation or an unrelated progress failure', async () => {
+  for (const { cancel, failure } of [
+    { cancel: false, failure: new Error('progress failed') },
+    { cancel: false, failure: 0 }, { cancel: false, failure: undefined },
+    { cancel: true, failure: new Error('caller cancelled') },
+  ]) {
+    const controller = new AbortController();
+    await assert.rejects(collectYandex({ signal: controller.signal,
+      onProgress: progress => { if (!cancel && progress.message.includes('проверено')) throw failure; },
+      fetch: async (input, init) => {
+        const url = new URL(String(input));
+        if (url.pathname === '/my/orders') return new Response('');
+        if (url.searchParams.get('r')?.includes('resolveConsolidationOrders')) return orderList([123456, 234567, 345678, 456789]);
+        const { orderId } = JSON.parse(String(init?.body)).params[0];
+        if (orderId === 123456) {
+          if (cancel) controller.abort(failure);
+          return envelope({ result: ['r'], collections: { orderReceipt: { r: { fiscalUrl: 'https://check.yandex.ru/r', createdAt: 1767225600 } } } });
+        }
+        return new Response(JSON.stringify({ type: 'captcha' }));
+      },
+    }), error => error === failure);
+  }
+});
