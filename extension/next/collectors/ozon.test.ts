@@ -80,6 +80,22 @@ test('real item amount overrides a trailing title number but VAT preserves inlin
   assert.equal(inline[0]?.parse_quality, 'complete');
 });
 
+test('wrapped decimal product characteristics are not extra item ordinals', () => {
+  const receipt = { id: 'fixture', url: 'https://ozon.test/fixture' };
+  for (const detail of ['2.4 ГГц, белый', '1.5 метра, синий']) {
+    const text = `01.01.2026 10:00\n1. Товар с характеристикой\n${detail}\n1 x 200,00 ≡200,00\nв т.ч. НДС 20% ≡33,33\n2. Другой товар\n1 x 80,00 ≡80,00\n3. Доставка\n1 x 20,00 ≡20,00\nИТОГ ≡300,00`;
+    const rows = parseOzonReceipt(text, receipt);
+    assert.deepEqual(rows.map(row => [row.title, row.amount, row.parse_quality]), [
+      [`Товар с характеристикой ${detail}`, '200.00', 'complete'],
+      ['Другой товар', '80.00', 'complete'], ['Доставка', '20.00', 'complete'],
+    ]);
+    const mismatch = parseOzonReceipt(text.replace('ИТОГ ≡300,00', 'ИТОГ ≡301,00'), receipt);
+    assert.equal(mismatch[0]?.raw_title, 'fallback=receipt_total_mismatch');
+  }
+  const split = parseOzonReceipt('1.\nПервый товар\n≡ 50,00\n2.Второй товар\n≡ 80,00\nИТОГ ≡130,00', receipt);
+  assert.deepEqual(split.map(row => [row.title, row.amount, row.parse_quality]), [['Первый товар', '50.00', 'complete'], ['Второй товар', '80.00', 'complete']]);
+});
+
 test('passes every existing Ozon receipt fixture', async () => {
   const fixtures = JSON.parse(await readFile(new URL('../../fixtures/ozon-receipts.json', import.meta.url), 'utf8')) as Array<{ text: string; expected: { rows: number; amount?: string; type?: string; quality?: string } }>;
   for (const fixture of fixtures) {

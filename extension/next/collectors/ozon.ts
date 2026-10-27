@@ -6,6 +6,7 @@ type Receipt = { id: string; url: string; date?: string; orderId?: string };
 const dateValue = (value: string | undefined) => String(value || '').replace('T', ' ').replace(/Z$/, '').slice(0, 16);
 const orderFrom = (receipt: Receipt) => receipt.orderId || receipt.id.match(/^(.+?)-[0-9a-f]{8}-[0-9a-f-]{27,}/i)?.[1] || '';
 const totalFrom = (text: string) => moneyMinor((text.match(/ИТОГ[\s\S]{0,80}?(-?\d[\d\s]*(?:[,.]\d{1,2})?)/i) || [])[1] || '');
+const itemLine = /^\d{1,3}\.(?!\d)\s*(.*)$/;
 
 export function parseOzonReceipt(text: string, receipt: Receipt): Purchase[] {
   const lines = text.replace(/\r/g, '').split('\n').map((line) => line.trim()).filter(Boolean);
@@ -15,14 +16,14 @@ export function parseOzonReceipt(text: string, receipt: Receipt): Purchase[] {
   const settlement = /полный\s+расч[её]т|полная\s+оплата|итоговый\s+расч[её]т/i.test(text) ? 'full' : /предоплат|получение\s+аванса|аванс/i.test(text) ? 'prepayment' : 'unknown';
   const items: Array<{ title: string; cents: number }> = [];
   for (let index = 0; index < lines.length; index += 1) {
-    const match = lines[index]!.match(/^\d{1,3}\.\s*(.*)$/);
+    const match = lines[index]!.match(itemLine);
     if (!match) continue;
     const titleParts = match[1] ? [match[1]] : [];
     const inline = match[1]?.match(/^(.*?)(?:\s+)(-?\d[\d\s]*(?:[,.]\d{1,2})?)\s*(?:₽|руб)?$/i);
     let cents: number | null = inline ? moneyMinor(inline[2]) : null;
     let seenAmount = cents !== null;
     if (inline) titleParts.splice(0, titleParts.length, inline[1]!);
-    for (let next = index + 1; next < lines.length && !/^\d{1,3}\.\s/.test(lines[next]!) && !/^ИТОГ/i.test(lines[next]!); next += 1) {
+    for (let next = index + 1; next < lines.length && !itemLine.test(lines[next]!) && !/^ИТОГ/i.test(lines[next]!); next += 1) {
       const line = lines[next]!;
       const amountMatch = line.match(/≡\s*(-?\d[\d\s]*(?:[,.]\d{1,2})?)/);
       if (amountMatch && !/НДС/i.test(line)) { cents = moneyMinor(amountMatch[1]); seenAmount = true; }
