@@ -221,4 +221,9 @@ setSpendCategoryRules({ rules: [{ category: 'Локальная категори
 const localOnly = classifySpendCategory('privateitem');
 assert.equal(localOnly.category, 'Локальная категория');
 assert.equal(localOnly.evidence[0].source, 'local');
+setSpendCategoryRules({ rules: [{ category: 'Локальная категория', weight: 50, tokens: ['privateitem'] }] });
+assert.equal(classifySpendCategory('privateitems privateitem').evidence[0].kind, 'exact', 'Exact match wins even after a stem match');
+assert.equal(classifySpendCategory('privateitems').evidence[0].kind, 'stem');
+setSpendCategoryRules({ rules: [{ category: 'Локальная категория', weight: 50, tokens: ['tiny'] }] });
+assert.equal(classifySpendCategory('tinysuffix').category, 'unknown', 'Short tokens must not stem-match');
 setSpendCategoryRules({ rules: [] });

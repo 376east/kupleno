@@ -473,17 +473,12 @@
       .trim();
   }
 
-  function matchNormalizedToken(words, padded, normalized) {
-    if (!normalized) return null;
-    if (normalized.includes(' ')) {
-      return padded.includes(` ${normalized} `) ? 'phrase' : null;
+  function matchNormalizedToken(words, padded, entry) {
+    if (entry.phrase) {
+      return padded.includes(entry.phrase) ? 'phrase' : null;
     }
-    if (words.some((word) => word === normalized)) return 'exact';
-    return normalized.length >= 5 && words.some((word) => word.startsWith(normalized)) ? 'stem' : null;
-  }
-
-  function matchToken(words, padded, token) {
-    return matchNormalizedToken(words, padded, normalize(token));
+    if (words.some(word => word === entry.token)) return 'exact';
+    return entry.token.length >= 5 && words.some(word => word.startsWith(entry.token)) ? 'stem' : null;
   }
 
   function titleFrom(input) {
@@ -522,7 +517,7 @@
           const token = normalize(rawToken);
           if (!category || !token) continue;
           const key = `${category}\u0000${token}`;
-          const entry = { category, weight, token, source, score: scoreFor(weight, token) };
+          const entry = { category, weight, token, phrase: token.includes(' ') ? ` ${token} ` : null, source, score: scoreFor(weight, token) };
           const previous = unique.get(key);
           if (!previous || entry.weight > previous.weight || (entry.weight === previous.weight && source === 'local')) {
             unique.set(key, entry);
@@ -539,6 +534,7 @@
     compiledNegativeEntries = negativeContextRules.map(([category, token, penalty]) => ({
       category,
       token: normalize(token),
+      phrase: normalize(token).includes(' ') ? ` ${normalize(token)} ` : null,
       penalty
     }));
     return compiledNegativeEntries;
@@ -570,7 +566,7 @@
     const padded = ` ${normalized} `;
     const byCategory = new Map();
     for (const entry of ruleEntries()) {
-      const kind = matchNormalizedToken(words, padded, entry.token);
+      const kind = matchNormalizedToken(words, padded, entry);
       if (!kind) continue;
       const evidence = { token: entry.token, kind, source: entry.source, score: entry.score };
       const candidate = byCategory.get(entry.category) || { category: entry.category, score: 0, evidence: [] };
@@ -589,7 +585,7 @@
     // Negative context never creates a category by itself. It only removes a
     // misleading generic signal (for example, food's “кофейный” in a table).
     for (const entry of negativeEntries()) {
-      if (!matchNormalizedToken(words, padded, entry.token)) continue;
+      if (!matchNormalizedToken(words, padded, entry)) continue;
       const candidate = byCategory.get(entry.category);
       if (!candidate) continue;
       candidate.score -= entry.penalty;
