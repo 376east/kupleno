@@ -61,15 +61,16 @@ async function main() {
       };
     }, pdf.toString('base64'));
     const requests = [];
-    let stallOzon = false;
+    let stallOzon = false, ozonGate;
     let holdYandex = false, releaseYandex;
     let yandexReceiptRequests = 0;
     const ozonRequestPages = new Set();
-    await context.route('https://www.ozon.ru/**', route => {
+    await context.route('https://www.ozon.ru/**', async route => {
       if (route.request().isNavigationRequest()) return route.fulfill({contentType:'text/html',body:'<html><script>window.fetch = () => new Promise(() => {});</script><body>Receipt page</body></html>'});
       requests.push(route.request().url());
       ozonRequestPages.add(route.request().frame().page());
       if (stallOzon) return new Promise(() => {});
+      if (ozonGate) await ozonGate;
       return route.fulfill(route.request().url().includes('downloadCheque') ? { contentType: 'application/pdf', body: pdf } : { contentType: 'application/json', json: { cheques: [{ link: '/_action/downloadCheque?id=synthetic' }] } });
     });
     await context.route('https://market.yandex.ru/**', async route => {
@@ -125,6 +126,9 @@ async function main() {
     }
     await page.bringToFront();
     const activeBefore = await page.evaluate(async () => (await chrome.tabs.query({active:true,currentWindow:true}))[0].id);
+    // Keep the synthetic request pending until the dedicated tab's initial state is observed.
+    let releaseOzon;
+    ozonGate = new Promise(resolve => { releaseOzon = resolve; });
     const ozonStarted = await command({ action: 'start', source: 'ozon', profile: 'personal' });
     assert.equal(ozonStarted.ok, true, JSON.stringify(ozonStarted));
     const dedicatedId=ozonStarted.job.marketTabId;
@@ -132,6 +136,7 @@ async function main() {
     const tabState=await page.evaluate(id=>chrome.tabs.get(id),dedicatedId);
     assert.equal(tabState.active,false);
     assert.equal(await page.evaluate(async () => (await chrome.tabs.query({active:true,currentWindow:true}))[0].id),activeBefore,'Collection must not steal the active tab');
+    ozonGate = undefined; releaseOzon();
     await finish();
     assert.equal(ozonRequestPages.size,1);
     assert.equal(ozonRequestPages.has(ozon),false,'Never use the pre-existing store tab');
