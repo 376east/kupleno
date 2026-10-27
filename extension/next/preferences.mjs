@@ -111,6 +111,7 @@ export function removeProfile(state, id) {
 }
 
 export function applyCollectionRows(state, rows) {
+  rows = rows.map(row => ({ ...row }));
   const replacements = settlementReplacements(rows);
   const settings = structuredClone(state.settings);
   const currentRows = new Map(rows.map(row => [row.rowId, row]));
@@ -126,9 +127,16 @@ export function applyCollectionRows(state, rows) {
     const oldRow = previousRows.get(key(finalRow, link.receipt, link.item));
     if (!oldRow || currentRows.has(oldRow.rowId)) continue;
     const previous = oldRow.rowId;
-    const patch = settings.overrides?.[previous];
+    const inline = Object.fromEntries(['note', 'category', 'excluded']
+      .filter(key => oldRow[key] != null).map(key => [key, oldRow[key]]));
+    const patch = { ...inline, ...settings.overrides?.[previous] };
     // Keep the old annotation too; an existing final-receipt edit takes precedence.
-    if (patch) settings.overrides[current] = { ...patch, ...settings.overrides[current] };
+    if (Object.keys(patch).length) {
+      settings.overrides ||= {};
+      settings.overrides[current] = { ...patch, ...settings.overrides[current] };
+    }
+    // The original fiscal row can contain supported annotations or future JSON fields.
+    finalRow.settlement_predecessor = { ...link, original: structuredClone(oldRow) };
     for (const key of ['refundClaims', 'warranties']) for (const record of settings[key] || []) {
       if (record.rowId === previous) record.rowId = current;
     }

@@ -102,7 +102,7 @@ for (const source of ['ozon', 'yandex']) {
     const legacy = receipt('legacy', 'prepayment', { [`${source}_order_id`]: undefined });
     const unknown = receipt('unknown', 'unknown');
     const refund = receipt('refund', 'prepayment', { amount: '-100.00', type: 'refund' });
-    const differentItem = receipt('item', 'prepayment', { item_index: '2' });
+    const differentItem = receipt('item', 'prepayment', { item_index: '2', title: 'Другой товар' });
     const differentOrder = receipt('other', 'prepayment', { [`${source}_order_id`]: 'other' });
     const work = receipt('work', 'prepayment', { profile: 'work', opaque: { keep: true } });
     const unverified = receipt('unverified', 'prepayment', { parse_quality: 'unverified' });

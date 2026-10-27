@@ -116,7 +116,7 @@ function settlementSignature(row) {
     || typeof row.rowId !== 'string' || !row.rowId
     || amount === null || amount <= 0 || isRefund(row) || row.parse_quality === 'fallback'
     || row.parse_quality === 'unverified' || !/^\d{4}-\d{2}-\d{2}(?:$|[ T])/.test(String(row.date || ''))) return '';
-  return JSON.stringify([source, row.profile || 'personal', order, item, normalizedText(row.title), amount, currencyOf(row)]);
+  return JSON.stringify([source, row.profile || 'personal', order, normalizedText(row.title), amount, currencyOf(row)]);
 }
 function predecessor(row) {
   const value = row.settlement_predecessor;
@@ -169,11 +169,11 @@ export function mergeCollection(existing, incoming, { source, profile = 'persona
   if (!Object.hasOwn(SOURCES, source)) throw new TypeError('Неизвестный магазин.');
   if (incoming.some(row => sourceOf(row) !== source)) throw new TypeError('В результате смешаны разные магазины.');
   const priorFinals = new Map(existing.filter(row => predecessor(row) && settlementSignature(row) && settlementKind(row) === 'full')
-    .map(row => [JSON.stringify([receiptKey(row), settlementSignature(row)]), row]));
+    .map(row => [JSON.stringify([receiptKey(row), row.item_index, settlementSignature(row)]), row]));
   const additions = incoming.map(row => {
     const addition = { ...row, source, profile };
-    const previous = priorFinals.get(JSON.stringify([receiptKey(addition), settlementSignature(addition)]));
-    return previous ? { ...addition, settlement_predecessor: previous.settlement_predecessor } : addition;
+    const previous = priorFinals.get(JSON.stringify([receiptKey(addition), addition.item_index, settlementSignature(addition)]));
+    return previous ? { ...previous, ...addition, settlement_predecessor: previous.settlement_predecessor } : addition;
   });
   const incomingReceipts = new Set(additions.map(receiptKey).filter(Boolean));
   for (const identity of processedReceipts) {
