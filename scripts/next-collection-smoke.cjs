@@ -14,6 +14,26 @@ async function main() {
   manifest.host_permissions = manifest.optional_host_permissions;
   manifest.permissions.push('cookies');
   await fs.writeFile(path.join(build, 'manifest.json'), JSON.stringify(manifest));
+  // Attach Playwright's synthetic routes before a worker-created tab starts its store navigation.
+  await fs.writeFile(path.join(build, 'test-tabs.js'), `
+  const createTab = chrome.tabs.create.bind(chrome.tabs);
+  globalThis.testTabReady = new Map();
+  chrome.tabs.create = async properties => {
+    if (!['https://www.ozon.ru/my/e-check?archive=1', 'https://www.wildberries.ru/lk/receipts/get', 'https://market.yandex.ru/my/orders?filter=COMPLETED'].includes(properties.url)) return createTab(properties);
+    const marker = crypto.randomUUID();
+    let timer;
+    const ready = new Promise((resolve, reject) => {
+      globalThis.testTabReady.set(marker, resolve);
+      timer = setTimeout(() => reject(new Error('Synthetic tab was not attached.')), 15000);
+    });
+    try {
+      const tab = await createTab({ ...properties, url: 'about:blank#kupleno-fixture=' + marker });
+      await ready;
+      return await chrome.tabs.update(tab.id, { url: properties.url });
+    } finally { clearTimeout(timer); globalThis.testTabReady.delete(marker); }
+  };`);
+  const backgroundPath = path.join(build, manifest.background.service_worker);
+  await fs.writeFile(backgroundPath, "importScripts('./test-tabs.js');\n" + await fs.readFile(backgroundPath, 'utf8'));
   const pdf = receiptPdf('BT /F1 16 Tf 40 750 Td (01.01.2026 10:00) Tj 0 -24 Td (1. Book 100.00) Tj ET');
   // Chromium offscreen targets are not intercepted by Playwright context.route.
   // Only the disposable copy gets a local network fixture, loaded before the unchanged production module.
@@ -50,8 +70,24 @@ async function main() {
     await fs.rm(root, { recursive: true, force: true });
     throw error;
   });
+  const fixtureNavigationErrors = [];
+  let fixtureWorkerUrl;
+  context.on('page', target => {
+    void (async () => {
+      try { await target.waitForURL(url => url.href.startsWith('about:blank#kupleno-fixture='), { timeout: 15000, waitUntil: 'commit' }); }
+      catch { return; }
+      const worker = context.serviceWorkers().find(worker => worker.url() === fixtureWorkerUrl);
+      assert.ok(worker, 'Synthetic navigation has its exact worker');
+      assert.equal(await worker.evaluate(marker => {
+        const resolve = globalThis.testTabReady.get(marker);
+        if (!resolve) return false;
+        resolve(); return true;
+      }, target.url().slice('about:blank#kupleno-fixture='.length)), true);
+    })().catch(error => fixtureNavigationErrors.push(error.message));
+  });
   try {
-    const worker = context.serviceWorkers()[0] || await context.waitForEvent('serviceworker');
+    const worker = context.serviceWorkers()[0] || await context.waitForEvent('serviceworker', { timeout: 10000 });
+    fixtureWorkerUrl = worker.url();
     const id = new URL(worker.url()).host;
     await worker.evaluate(base64 => {
       const original = globalThis.fetch; globalThis.testPdfRequests = 0;
@@ -131,6 +167,7 @@ async function main() {
     ozonGate = new Promise(resolve => { releaseOzon = resolve; });
     const ozonStarted = await command({ action: 'start', source: 'ozon', profile: 'personal' });
     assert.equal(ozonStarted.ok, true, JSON.stringify(ozonStarted));
+    assert.equal(ozonStarted.job.status, 'running', JSON.stringify({ source: ozonStarted.job.source, status: ozonStarted.job.status, error: ozonStarted.job.error, fixtureNavigationErrors }));
     const dedicatedId=ozonStarted.job.marketTabId;
     assert.equal(typeof dedicatedId,'number');
     const tabState=await page.evaluate(id=>chrome.tabs.get(id),dedicatedId);
