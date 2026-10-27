@@ -601,3 +601,139 @@ test('cancellation during the metadata pause sends no metadata request', async (
   }), error => error === failure);
   assert.equal(requests, 0);
 });
+
+test('failed list attempts publish safe diagnostics and distinguish HTML from other non-JSON', async () => {
+  for (const html of [false, true]) {
+    let stats: Record<string, number | boolean> | undefined;
+    let calls = 0;
+    await assert.rejects(collectYandex({ onDiagnostics: value => { stats = value; }, fetch: async input => {
+      if (new URL(String(input)).pathname === '/my/orders') return new Response('<html>Expected orders page</html>');
+      calls++;
+      return new Response(html ? '<html><body>private-response-secret</body></html>' : ')]}\n{"private":"private-response-secret"}', { headers: { 'content-type': html ? 'text/html' : 'application/json' } });
+    } }), html ? /страницу вместо истории/ : /не удалось прочитать/);
+    assert.equal(calls, 1);
+    assert.equal(stats?.apiNonJsonResponses, 1);
+    assert.equal(stats?.apiHtmlResponses, html ? 1 : 0);
+    assert.equal(stats?.apiOtherNonJsonResponses, html ? 0 : 1);
+    assert.equal(stats?.receipts, 0);
+    assert.equal(stats?.pages, 1);
+    assert.equal(stats?.incomplete, true);
+    assert.ok(Object.values(stats || {}).every(value => typeof value === 'boolean' || (typeof value === 'number' && Number.isFinite(value))));
+    assert.ok(!JSON.stringify(stats).includes('private-response-secret'));
+  }
+});
+
+test('non-JSON metadata globally stops queued batches and archive while publishing the failed attempt', async () => {
+  let calls = 0, stats: Record<string, number | boolean> | undefined;
+  await assert.rejects(collectYandex({ onDiagnostics: value => { stats = value; }, fetch: async input => {
+    const url = new URL(String(input));
+    if (url.pathname === '/my/orders') return new Response('');
+    if (url.searchParams.get('r')?.includes('resolveConsolidationOrders')) return orderList(Array.from({ length: 34 }, (_, index) => 123456 + index));
+    calls++;
+    return new Response('<html>API refusal</html>');
+  } }), /страницу вместо истории/);
+  assert.ok(calls > 0 && calls <= 2);
+  assert.equal(stats?.receiptMetadataRequests, calls);
+  assert.equal(stats?.apiNonJsonResponses, calls);
+  assert.equal(stats?.uncheckedOrders, 34);
+  assert.equal(stats?.incomplete, true);
+});
+
+test('non-JSON interruption preserves known rows and only confirms opening a challenge from provider metadata', async () => {
+  for (const opened of [false, true]) {
+    let published: Record<string, number | boolean> | undefined;
+    let release!: () => void, calls = 0;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const result = await collectYandex({ onDiagnostics: value => { published = value; }, fetch: async (input, init) => {
+      const url = new URL(String(input));
+      if (url.pathname === '/my/orders') return new Response('');
+      if (url.hostname === 'check.yandex.ru') return new Response(receipt);
+      if (url.searchParams.get('r')?.includes('resolveConsolidationOrders')) return orderList(Array.from({ length: 17 }, (_, index) => 123456 + index));
+      const params: Array<{ orderId: number }> = JSON.parse(String(init?.body)).params;
+      if (++calls === 2) release();
+      await gate;
+      if (params[0]!.orderId === 123456) return batchEnvelope(params.map(({ orderId }) => ({ result: ['r'], collections: { orderReceipt: { r: { fiscalUrl: `https://check.yandex.ru/${orderId}`, createdAt: 1767225600 } } } })));
+      return new Response('private-challenge-secret', { headers: { 'x-kupleno-yandex-html': '1', 'x-kupleno-yandex-challenge': '1', 'x-kupleno-yandex-redirected': '1', ...(opened ? { 'x-kupleno-yandex-challenge-opened': '1' } : {}) } });
+    } });
+    assert.equal(calls, 2);
+    assert.equal(result.rows.length, 8);
+    assert.equal(result.stats.incomplete, true);
+    assert.equal(result.stats.uncheckedOrders, 9);
+    assert.equal(result.stats.apiHtmlResponses, 1);
+    assert.equal(result.stats.providerChallengeResponses, 1);
+    assert.equal(result.stats.providerRedirectResponses, 1);
+    assert.equal(result.stats.providerChallengeOpenedResponses, opened ? 1 : 0);
+    assert.equal(result.warnings.some(value => value.includes('открыл проверку')), opened);
+    assert.equal(published?.receipts, 8);
+    assert.ok(!JSON.stringify({ stats: published, warnings: result.warnings }).includes('private-challenge-secret'));
+  }
+});
+
+test('diagnostics delivery preserves an original falsy progress error', async () => {
+  for (const failure of [0, undefined]) {
+    let stats: Record<string, number | boolean> | undefined;
+    await assert.rejects(collectYandex({ onDiagnostics: value => { stats = value; }, onProgress: () => { throw failure; }, fetch: async input => {
+      if (new URL(String(input)).pathname === '/my/orders') return new Response('');
+      return orderList([123456]);
+    } }), error => error === failure);
+    assert.equal(stats?.orders, 1);
+    assert.equal(stats?.incomplete, true);
+  }
+});
+
+test('provider-confirmed JSON challenge retains the existing private-safe shape diagnostics on failure', async () => {
+  let stats: Record<string, number | boolean> | undefined;
+  await assert.rejects(collectYandex({ onDiagnostics: value => { stats = value; }, fetch: async input => {
+    const url = new URL(String(input));
+    if (url.pathname === '/my/orders') return new Response('');
+    if (url.searchParams.get('r')?.includes('resolveConsolidationOrders')) return orderList([123456]);
+    return new Response(JSON.stringify({ type: 'captcha', captcha: { url: '/showcaptcha?secret=private-response-secret' } }), {
+      headers: { 'x-kupleno-yandex-challenge': '1', 'x-kupleno-yandex-challenge-opened': '1' },
+    });
+  } }), /открыл проверку/);
+  assert.equal(stats?.responseShapeKeyMask, 20);
+  assert.equal(stats?.captchaValueType, 3);
+  assert.equal(stats?.captchaObjectKeyMask, 1);
+  assert.equal(stats?.challengeResponses, 1);
+  assert.equal(stats?.providerChallengeOpenedResponses, 1);
+  assert.equal(stats?.apiNonJsonResponses, 0);
+  assert.equal(stats?.responseMalformedData, 0);
+  assert.ok(!JSON.stringify(stats).includes('private-response-secret'));
+});
+
+test('provider HTML or login metadata survives an empty HTTP error response', async () => {
+  for (const flag of ['html', 'login']) {
+    let stats: Record<string, number | boolean> | undefined;
+    await assert.rejects(collectYandex({ onDiagnostics: value => { stats = value; }, fetch: async input => {
+      if (new URL(String(input)).pathname === '/my/orders') return new Response('');
+      return new Response('', { status: 403, headers: { [`x-kupleno-yandex-${flag}`]: '1' } });
+    } }), flag === 'html' ? /страницу вместо истории/ : /запросил вход/);
+    assert.equal(stats?.apiNonJsonResponses, 1);
+    assert.equal(stats?.apiHtmlResponses, flag === 'html' ? 1 : 0);
+    assert.equal(stats?.providerLoginResponses, flag === 'login' ? 1 : 0);
+  }
+});
+
+test('provider SK presence diagnostics count flags without retaining live or captured values', async () => {
+  let stats: Record<string, number | boolean> | undefined;
+  const result = await collectYandex({ context: { sk: 'private-captured-sk' }, onDiagnostics: value => { stats = value; }, fetch: async input => {
+    const url = new URL(String(input));
+    if (url.pathname === '/my/orders') return new Response('<script>{"sk":"private-live-sk"}</script>');
+    if (url.hostname === 'check.yandex.ru') return new Response(receipt);
+    if (url.searchParams.get('r')?.includes('resolveConsolidationOrders')) {
+      const response = orderList([123456]);
+      response.headers.set('x-kupleno-yandex-live-sk', '1');
+      response.headers.set('x-kupleno-yandex-context-sk', '1');
+      return response;
+    }
+    const response = envelope({ result: ['r'], collections: { orderReceipt: { r: { fiscalUrl: 'https://check.yandex.ru/r', createdAt: 1767225600 } } } });
+    response.headers.set('x-kupleno-yandex-context-sk', '1');
+    response.headers.set('x-kupleno-yandex-context-sk-used', '1');
+    return response;
+  } });
+  assert.equal(result.stats.providerLiveSkResponses, 1);
+  assert.equal(result.stats.providerContextSkResponses, 2);
+  assert.equal(result.stats.providerContextSkUsedResponses, 1);
+  assert.equal(stats?.providerContextSkUsedResponses, 1);
+  assert.ok(!JSON.stringify({ stats, warnings: result.warnings }).includes('private-'));
+});

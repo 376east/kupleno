@@ -7,16 +7,16 @@ import { withDeadline } from '../../deadline';
 
 const tasks = new Map<string, { source: Job['source']; controller: AbortController; delivery?: ReturnType<typeof setTimeout> }>();
 
-async function finish(id: string, result?: CollectionResult, error?: string) {
+async function finish(id: string, result?: CollectionResult, error?: string, failureStats?: CollectionResult['stats']) {
   const task = tasks.get(id);
   if (!task) return;
   try {
-    const response = await withDeadline(browser.runtime.sendMessage({ type: 'KUPLENO_OFFSCREEN_EVENT', action: 'finished', id, result, error }), 'Не удалось сохранить результат.', 10000);
+    const response = await withDeadline(browser.runtime.sendMessage({ type: 'KUPLENO_OFFSCREEN_EVENT', action: 'finished', id, result, error, failureStats }), 'Не удалось сохранить результат.', 10000);
     if (!response?.ok) throw new Error('Не удалось сохранить результат обработки.');
     if (tasks.get(id) === task) tasks.delete(id);
   } catch {
     // Each result retries independently while the worker restarts.
-    if (tasks.get(id) === task) task.delivery = setTimeout(() => void finish(id, result, error), 2000);
+    if (tasks.get(id) === task) task.delivery = setTimeout(() => void finish(id, result, error, failureStats), 2000);
   }
 }
 
@@ -52,10 +52,21 @@ browser.runtime.onMessage.addListener((message, sender, reply) => {
         return new Response(bytes, { status: response.status });
       }
       if (job.source === 'yandex' && url.origin === 'https://market.yandex.ru' && url.pathname === '/api/resolve/') {
-        const response = await browser.runtime.sendMessage({ type: 'KUPLENO_YANDEX_REQUEST', id: job.id, url: url.href, body: options?.body });
+        const requestHeaders = new Headers(options?.headers);
+        const headerContext: Record<string, string> = {};
+        for (const [field, header] of [['sk', 'sk'], ['version', 'x-market-app-version'], ['marketFrontGlue', 'x-market-front-glue'], ['pageId', 'x-market-page-id']] as const) {
+          const value = requestHeaders.get(header);
+          if (value) headerContext[field] = value;
+        }
+        const response = await browser.runtime.sendMessage({ type: 'KUPLENO_YANDEX_REQUEST', id: job.id, url: url.href, body: options?.body, headerContext });
         signal.throwIfAborted();
-        if (!response?.ok || response.error) throw new Error(response?.error || 'Яндекс Маркет не ответил.');
-        return new Response(response.text, { status: response.status });
+        if (!response?.ok) throw new Error(response?.error || 'Яндекс Маркет не ответил.');
+        const headers = new Headers();
+        for (const [field, suffix] of [['html', 'html'], ['challenge', 'challenge'], ['login', 'login'], ['redirected', 'redirected'], ['challengeOpened', 'challenge-opened'], ['liveSk', 'live-sk'], ['contextSk', 'context-sk'], ['contextSkUsed', 'context-sk-used']] as const) {
+          if (response[field] === true) headers.set(`x-kupleno-yandex-${suffix}`, '1');
+        }
+        if (response.error && ![...headers].length) throw new Error(response.error);
+        return new Response(response.text, { status: response.status, headers });
       }
       return fetch(input, { ...options, signal: AbortSignal.any([signal, AbortSignal.timeout(25000)]) });
     },
@@ -63,6 +74,7 @@ browser.runtime.onMessage.addListener((message, sender, reply) => {
       await withDeadline(browser.runtime.sendMessage({ type: 'KUPLENO_OFFSCREEN_EVENT', action: 'progress', id: job.id, progress }), 'Не удалось подтвердить ход сбора.', 10000);
     },
   };
-  const task = job.source === 'ozon' ? collectOzon({ ...options, readPdf }) : collectYandex({ ...options, context: message.context });
-  void task.then(result => finish(job.id, result)).catch(error => finish(job.id, undefined, error instanceof Error ? error.message : 'Не удалось обработать чеки.'));
+  let lastDiagnostics: CollectionResult['stats'] | undefined;
+  const task = job.source === 'ozon' ? collectOzon({ ...options, readPdf }) : collectYandex({ ...options, context: message.context, onDiagnostics: stats => { lastDiagnostics = { ...stats }; } });
+  void task.then(result => finish(job.id, result)).catch(error => finish(job.id, undefined, error instanceof Error ? error.message : 'Не удалось обработать чеки.', lastDiagnostics));
 });

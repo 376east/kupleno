@@ -74,7 +74,13 @@ const money = text => text.replace(/\s/g, '');
     await page.getByRole('link', { name: 'Настройки', exact: true }).click();
     const [download] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Скачать копию', exact: true }).click()]);
     const exported = JSON.parse(await fs.readFile(await download.path(), 'utf8'));
-    assert.equal(exported.version, 2); assert.deepEqual(exported.state, changed);
+    assert.equal(exported.version, 2);
+    const { collectionDiagnostics, ...exportedMetadata } = exported.state.metadata;
+    assert.equal(collectionDiagnostics.available, true);
+    assert.deepEqual(collectionDiagnostics.attempts, []);
+    assert.ok(Number.isFinite(Date.parse(collectionDiagnostics.capturedAt)));
+    assert.deepEqual({ ...exported.state, metadata: exportedMetadata }, changed, 'Export adds only the diagnostic snapshot');
+    assert.deepEqual((await saved())[0][0].state, changed, 'Export never writes diagnostics into the saved history');
     await page.close();
     const reopened = await context.newPage(); detailVideo = reopened.video(); await reopened.goto(url);
     // Use a separate new tab, not only a React refresh, to prove persisted state.

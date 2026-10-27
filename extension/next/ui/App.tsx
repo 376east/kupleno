@@ -15,6 +15,9 @@ import { BulkEdit } from './BulkEdit';
 import { Control, ReturnForm, DocumentForm } from './Control';
 import { addDays, today, upsertClaim, upsertDocument, claims, documents, reconcileClaims, type Claim, type DocumentRecord } from '../lifecycle';
 import { parsePurchasesCsv, exportPurchasesCsv } from '../csv';
+import { browser } from 'wxt/browser';
+import { collectionAttemptDiagnostics, type JobResponse } from '../collection';
+import { withDeadline } from '../deadline';
 
 const SpendingChart = lazy(() => import('./SpendingChart').then(module => ({ default: module.SpendingChart })));
 const store = createStore();
@@ -69,6 +72,7 @@ export function App() {
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const writing = useRef(false);
   const [theme, setTheme] = useState(() => localStorage.getItem('kupleno-next-theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
   const [filters, setFilters] = useState<Filters>({});
@@ -121,6 +125,19 @@ export function App() {
     } finally { writing.current = false; setBusy(false); }
   }
   async function run(action: () => Promise<unknown>) { try { await action(); } catch (e) { setError(errorText(e)); } }
+  async function exportBackup() {
+    if (!state || exporting) return;
+    setExporting(true);
+    try {
+      let jobs: unknown;
+      if (browser?.runtime?.sendMessage) try {
+        const result = await withDeadline(browser.runtime.sendMessage({ type: 'KUPLENO_JOB', action: 'status' }) as Promise<JobResponse>, 'Диагностика сбора недоступна.', 2000);
+        if (result?.ok) jobs = result.jobs;
+      } catch { /* A failed collector must never prevent the history backup. */ }
+      const snapshot = { ...state, metadata: { ...state.metadata, collectionDiagnostics: collectionAttemptDiagnostics(jobs) } };
+      download(`kupleno-backup-${new Date().toISOString().slice(0, 10)}.json`, serializeBackup(snapshot));
+    } finally { setExporting(false); }
+  }
   async function loadFile(file?: File) {
     if (!file) return;
     if (file.size > 64 * 1024 * 1024) throw new Error('Копия больше 64 МБ. Выберите другой файл.');
@@ -166,7 +183,7 @@ export function App() {
             {page === 'purchases' && <><div className="row-actions journal-tools"><button className="secondary" onClick={() => download(`kupleno-${new Date().toISOString().slice(0, 10)}.csv`, exportPurchasesCsv(visible), 'text/csv;charset=utf-8')}>Скачать таблицу ({visible.length})</button><label className="checkbox-label"><input type="checkbox" checked={filters.includeExcluded === true} onChange={e => setFilters({ ...filters, includeExcluded: e.target.checked })} />Показать исключённые</label><label className="checkbox-label"><input type="checkbox" checked={filters.categoryReview === true} onChange={e => setFilters({ ...filters, categoryReview: e.target.checked })} />Проверить категории</label></div><Purchases rows={visible} onSelect={setSelected} onBulk={setBulk} /></>}
             {page === 'control' && <Control state={state} save={save} onSelect={setSelected} />}
             {page === 'stores' && <Stores state={state} rows={rows} update={updateCollection} onSelect={setSelected} />}
-            {page === 'settings' && <div className="stack"><section className="panel"><h2>Ваши данные</h2><div className="setting-row"><div><strong>Резервная копия</strong><small>Покупки, заметки, категории и остальные сохранённые настройки.</small></div><button onClick={() => download(`kupleno-backup-${new Date().toISOString().slice(0,10)}.json`, serializeBackup(state))}>Скачать копию</button></div><div className="setting-row"><div><strong>Вернуться к сохранённому состоянию</strong><small>Последние 12 сохранений. Восстановление тоже можно отменить.</small></div><button disabled={busy} onClick={() => void run(async () => setHistory(await store.history()))}>История изменений</button></div><div className="setting-row"><div><strong>Обновить данные из хранилища</strong><small>Если вы работали в другой вкладке.</small></div><button onClick={() => void refresh()}>Обновить</button></div></section><Preferences state={state} save={save} onSelect={setSelected} /></div>}
+            {page === 'settings' && <div className="stack"><section className="panel"><h2>Ваши данные</h2><div className="setting-row"><div><strong>Резервная копия</strong><small>Покупки, заметки, категории и остальные сохранённые настройки.</small></div><button disabled={exporting} aria-busy={exporting} onClick={() => void run(exportBackup)}>Скачать копию</button></div><div className="setting-row"><div><strong>Вернуться к сохранённому состоянию</strong><small>Последние 12 сохранений. Восстановление тоже можно отменить.</small></div><button disabled={busy} onClick={() => void run(async () => setHistory(await store.history()))}>История изменений</button></div><div className="setting-row"><div><strong>Обновить данные из хранилища</strong><small>Если вы работали в другой вкладке.</small></div><button onClick={() => void refresh()}>Обновить</button></div></section><Preferences state={state} save={save} onSelect={setSelected} /></div>}
           </>}
         </div>}
       </main>

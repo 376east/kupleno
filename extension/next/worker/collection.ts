@@ -1,6 +1,7 @@
 import { browser } from 'wxt/browser';
 import { collectWildberries } from '../collectors/wildberries';
 import type { Job, Command, JobResponse } from '../collection';
+import { readFailureStats } from '../collection';
 import { SOURCES } from '../domain.mjs';
 import type { Source } from '../model';
 import { yandexRequest } from './yandex-request';
@@ -48,8 +49,9 @@ function response(selected?: Job | null): JobResponse {
 async function closeCollectionTab(job: Job | null) {
   if (!job || job.marketTabId === undefined) return;
   const tab = await browser.tabs.get(job.marketTabId).catch(() => null);
-  if (!tab?.url) return;
-  const url = new URL(tab.url);
+  const targetUrl = tab?.pendingUrl || tab?.url;
+  if (!targetUrl) return;
+  const url = new URL(targetUrl);
   // Only the receipt tab created by this job; preserve tabs the user navigated away.
   const expected = new URL(SOURCES[job.source].url);
   if (url.hostname.replace(/^www\./, '') === expected.hostname.replace(/^www\./, '') && url.pathname.replace(/\/$/, '') === expected.pathname.replace(/\/$/, '')) await browser.tabs.remove(job.marketTabId).catch(() => {});
@@ -259,14 +261,14 @@ export function registerCollection() {
       void init.then(async () => {
         const current = jobById(message.id);
         if (!current || current.source !== 'yandex' || current.status !== 'running') throw new Error('Сбор уже завершён.');
-        return yandexRequest(message.url, message.body, current.marketTabId);
+        return yandexRequest(message.url, message.body, current.marketTabId, 'headerContext' in message ? message.headerContext : undefined);
       }).then(result => reply({ ok: true, ...result })).catch(error => reply({ ok: false, error: error instanceof Error ? error.message : 'Магазин не ответил.' }));
       return true;
     }
     if (message && typeof message === 'object' && 'type' in message && message.type === 'KUPLENO_OFFSCREEN_EVENT') {
       if (sender.id !== browser.runtime.id || sender.url !== browser.runtime.getURL('/offscreen.html')) { reply({ ok: false }); return; }
       if (!('id' in message) || typeof message.id !== 'string' || !('action' in message) || typeof message.action !== 'string') { reply({ ok: false }); return; }
-      const event = message as { id: string; action: string; progress?: Job['progress'] & { message: string }; result?: Job['result']; error?: string };
+      const event = message as { id: string; action: string; progress?: Job['progress'] & { message: string }; result?: Job['result']; error?: string; failureStats?: unknown };
       void (async () => {
         try {
           await init;
@@ -279,7 +281,9 @@ export function registerCollection() {
           } else if (event.action === 'finished') {
             if (!event.error && !event.result) throw new Error('Обработчик не передал результат.');
             if (event.result && (!Array.isArray(event.result.rows) || event.result.rows.length > 100000 || !Array.isArray(event.result.warnings) || !event.result.stats || typeof event.result.stats !== 'object')) throw new Error('Некорректный результат сбора.');
-            await persist(current.source, value => value?.id === event.id && value.status === 'running' ? { ...value, status: event.error ? 'failed' : 'completed', ...(event.result ? { result: event.result } : {}), ...(event.error ? { error: event.error } : {}), updatedAt: new Date().toISOString() } : value);
+            const failureStats = readFailureStats(event.failureStats);
+            if (event.failureStats !== undefined && (!event.error || !failureStats)) throw new Error('Некорректная диагностика сбора.');
+            await persist(current.source, value => value?.id === event.id && value.status === 'running' ? { ...value, status: event.error ? 'failed' : 'completed', ...(event.result ? { result: event.result } : {}), ...(event.error ? { error: event.error } : {}), ...(failureStats ? { failureStats } : {}), updatedAt: new Date().toISOString() } : value);
             await closeCollectionTab(current);
             reply({ ok: true });
             return;

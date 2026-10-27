@@ -56,6 +56,7 @@ async function main() {
       const paginationUrl = new URL(message.url);
       paginationUrl.searchParams.set('r', 'src/resolvers/orders/resolveConsolidationOrders:resolveConsolidationOrders');
       invalid.push({ ...message, url: paginationUrl.href, body: JSON.stringify({ ...request, params: [{ filter: 'COMPLETED', size: 18 }, { filter: 'COMPLETED', size: 18 }] }) });
+      for (const headerContext of [{ sk: 'invalid' + String.fromCharCode(13, 10) + 'header' }, { sk: 'x'.repeat(2001) }, { authorization: 'synthetic-secret' }, { sk: 123 }, []]) invalid.push({ ...message, headerContext });
       const probes = (async () => {
         for (const probe of invalid) {
           const response = await sendMessage(probe);
@@ -75,6 +76,10 @@ async function main() {
       }
       return sendMessage(...args).then(() => undefined);
     }
+    if (message?.type === 'KUPLENO_YANDEX_REQUEST' && typeof args.at(-1) !== 'function') return sendMessage(...args).then(response => {
+      if (response && Object.hasOwn(response, 'challengeUrl')) throw new Error('Transient challenge URL escaped the provider.');
+      return response;
+    });
     return sendMessage(...args);
   };
   globalThis.fetch = async input => {
@@ -125,6 +130,8 @@ async function main() {
     let holdYandex = false, releaseYandex;
     let yandexReceiptRequests = 0;
     let yandexOrderIds = [123456];
+    let yandexMode = 'normal', challengeCandidate = '', metadataGate, releaseHumanNavigation, headerPhase = '';
+    let holdHumanNavigation = false, unsafeNavigations = 0;
     const ozonRequestPages = new Set();
     await context.route('https://www.ozon.ru/**', async route => {
       if (route.request().isNavigationRequest()) return route.fulfill({contentType:'text/html',body:'<html><script>window.fetch = () => new Promise(() => {});</script><body>Receipt page</body></html>'});
@@ -136,16 +143,36 @@ async function main() {
     });
     await context.route('https://market.yandex.ru/**', async route => {
       const url = new URL(route.request().url()); requests.push(url.href);
+      if (url.pathname === '/showcaptcha' || url.pathname === '/captcha') {
+        if (holdHumanNavigation && route.request().isNavigationRequest()) await new Promise(resolve => { releaseHumanNavigation = resolve; });
+        return route.fulfill({ contentType: 'text/html', body: '<html><body><h1>Synthetic human verification page</h1></body></html>' });
+      }
       if (url.pathname === '/api/resolve/') {
+        if (headerPhase) {
+          const wire = route.request().headers();
+          const prefix = headerPhase === 'fresh' ? 'fresh' : 'cached';
+          assert.equal(wire.sk, headerPhase === 'absent' ? undefined : prefix + '-sk-secret');
+          assert.equal(wire['x-market-app-version'], headerPhase === 'absent' ? undefined : prefix + '-version');
+          assert.equal(wire['x-market-front-glue'], headerPhase === 'absent' ? undefined : prefix + '-glue');
+          assert.equal(wire['x-market-page-id'], headerPhase === 'absent' ? 'market:orders' : 'market:orders:' + prefix);
+        }
+        if (yandexMode === 'html-list') return route.fulfill({ contentType: 'text/html', body: '<!doctype html><html><body>Synthetic unavailable page</body></html>' });
+        if (yandexMode === 'login-redirect') return route.fulfill({ status: 302, headers: { location: 'https://market.yandex.ru/login' } });
         if (url.searchParams.get('r')?.includes('resolveConsolidationOrders')) return route.fulfill({ json: { results: [{ data: { result: 'list', collections: { orderConsolidationResult: { list: { ordersGroupsIds: yandexOrderIds, pageToken: '', hasNext: false } } } } }] } });
         yandexReceiptRequests++;
+        if (metadataGate) await metadataGate;
+        if (yandexMode === 'html-metadata') return route.fulfill({ contentType: 'text/html', body: '<!doctype html><html><body>Synthetic unavailable page</body></html>' });
+        if (yandexMode === 'challenge') return route.fulfill({ json: { type: 'captcha', captcha: { 'captcha-page': challengeCandidate } } });
+        if (yandexMode === 'redirect-challenge') return route.fulfill({ status: 302, headers: { location: challengeCandidate } });
         if (holdYandex) await new Promise(resolve => { releaseYandex = resolve; });
         const body = route.request().postDataJSON(); assert.equal(body.params[0].orderId, 123456);
         assert.ok(body.params.length <= 8);
         return route.fulfill({ json: { results: body.params.map(({orderId}) => ({ data: { result: ['r'], collections: { orderReceipt: { r: { id: String(orderId), fiscalUrl: 'https://check.yandex.ru/test/' + orderId, createdAt: 1767225600, type: 'INCOME' } } } } })) } });
       }
-      return route.fulfill({ contentType: 'text/html', body: '<html><a href="/my/order/123456">Order</a></html>' });
+      const captured = headerPhase && headerPhase !== 'absent' ? '<script id="synthetic-header-context" type="application/json">{"sk":"cached-sk-secret","-version":"cached-version","marketFrontGlue":"cached-glue","page":"market:orders:cached"}</script>' : '';
+      return route.fulfill({ contentType: 'text/html', body: '<html><a href="/my/order/123456">Order</a>' + captured + '</html>' });
     });
+    await context.route('https://evil.test/**', route => { unsafeNavigations++; return route.fulfill({ contentType: 'text/html', body: '<html>Must not be opened</html>' }); });
     await context.route('https://check.yandex.ru/**', route => route.fulfill({ contentType: 'text/html', body: '<table><tr><td>1</td><td>Книга</td><td>1</td><td>100,00</td></tr><tr><td>ИТОГ</td><td>100,00</td></tr></table>' }));
     await context.route('https://www.wildberries.ru/**', route => route.fulfill({contentType:'text/html',body:'<html>WB test</html>'}));
     const page = await context.newPage();
@@ -179,6 +206,7 @@ async function main() {
       assert.deepEqual((await command({ action: 'status', ...scope })).job.result.stats, result.job.result.stats, 'Safe diagnostics survive worker delivery and app reopen');
       await command({ action: 'ack', id: result.job.id });
       assert.equal((await command({ action: 'status', ...scope })).job, null);
+      return result.job.result;
     }
     const ozon = await context.newPage(); await ozon.goto('https://www.ozon.ru/my/e-check');
     // Site code can replace fetch; the extension's isolated-world request must still work.
@@ -420,6 +448,154 @@ async function main() {
     for(let i=0;i<30;i++) { if(!await page.evaluate(id=>chrome.tabs.get(id).then(()=>true,()=>false),wbStart.job.marketTabId)) break; await new Promise(r=>setTimeout(r,100)); }
     assert.equal(await page.evaluate(id=>chrome.tabs.get(id).then(()=>true,()=>false),wbStart.job.marketTabId),false);
     assert.equal(wbUser.isClosed(),false);
+    // A failed run is exported separately; historical warnings must not mask the current failure.
+    const oldWarning = 'Яндекс Маркет: предупреждение прежнего сбора.';
+    const prior = structuredClone(persisted.state);
+    prior.metadata.collection.warnings = [oldWarning];
+    prior.metadata.collection.stats.yandex.incomplete = true;
+    await page.locator('input[type=file]').setInputFiles({ name: 'synthetic-prior.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify({ format: 'kupleno-backup', version: 2, state: prior })) });
+    await page.getByRole('dialog').getByRole('button', { name: 'Загрузить историю', exact: true }).click();
+    await page.getByRole('dialog').waitFor({ state: 'hidden' });
+    await page.goto(`chrome-extension://${id}/app.html#stores`);
+    await page.getByText(oldWarning, { exact: true }).waitFor();
+    const saved = () => page.evaluate(async () => {
+      const database = await new Promise((resolve, reject) => { const request = indexedDB.open('kupleno-storage-v2'); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
+      try { return await new Promise((resolve, reject) => { const request = database.transaction('current').objectStore('current').get('state'); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); }); }
+      finally { database.close(); }
+    });
+    const failureBaseline = await saved();
+    async function failedYandex(started) {
+      const deadline = Date.now() + 15000;
+      let result;
+      do {
+        result = await command({ action: 'status', source: 'yandex' });
+        if (result.job.status !== 'running') break;
+        await new Promise(resolve => setTimeout(resolve, 100));
+      } while (Date.now() < deadline);
+      assert.equal(result.job.id, started.job.id);
+      assert.equal(result.job.status, 'failed', JSON.stringify(result));
+      assert.ok(result.job.failureStats, 'Even a zero-row failure keeps its fixed diagnostics');
+      return result.job;
+    }
+    yandexMode = 'html-list';
+    const htmlFailure = await failedYandex(await command({ action: 'start', source: 'yandex', profile: 'personal' }));
+    assert.equal(htmlFailure.failureStats.apiHtmlResponses, 1);
+    assert.equal(htmlFailure.failureStats.apiResponseStatus, 200);
+    assert.equal(htmlFailure.failureStats.providerHtmlResponses, 1);
+    assert.equal(htmlFailure.failureStats.receiptMetadataRequests, 0);
+    assert.doesNotMatch(htmlFailure.error, /Проверьте вход|Войдите/);
+    await page.getByRole('alert').filter({ hasText: 'страницу вместо истории' }).waitFor();
+    assert.equal(await page.getByText(oldWarning, { exact: true }).count(), 0, 'Do not mix a prior warning with the current failure');
+    assert.deepEqual((await saved()).state, failureBaseline.state, 'Failed collection leaves saved rows/settings/metadata untouched');
+    const restartedFailure = await restartWorker();
+    assert.deepEqual(restartedFailure.status.jobs.find(job => job.source === 'yandex').failureStats, htmlFailure.failureStats);
+    await page.goto(`chrome-extension://${id}/app.html#settings`);
+    const [failureDownload] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Скачать копию', exact: true }).click()]);
+    const exportedFailure = JSON.parse(await fs.readFile(await failureDownload.path(), 'utf8'));
+    const attempts = exportedFailure.state.metadata.collectionDiagnostics;
+    assert.equal(attempts.available, true);
+    assert.deepEqual(attempts.attempts.find(job => job.source === 'yandex').failureStats, htmlFailure.failureStats);
+    assert.deepEqual(exportedFailure.state.rows, failureBaseline.state.rows);
+    assert.deepEqual(exportedFailure.state.settings, failureBaseline.state.settings);
+    assert.deepEqual((await saved()).state, failureBaseline.state, 'Export diagnostics are a snapshot, not a database write');
+    yandexMode = 'html-metadata'; yandexOrderIds = Array.from({ length: 17 }, (_, index) => 123456 + index);
+    const metadataBefore = yandexReceiptRequests;
+    const metadataFailure = await failedYandex(await command({ action: 'start', source: 'yandex', profile: 'personal' }));
+    assert.ok(yandexReceiptRequests - metadataBefore <= 2, 'Global HTML rejection must not hammer queued orders or archive');
+    assert.ok(metadataFailure.failureStats.apiHtmlResponses > 0);
+    yandexMode = 'login-redirect';
+    const loginFailure = await failedYandex(await command({ action: 'start', source: 'yandex', profile: 'personal' }));
+    assert.equal(loginFailure.failureStats.providerLoginResponses, 1);
+    assert.equal(loginFailure.failureStats.providerRedirectResponses, 1);
+    assert.match(loginFailure.error, /Войдите/);
+    yandexMode = 'challenge'; yandexOrderIds = [123456];
+    const privateMarker = 'synthetic-challenge-secret';
+    const safeCandidate = 'https://market.yandex.ru/showcaptcha?retpath=https%3A%2F%2Fmarket.yandex.ru%2Fmy%2Forders&key=' + privateMarker;
+    const unsafeCandidates = ['https://evil.test/showcaptcha', 'https://user:pass@market.yandex.ru/showcaptcha', '/checkcaptcha', 'captcha',
+      '/showcaptcha?retpath=https%3A%2F%2Fevil.test%2F', '/showcaptcha?retpath=https%253A%252F%252Fevil.test%252F',
+      '/showcaptcha?retpath=' + Buffer.from('https://evil.test/').toString('base64url'), '/showcaptcha?retpath=/my/orders&retpath=/'];
+    for (const candidate of unsafeCandidates) {
+      challengeCandidate = candidate;
+      const failure = await failedYandex(await command({ action: 'start', source: 'yandex', profile: 'personal' }));
+      assert.equal(failure.failureStats.providerChallengeResponses, 1);
+      assert.equal(failure.failureStats.providerChallengeOpenedResponses, 0);
+      await page.waitForFunction(id => chrome.tabs.get(id).then(() => false, () => true), failure.marketTabId, { timeout: 5000, polling: 100 });
+    }
+    assert.equal(unsafeNavigations, 0);
+    // Revalidate ownership after the reply: a tab the user moved elsewhere cannot be redirected.
+    challengeCandidate = safeCandidate;
+    let releaseMetadata;
+    metadataGate = new Promise(resolve => { releaseMetadata = resolve; });
+    const beforeOwnershipRequest = yandexReceiptRequests;
+    const ownershipStarted = await command({ action: 'start', source: 'yandex', profile: 'personal' });
+    for (let attempt = 0; attempt < 100 && yandexReceiptRequests === beforeOwnershipRequest; attempt++) await new Promise(resolve => setTimeout(resolve, 50));
+    assert.ok(yandexReceiptRequests > beforeOwnershipRequest);
+    const ownershipWorker = context.serviceWorkers().find(worker => worker.url() === `chrome-extension://${id}/background.js`);
+    await ownershipWorker.evaluate(id => {
+      const get = chrome.tabs.get.bind(chrome.tabs);
+      chrome.tabs.get = async requested => {
+        const tab = await get(requested);
+        if (requested !== id) return tab;
+        chrome.tabs.get = get;
+        return { ...tab, pendingUrl: 'https://market.yandex.ru/my/order/999999' };
+      };
+    }, ownershipStarted.job.marketTabId);
+    metadataGate = undefined; releaseMetadata();
+    const ownershipFailure = await failedYandex(ownershipStarted);
+    assert.equal(ownershipFailure.failureStats.providerChallengeOpenedResponses, 0);
+    await page.waitForFunction(id => chrome.tabs.get(id).then(() => false, () => true), ownershipFailure.marketTabId, { timeout: 5000, polling: 100 });
+    // Keep the actual navigation pending: cleanup must respect pendingUrl and leave the check for the human.
+    yandexMode = 'redirect-challenge'; challengeCandidate = safeCandidate; holdHumanNavigation = true;
+    await page.bringToFront();
+    const activeBeforeCheck = await page.evaluate(async () => (await chrome.tabs.query({ active: true, currentWindow: true }))[0].id);
+    const openedFailure = await failedYandex(await command({ action: 'start', source: 'yandex', profile: 'personal' }));
+    assert.equal(openedFailure.failureStats.providerChallengeOpenedResponses, 1);
+    assert.equal(openedFailure.failureStats.providerRedirectResponses, 1);
+    assert.equal(openedFailure.failureStats.apiHtmlResponses, 1);
+    assert.match(openedFailure.error, /открыл проверку/);
+    const humanTab = await page.evaluate(id => chrome.tabs.get(id), openedFailure.marketTabId);
+    assert.ok((humanTab.pendingUrl || humanTab.url).startsWith('https://market.yandex.ru/showcaptcha'));
+    assert.equal(humanTab.active, false);
+    assert.equal(await page.evaluate(async () => (await chrome.tabs.query({ active: true, currentWindow: true }))[0].id), activeBeforeCheck);
+    assert.ok(!JSON.stringify(await page.evaluate(() => chrome.storage.local.get('kupleno-next-jobs'))).includes(privateMarker), 'Challenge URL/tokens never enter durable jobs');
+    for (let attempt = 0; attempt < 100 && typeof releaseHumanNavigation !== 'function'; attempt++) await new Promise(resolve => setTimeout(resolve, 50));
+    assert.equal(typeof releaseHumanNavigation, 'function'); holdHumanNavigation = false; releaseHumanNavigation();
+    await page.evaluate(id => chrome.tabs.remove(id), openedFailure.marketTabId);
+    assert.equal(yandexUser.isClosed(), false, 'Human verification never touches the pre-existing store tab');
+    assert.deepEqual((await saved()).state, failureBaseline.state);
+    // The captured client context is a fallback; fresh DOM values still take precedence.
+    yandexMode = 'normal';
+    for (const phase of ['empty', 'fresh', 'absent']) {
+      headerPhase = phase;
+      const headerWorker = context.serviceWorkers().find(worker => worker.url() === `chrome-extension://${id}/background.js`);
+      await headerWorker.evaluate(phase => {
+        const execute = chrome.scripting.executeScript.bind(chrome.scripting);
+        globalThis.restoreHeaderFixture = () => { chrome.scripting.executeScript = execute; };
+        chrome.scripting.executeScript = async details => {
+          if (details.world === 'MAIN') await execute({ target: details.target, world: 'MAIN', args: [phase], func: phase => {
+            const node = document.getElementById('synthetic-header-context');
+            if (phase === 'empty') node?.remove();
+            if (phase === 'fresh' && node) node.textContent = JSON.stringify({ sk: 'fresh-sk-secret', '-version': 'fresh-version', marketFrontGlue: 'fresh-glue', page: 'market:orders:fresh' });
+          } });
+          return execute(details);
+        };
+      }, phase);
+      try {
+        const started = await command({ action: 'start', source: 'yandex', profile: 'personal' });
+        assert.equal(started.job.status, 'running', JSON.stringify(started));
+        const result = await finish('yandex');
+        assert.equal(result.stats.providerLiveSkResponses > 0, phase === 'fresh');
+        assert.equal(result.stats.providerContextSkResponses > 0, phase !== 'absent');
+        assert.equal(result.stats.providerContextSkUsedResponses > 0, phase === 'empty');
+      } finally { await headerWorker.evaluate(() => { globalThis.restoreHeaderFixture(); delete globalThis.restoreHeaderFixture; }); }
+    }
+    headerPhase = '';
+    const durableAfterHeaders = JSON.stringify(await page.evaluate(() => chrome.storage.local.get('kupleno-next-jobs')));
+    assert.ok(!/cached-sk-secret|fresh-sk-secret|cached-glue|fresh-glue/.test(durableAfterHeaders));
+    assert.deepEqual((await saved()).state, failureBaseline.state);
+    assert.deepEqual(fixtureNavigationErrors, []);
+    console.log('PASS: captured header context survives DOM removal; fresh DOM wins; missing context stays absent; invalid headers rejected; tokens never persisted.');
+    console.log('PASS: failed-run diagnostics survive restart/export without history writes; old warnings hidden; HTML stops the queue; login distinguished; human check URL guarded and kept without focus or token persistence.');
     console.log('PASS: hanging Ozon request becomes failed; live diagnostics visible; one attempt; cancellation remains responsive; site fetch override cannot intercept extension requests.');
     console.log('PASS: real MV3 worker/offscreen; PDF parsing; Yandex MAIN-world requests; durable result/reopen/ack; untrusted proxy request rejected. Synthetic marketplace responses only.');
   } finally {

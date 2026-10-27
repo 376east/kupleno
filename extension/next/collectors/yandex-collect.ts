@@ -11,6 +11,7 @@ const receiptResolver = 'src/resolvers/orderDocuments/resolveOrderReceiptsByOrde
 const object = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const array = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
 const cap = (size: number) => { if (size > 100000) throw Object.assign(new Error('В сборе больше 100 000 операций.'), { code: 'ROW_LIMIT_EXCEEDED' }); };
+const globalApiFailure = (error: unknown) => ['YANDEX_CHALLENGE', 'YANDEX_API_NON_JSON', 'YANDEX_API_LOGIN', 'YANDEX_API_REDIRECT'].includes(String(object(error).code));
 const challengeError = () => Object.assign(new Error('Яндекс Маркет запросил проверку доступа. Если магазин покажет её, пройдите проверку и повторите сбор. Иначе попробуйте позже.'), { code: 'YANDEX_CHALLENGE' });
 // Shape types: 0 missing, 1 null, 2 array, 3 object, 4 string, 5 number, 6 boolean, 7 other.
 const shapeType = (value: unknown) => value === undefined ? 0 : value === null ? 1 : Array.isArray(value) ? 2 : typeof value === 'object' ? 3 : typeof value === 'string' ? 4 : typeof value === 'number' ? 5 : typeof value === 'boolean' ? 6 : 7;
@@ -88,7 +89,7 @@ function safeReceipt(value: string) {
   if (url.protocol !== 'https:' || url.hostname !== 'check.yandex.ru' || url.username || url.password) throw new Error('Неподдерживаемая ссылка на чек Яндекс Маркета.');
   return url.href;
 }
-export async function collectYandex(options: { fetch: typeof fetch; signal?: AbortSignal; onProgress?: (p: { done: number; total: number; message: string }) => void | Promise<void>; context?: YandexContext }): Promise<CollectionResult> {
+export async function collectYandex(options: { fetch: typeof fetch; signal?: AbortSignal; onProgress?: (p: { done: number; total: number; message: string }) => void | Promise<void>; context?: YandexContext; onDiagnostics?: (stats: Record<string, number | boolean>) => void }): Promise<CollectionResult> {
   const warnings: string[] = [], orderIds = new Set<string>();
   const failures = new Set<string>();
   const rememberFailure = (error: unknown) => {
@@ -103,8 +104,15 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
     responseRootNull: 0, responseRootArray: 0, responseRootPrimitive: 0, responseRootEmpty: 0, responseRootErrorsField: 0,
     responseDataMissing: 0, responseDataNull: 0, responseDataArray: 0, responseDataPrimitive: 0, responseResultsMissing: 0, responseResultsEmpty: 0, responseResultsMalformed: 0,
     resolverNotFoundErrors: 0, resolverForbiddenErrors: 0, resolverUnauthorizedErrors: 0, resolverRateLimitErrors: 0, resolverOtherErrors: 0,
-    missingUrlOrders: 0, unsafeUrlOrders: 0, responseErrorOrders: 0, noReceiptOrders: 0, receiptMetadataRequests: 0, receiptMetadataOrdersRequested: 0 };
+    missingUrlOrders: 0, unsafeUrlOrders: 0, responseErrorOrders: 0, noReceiptOrders: 0, receiptMetadataRequests: 0, receiptMetadataOrdersRequested: 0, apiResponseStatus: 0, apiNonJsonResponses: 0, apiHtmlResponses: 0, apiOtherNonJsonResponses: 0, providerHtmlResponses: 0, providerChallengeResponses: 0, providerLoginResponses: 0, providerRedirectResponses: 0, providerChallengeOpenedResponses: 0,
+    providerLiveSkResponses: 0, providerContextSkResponses: 0, providerContextSkUsedResponses: 0 };
   const pagination = { lastPageItems: 0, lastPageIds: 0, lastPageNewIds: 0, lastPageHasNextKnown: false, lastPageHasNext: false, lastPageCursorPresent: false, lastPageCursorMatchesRequest: false, repeatedCursor: false };
+  const receipts = new Map<string, { id: string; url: string; orderId: string; type: string; date?: string }>();
+  let checked = 0, failedReceipts = 0, metadataStopped = false, hasMetadataFatal = false;
+  let metadataFatal: unknown, metadataStopError: unknown;
+  const snapshot = (): Record<string, number | boolean> => ({ orders: orderIds.size, receipts: receipts.size, pages, failedOrders, failedReceipts, removed: 0, incomplete, ...diagnostics, ...pagination });
+  let completedStats: Record<string, number | boolean> | undefined;
+  async function run(): Promise<CollectionResult> {
   const headers: Record<string, string> = { accept: '*/*', 'content-type': 'application/json', 'x-market-apphost-target': 'WEB', 'x-market-core-service': '<UNKNOWN>', 'x-market-page-id': options.context?.pageId || 'market:orders', 'x-requested-with': 'XMLHttpRequest', 'x-retpath-y': origin + ordersPath };
   if (options.context?.sk) headers.sk = options.context.sk;
   if (options.context?.version) headers['x-market-app-version'] = options.context.version;
@@ -113,10 +121,39 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
     options.signal?.throwIfAborted();
     const url = new URL('/api/resolve/', origin); url.searchParams.set('r', resolver);
     const response = await options.fetch(url.href, { method: 'POST', credentials: 'include', signal: options.signal, headers, body: JSON.stringify({ params, path: ordersPath }) });
-    if (!response.ok) throw new Error(`Яндекс Маркет: HTTP ${response.status}.`);
-    if (response.url && new URL(response.url).origin !== origin) throw new Error('Яндекс Маркет перенаправил запрос. Проверьте вход.');
+    diagnostics.apiResponseStatus = response.status;
+    const flagged = (name: string) => response.headers.get(`x-kupleno-yandex-${name}`) === '1';
+    for (const [name, counter] of [['html', 'providerHtmlResponses'], ['challenge', 'providerChallengeResponses'], ['login', 'providerLoginResponses'], ['redirected', 'providerRedirectResponses'], ['challenge-opened', 'providerChallengeOpenedResponses'], ['live-sk', 'providerLiveSkResponses'], ['context-sk', 'providerContextSkResponses'], ['context-sk-used', 'providerContextSkUsedResponses']] as const) if (flagged(name)) diagnostics[counter]++;
+    const opened = diagnostics.providerChallengeOpenedResponses > 0;
+    const challengeMessage = opened ? 'Яндекс Маркет открыл проверку в отдельной вкладке. Пройдите её и повторите сбор.' : challengeError().message;
     const body = await response.text(); if (body.length > 8 * 1024 * 1024) throw new Error('Ответ Яндекс Маркета слишком большой.');
-    try { return JSON.parse(body) as unknown; } catch { throw new Error('Яндекс Маркет вернул страницу вместо данных. Проверьте вход.'); }
+    if (!response.ok && !body.trim() && !flagged('html') && !flagged('challenge') && !flagged('login') && !flagged('redirected')) throw new Error(`Яндекс Маркет: HTTP ${response.status}.`);
+    let payload: unknown;
+    try { payload = JSON.parse(body); }
+    catch {
+      diagnostics.apiNonJsonResponses++;
+      const html = flagged('html') || /text\/html|application\/xhtml\+xml/i.test(response.headers.get('content-type') || '') || /^\s*(?:<!doctype\s+html\b|<html\b|<head\b|<body\b)/i.test(body.slice(0, 512));
+      if (html) diagnostics.apiHtmlResponses++; else diagnostics.apiOtherNonJsonResponses++;
+      if (flagged('challenge')) { diagnostics.challengeResponses++; throw Object.assign(new Error(challengeMessage), { code: 'YANDEX_CHALLENGE' }); }
+      const message = flagged('login') ? 'Яндекс Маркет запросил вход. Войдите в магазин и повторите сбор.' : html ? 'Яндекс Маркет вернул страницу вместо истории покупок. Сбор остановлен; сохранённые покупки остаются.' : 'Ответ Яндекс Маркета не удалось прочитать. Сбор остановлен; сохранённые покупки остаются.';
+      throw Object.assign(new Error(message), { code: flagged('login') ? 'YANDEX_API_LOGIN' : 'YANDEX_API_NON_JSON' });
+    }
+    if (flagged('challenge')) {
+      const before = diagnostics.challengeResponses;
+      const root = object(payload);
+      try { checkChallenge(root, diagnostics); }
+      catch (error) { if (object(error).code !== 'YANDEX_CHALLENGE') throw error; captureRootShape(root, diagnostics); }
+      if (diagnostics.challengeResponses === before) for (const entry of array(root.results).slice(0, 8)) {
+        try { checkChallenge(object(entry), diagnostics); }
+        catch (error) { if (object(error).code !== 'YANDEX_CHALLENGE') throw error; break; }
+      }
+      if (diagnostics.challengeResponses === before) diagnostics.challengeResponses++;
+      throw Object.assign(new Error(challengeMessage), { code: 'YANDEX_CHALLENGE' });
+    }
+    if (flagged('login')) throw Object.assign(new Error('Яндекс Маркет запросил вход. Войдите в магазин и повторите сбор.'), { code: 'YANDEX_API_LOGIN' });
+    if (response.url && new URL(response.url).origin !== origin) throw Object.assign(new Error('Яндекс Маркет перенаправил запрос истории. Сбор остановлен.'), { code: 'YANDEX_API_REDIRECT' });
+    if (!response.ok) throw new Error(`Яндекс Маркет: HTTP ${response.status}.`);
+    return payload;
   }
   let token = '';
   try {
@@ -144,7 +181,7 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
         const candidate = object(collection[String(id)] || Object.values(collection)[0]);
         if (!Array.isArray(candidate.ordersGroupsIds) && !Array.isArray(candidate.orderGroupIds)) { diagnostics.responseMalformedResult++; throw new Error('Список заказов не распознан.'); }
         page = candidate; break;
-      } catch (e) { if (options.signal?.aborted || object(e).code === 'YANDEX_CHALLENGE') throw e; }
+      } catch (e) { if (options.signal?.aborted || globalApiFailure(e)) throw e; }
     }
     if (!page) { if (!orderIds.size) throw new Error('Яндекс Маркет: формат списка заказов не распознан. Проверьте вход и повторите сбор.'); incomplete = true; warnings.push('Яндекс Маркет: следующие страницы заказов не прочитаны.'); break; }
     const items = Array.isArray(page.ordersGroupsIds) ? page.ordersGroupsIds : array(page.orderGroupIds);
@@ -167,20 +204,17 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
     await options.onProgress?.({ done: pages, total: 0, message: `Яндекс Маркет: найдено ${orderIds.size} заказов.` });
   }
   if (requestPage && pages >= 2000) { incomplete = true; warnings.push('Яндекс Маркет: достигнут лимит страниц заказов.'); }
-  const receipts = new Map<string, { id: string; url: string; orderId: string; type: string; date?: string }>();
   const states = [...orderIds].map(orderId => ({ orderId, found: false, emptyLists: 0, done: false,
     validIds: new Set<string>(), unresolved: new Map<string, 'missing' | 'unsafe'>(), errors: [] as unknown[] }));
-  let checked = 0, metadataStopped = false, hasMetadataFatal = false;
-  let metadataFatal: unknown;
   try {
     for (const archived of [false, true]) {
       const pending = states.filter(state => !state.done);
       const batches = Array.from({ length: Math.ceil(pending.length / 8) }, (_, index) => pending.slice(index * 8, index * 8 + 8));
       await mapConcurrent(batches, 2, async batch => { try {
-        if (metadataStopped) throw challengeError();
+        if (metadataStopped) throw metadataStopError;
         await new Promise(resolve => setTimeout(resolve, 300));
         options.signal?.throwIfAborted();
-        if (metadataStopped) throw challengeError();
+        if (metadataStopped) throw metadataStopError;
         let payload: unknown;
         try {
           diagnostics.receiptMetadataRequests++;
@@ -196,7 +230,7 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
           }
           checkChallenge(root, diagnostics);
         } catch (error) {
-          if (options.signal?.aborted || object(error).code === 'ROW_LIMIT_EXCEEDED' || object(error).code === 'YANDEX_CHALLENGE') throw error;
+          if (options.signal?.aborted || object(error).code === 'ROW_LIMIT_EXCEEDED' || globalApiFailure(error)) throw error;
           for (const state of batch) state.errors.push(error);
           payload = undefined;
         }
@@ -225,7 +259,7 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
               state.found = true; cap(receipts.size);
             }
           } catch (error) {
-            if (options.signal?.aborted || object(error).code === 'ROW_LIMIT_EXCEEDED' || object(error).code === 'YANDEX_CHALLENGE') throw error;
+            if (options.signal?.aborted || object(error).code === 'ROW_LIMIT_EXCEEDED' || globalApiFailure(error)) throw error;
             state.errors.push(error);
           }
           if (!archived && (!state.found || state.unresolved.size)) continue;
@@ -243,7 +277,7 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
           await options.onProgress?.({ done: checked, total: orderIds.size, message: `Яндекс Маркет: проверено ${checked} из ${orderIds.size} заказов.` });
         }
       } catch (error) {
-        if (object(error).code === 'YANDEX_CHALLENGE') metadataStopped = true;
+        if (globalApiFailure(error)) { metadataStopped = true; metadataStopError = error; }
         else { hasMetadataFatal = true; metadataFatal = error; }
         throw error;
       } }, options.signal);
@@ -251,14 +285,14 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
   } catch (error) {
     options.signal?.throwIfAborted();
     if (hasMetadataFatal) throw metadataFatal;
-    if (object(error).code !== 'YANDEX_CHALLENGE') throw error;
-    if (!receipts.size) throw challengeError();
+    if (!globalApiFailure(error)) throw error;
+    if (!receipts.size) throw metadataStopError;
     incomplete = true;
     diagnostics.uncheckedOrders = orderIds.size - checked;
-    warnings.push(challengeError().message);
+    warnings.push(metadataStopError instanceof Error ? metadataStopError.message : 'Яндекс Маркет остановил сбор.');
   }
   let rowCount = 0;
-  let failedReceipts = 0, done = 0;
+  let done = 0;
   const chunks = await mapConcurrent([...receipts.values()].sort((a,b) => a.url.localeCompare(b.url)), 4, async receipt => {
     let rows: Purchase[] = [];
     try {
@@ -275,9 +309,17 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
     return rows;
   }, options.signal);
   const rows = chunks.flat();
-  if (!rows.length && metadataStopped) throw challengeError();
+  if (!rows.length && metadataStopped) throw metadataStopError;
   if (failedOrders || failedReceipts) warnings.push(`Яндекс Маркет: ошибки у ${failedOrders} заказов и ${failedReceipts} чеков. Ранее сохранённая история остаётся.`);
   if (!rows.length && (failedOrders || failedReceipts)) throw new Error(`${warnings.at(-1)} ${[...failures].slice(0,3).join(' ')}`.trim());
   if (failedOrders && failures.size) warnings.push(`Яндекс Маркет: причины пропуска — ${[...failures].slice(0,3).join(' ')}`);
   return { rows, processedReceipts: [...new Set(rows.map(row => row.receipt_url || row.marketplace_id || '').filter(Boolean))], warnings, stats: { orders: orderIds.size, receipts: receipts.size, pages, failedOrders, failedReceipts, removed: 0, incomplete, ...diagnostics, ...pagination, fallbackReceipts: new Set(rows.filter(row => row.parse_quality === 'fallback').map(row => row.marketplace_id)).size, unverifiedReceipts: new Set(rows.filter(row => row.parse_quality === 'unverified').map(row => row.marketplace_id)).size } };
+  }
+  try { const result = await run(); completedStats = result.stats; return result; }
+  catch (error) { incomplete = true; throw error; }
+  finally {
+    diagnostics.uncheckedOrders = Math.max(diagnostics.uncheckedOrders, orderIds.size - checked);
+    try { options.onDiagnostics?.({ ...snapshot(), ...completedStats }); } catch { /* Diagnostics cannot replace the collection result or its original failure. */ }
+  }
+
 }
