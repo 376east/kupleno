@@ -27,6 +27,19 @@ test('v2 export round-trips unknown fields and exact amount', () => {
   assert.equal(parsed.state.rows[0].amount, '001.50');
 });
 
+test('per-source collection acknowledgements validate consumed fields and preserve future metadata', () => {
+  for (const appliedCollections of [false, [], 'broken', { ozon: [] }, { wildberries: 1 }, { yandex: {} }]) {
+    const sample = { ...state, metadata: { ...state.metadata, appliedCollections } };
+    for (const version of [1, 2]) {
+      const backup = version === 1 ? { format: 'kupleno-backup', version, ...sample } : { format: 'kupleno-backup', version, state: sample };
+      assert.throws(() => parseBackup(JSON.stringify(backup)), error => error.code === 'INVALID_METADATA');
+    }
+    assert.throws(() => serializeBackup(sample), error => error.code === 'INVALID_METADATA');
+  }
+  const sample = { ...state, metadata: { ...state.metadata, appliedCollections: { ozon: 'job-ozon', yandex: null, futureSource: { keep: ['unknown'] } } } };
+  assert.deepEqual(parseBackup(serializeBackup(sample)).state, sample);
+});
+
 test('settlement archive validates its container and preserves original JSON in v2', () => {
   for (const settlementOriginals of [null, {}, 'broken', [null], [true], [[]]]) {
     const sample = { ...state, settlementOriginals };

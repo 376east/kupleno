@@ -52,8 +52,11 @@ test('Yandex resolver contracts, pagination, archive fallback and fiscal URLs', 
     assert.equal(init?.method, 'POST'); const body = JSON.parse(String(init?.body));
     assert.equal(body.path, '/my/orders?filter=COMPLETED'); assert.ok(Array.isArray(body.params));
     if (url.searchParams.get('r')?.includes('resolveConsolidationOrders')) {
-      pages++; assert.equal(body.params[0].pageToken, 'next');
-      return envelope({ result: 'list', collections: { orderConsolidationResult: { list: { ordersGroupsIds: [234567], pageToken: '' } } } });
+      pages++;
+      assert.equal(body.params[0].pageToken, pages === 1 ? undefined : 'api-next');
+      return envelope({ result: 'list', collections: { orderConsolidationResult: { list: pages === 1
+        ? { ordersGroupsIds: [123456, 123457], pageToken: 'api-next', hasNext: true }
+        : { ordersGroupsIds: [234567], pageToken: '', hasNext: false } } } });
     }
     assert.match(url.searchParams.get('r') || '', /resolveOrderReceiptsByOrderId/);
     const params = body.params[0]; queried.push(params);
@@ -61,8 +64,8 @@ test('Yandex resolver contracts, pagination, archive fallback and fiscal URLs', 
     return envelope({ result: ['fiscal'], collections: { orderReceipt: { fiscal: { id: `r${params.orderId}`, fiscalUrl: `https://check.yandex.ru/${params.orderId}`, createdAt: 1767225600, type: 'INCOME' } } } });
   };
   const result = await collectYandex({ fetch });
-  assert.equal(pages, 1); assert.deepEqual(queried, [{ orderId: 123456, archived: false }, { orderId: 234567, archived: false }, { orderId: 234567, archived: true }]);
-  assert.equal(result.rows.length, 2); assert.equal(result.rows[0]?.amount, '100.00'); assert.equal(result.stats.receipts, 2); assert.deepEqual(result.warnings, []);
+  assert.equal(pages, 2); assert.deepEqual(queried, [{ orderId: 123456, archived: false }, { orderId: 123457, archived: false }, { orderId: 234567, archived: false }, { orderId: 234567, archived: true }]);
+  assert.equal(result.rows.length, 3); assert.equal(result.rows[0]?.amount, '100.00'); assert.equal(result.stats.receipts, 3); assert.deepEqual(result.warnings, []);
 });
 test('Yandex rejects unknown payload instead of reporting successful empty collection', async () => {
   await assert.rejects(collectYandex({ fetch: async () => new Response(JSON.stringify({ error: 'expired' })) }), /формат списка заказов/);
@@ -138,7 +141,7 @@ test('repeated cursor with hasNext true stops and marks history incomplete', asy
     }
     return envelope({ result: ['r'], collections: { orderReceipt: { r: { fiscalUrl: 'https://check.yandex.ru/r', createdAt: 1767225600 } } } });
   } });
-  assert.equal(pages, 1); assert.equal(result.stats.incomplete, true); assert.match(result.warnings.join(' '), /повторилась страница/);
+  assert.equal(pages, 2); assert.equal(result.stats.incomplete, true); assert.match(result.warnings.join(' '), /повторилась страница/);
   assert.equal(result.rows.length, 1);
 });
 

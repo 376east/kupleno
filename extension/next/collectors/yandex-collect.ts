@@ -44,7 +44,7 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
     const body = await response.text(); if (body.length > 8 * 1024 * 1024) throw new Error('Ответ Яндекс Маркета слишком большой.');
     try { return JSON.parse(body) as unknown; } catch { throw new Error('Яндекс Маркет вернул страницу вместо данных. Проверьте вход.'); }
   }
-  let token = '', hasNext = false;
+  let token = '';
   try {
     const response = await options.fetch(origin + ordersPath, { credentials: 'include', signal: options.signal });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -52,13 +52,9 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
     if (html.length > 12 * 1024 * 1024) throw new Error('Слишком большая страница заказов.');
     for (const match of html.matchAll(/\/my\/order\/(\d+)/g)) orderIds.add(match[1]!);
     for (const match of html.matchAll(/"(?:orderGroupIds|ordersGroupsIds)"\s*:\s*\[([^\]]*)\]/g)) for (const id of match[1]!.match(/\d{6,}/g) || []) orderIds.add(id);
-    const encoded = html.match(/"pageToken"\s*:\s*("(?:\\.|[^"\\])*")/);
-    if (encoded) token = JSON.parse(encoded[1]!);
-    hasNext = /"hasNext"\s*:\s*true/.test(html);
     if (!headers.sk) headers.sk = html.match(/"sk"\s*:\s*"([^"\r\n]+)"/)?.[1] || '';
   } catch (e) { if (options.signal?.aborted) throw e; warnings.push('Яндекс Маркет: начальная страница не прочитана, проверяем API заказов.'); }
   cap(orderIds.size);
-  if (hasNext && !token) { incomplete = true; warnings.push('Яндекс Маркет: не найден указатель следующей страницы заказов.'); }
   const visited = new Set<string>();
   // Rendered orders are only a seed: missing HTML pagination metadata is not the end of history.
   let requestPage = true;

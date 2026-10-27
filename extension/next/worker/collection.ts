@@ -186,6 +186,14 @@ async function handle(command: Command): Promise<JobResponse> {
     const job = jobById(command.id);
     if (job?.status === 'completed') {
       await closeCollectionTab(job);
+      if (job.source !== 'wildberries') {
+        const contexts = await browser.runtime.getContexts({ contextTypes: ['OFFSCREEN_DOCUMENT'], documentUrls: [browser.runtime.getURL('/offscreen.html')] });
+        if (contexts.length) {
+          // A lost finished reply can leave this exact delivery alive after its result was saved.
+          const released = await withDeadline(browser.runtime.sendMessage({ type: 'KUPLENO_OFFSCREEN', action: 'cancel', id: job.id }), 'Не удалось подтвердить завершение обработки. Повторите сохранение.', 3000);
+          if (!released?.ok) throw new Error('Не удалось освободить обработчик этого сбора. Повторите сохранение.');
+        }
+      }
       await persist(job.source, value => value?.id === job.id && value.status === 'completed' ? null : value);
     }
     return response();

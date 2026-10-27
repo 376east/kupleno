@@ -17,7 +17,23 @@ async function main() {
   const pdf = receiptPdf('BT /F1 16 Tf 40 750 Td (01.01.2026 10:00) Tj 0 -24 Td (1. Book 100.00) Tj ET');
   // Chromium offscreen targets are not intercepted by Playwright context.route.
   // Only the disposable copy gets a local network fixture, loaded before the unchanged production module.
-  await fs.writeFile(path.join(build, 'test-fixtures.js'), `globalThis.fetch = async input => {
+  await fs.writeFile(path.join(build, 'test-fixtures.js'), `
+  const sendMessage = chrome.runtime.sendMessage.bind(chrome.runtime);
+  let ozonFinished = 0;
+  chrome.runtime.sendMessage = (...args) => {
+    const message = args[0];
+    if (message?.type === 'KUPLENO_OFFSCREEN_EVENT' && message.action === 'finished' && message.result?.rows?.[0]?.source === 'ozon' && ++ozonFinished === 2) {
+      // Deliver and persist the result, but lose its acknowledgement in transit.
+      const callback = args.at(-1);
+      if (typeof callback === 'function') {
+        args[args.length - 1] = () => callback(undefined);
+        return sendMessage(...args);
+      }
+      return sendMessage(...args).then(() => undefined);
+    }
+    return sendMessage(...args);
+  };
+  globalThis.fetch = async input => {
     const url = new URL(String(input));
     if (url.hostname === 'market.yandex.ru' && url.pathname === '/my/orders') return new Response('<a href="/my/order/123456">Order</a>');
     if (url.hostname === 'check.yandex.ru') return new Response('<table><tr><td>1</td><td>Книга</td><td>1</td><td>100,00</td></tr><tr><td>ИТОГ</td><td>100,00</td></tr></table>');
@@ -72,11 +88,12 @@ async function main() {
     const page = await context.newPage();
     await page.goto(`chrome-extension://${id}/app.html`);
     const command = message => page.evaluate(message => chrome.runtime.sendMessage({ type: 'KUPLENO_JOB', ...message }), message);
-    async function finish() {
+    async function finish(source) {
+      const scope = source ? { source } : {};
       let result;
       const deadline = Date.now() + 30000;
       do {
-        result = await command({ action: 'status' });
+        result = await command({ action: 'status', ...scope });
         if (['completed','failed','cancelled'].includes(result?.job?.status)) break;
         await new Promise(resolve => setTimeout(resolve, 100));
       } while (Date.now() < deadline);
@@ -86,9 +103,9 @@ async function main() {
       assert.equal(result.job.result.rows[0].amount, '100.00');
       // Result survives the app being closed/reopened, and is removed only after explicit acknowledgement.
       await page.reload();
-      assert.equal((await command({ action: 'status' })).job.id, result.job.id);
+      assert.equal((await command({ action: 'status', ...scope })).job.id, result.job.id);
       await command({ action: 'ack', id: result.job.id });
-      assert.equal((await command({ action: 'status' })).job, null);
+      assert.equal((await command({ action: 'status', ...scope })).job, null);
     }
     const ozon = await context.newPage(); await ozon.goto('https://www.ozon.ru/my/e-check');
     // Site code can replace fetch; the extension's isolated-world request must still work.
@@ -122,6 +139,36 @@ async function main() {
     assert.equal(yandexReceiptRequests, 1);
     const denied = await page.evaluate(() => chrome.runtime.sendMessage({ type: 'KUPLENO_YANDEX_REQUEST', id: 'fake', url: 'https://evil.test/', body: '{}' }));
     assert.equal(denied.ok, false);
+    // The second Ozon finish loses its reply after worker persistence. ACK must release its exact task before the next run.
+    holdYandex = true; releaseYandex = undefined;
+    const terminalNeighbour = await command({ action: 'start', source: 'yandex', profile: 'personal' });
+    assert.equal(terminalNeighbour.ok, true);
+    const lostReplyStart = await command({ action: 'start', source: 'ozon', profile: 'personal' });
+    assert.equal(lostReplyStart.ok, true);
+    let lostReplyDone;
+    for (let attempt = 0; attempt < 100; attempt++) {
+      lostReplyDone = await command({ action: 'status', source: 'ozon' });
+      if (lostReplyDone.job.status !== 'running') break;
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    assert.equal(lostReplyDone.job.status, 'completed', JSON.stringify(lostReplyDone));
+    const retainedDelivery = await worker.evaluate(() => chrome.runtime.sendMessage({ type: 'KUPLENO_OFFSCREEN', action: 'status' }));
+    assert.ok(retainedDelivery.ids.includes(lostReplyStart.job.id), 'Lost finished reply leaves the old offscreen delivery alive');
+    await command({ action: 'ack', id: lostReplyStart.job.id });
+    const immediatelyRecollected = await command({ action: 'start', source: 'ozon', profile: 'personal' });
+    assert.equal(immediatelyRecollected.ok, true);
+    assert.notEqual(immediatelyRecollected.job.status, 'failed', JSON.stringify(immediatelyRecollected));
+    assert.notEqual(immediatelyRecollected.job.id, lostReplyStart.job.id);
+    const releasedDelivery = await worker.evaluate(() => chrome.runtime.sendMessage({ type: 'KUPLENO_OFFSCREEN', action: 'status' }));
+    assert.equal(releasedDelivery.ids.includes(lostReplyStart.job.id), false, 'ACK releases only the old job id');
+    assert.ok(releasedDelivery.ids.includes(terminalNeighbour.job.id), 'ACK leaves the other source task alive');
+    assert.equal((await command({ action: 'status', source: 'yandex' })).job.status, 'running');
+    assert.equal((await worker.evaluate(() => chrome.runtime.getContexts({ contextTypes: ['OFFSCREEN_DOCUMENT'] }))).length, 1, 'ACK preserves the singleton document');
+    await finish('ozon');
+    for (let attempt = 0; attempt < 100 && !releaseYandex; attempt++) await new Promise(resolve => setTimeout(resolve, 50));
+    assert.equal(typeof releaseYandex, 'function'); holdYandex = false; releaseYandex();
+    await finish('yandex');
+    console.log('PASS: lost finished reply; exact ACK releases retained delivery; immediate same-source collection succeeds.');
     // Migrate a durable old single-job result without discarding it on worker restart.
     const devtools = await context.newCDPSession(page);
     await devtools.send('ServiceWorker.enable');
@@ -162,14 +209,19 @@ async function main() {
       };
     });
     await context.addCookies([{ url: 'https://www.wildberries.ru/', name: 'wbid-sdk-id-token', value: 'synthetic.' + Buffer.from(JSON.stringify({ exp: Math.floor(Date.now()/1000)+3600 })).toString('base64url') + '.signature' }]);
+    await page.goto(`chrome-extension://${id}/app.html#stores`);
+    const stores = page.locator('.store-panel');
+    await stores.filter({ has: page.getByRole('heading', { name: 'Ozon', exact: true }) }).waitFor();
+    await page.evaluate(() => document.fonts.ready);
+    const otherStoreButtons = ['Wildberries', 'Яндекс Маркет'].map(name => stores.filter({ has: page.getByRole('heading', { name, exact: true }) }).getByRole('button', { name: 'Обновить покупки', exact: true }));
+    const idlePositions = await Promise.all(otherStoreButtons.map(button => button.boundingBox()));
     const [parallelOzon, duplicateOzon] = await Promise.all([
       command({ action: 'start', source: 'ozon', profile: 'personal' }),
       command({ action: 'start', source: 'ozon', profile: 'work' })
     ]);
     assert.equal(parallelOzon.ok, true); assert.equal(duplicateOzon.ok, false, 'One source cannot start twice');
-    await page.goto(`chrome-extension://${id}/app.html#stores`);
-    const stores = page.locator('.store-panel');
     await stores.filter({ has: page.getByRole('heading', { name: 'Ozon', exact: true }) }).getByRole('button', { name: 'Остановить сбор', exact: true }).waitFor();
+    assert.deepEqual(await Promise.all(otherStoreButtons.map(button => button.boundingBox())), idlePositions, 'Starting Ozon must not move the other store buttons');
     for (const name of ['Wildberries', 'Яндекс Маркет']) assert.equal(await stores.filter({ has: page.getByRole('heading', { name, exact: true }) }).getByRole('button', { name: 'Обновить покупки', exact: true }).isEnabled(), true, name + ' remains enabled');
     await page.goto(`chrome-extension://${id}/app.html`);
     const [parallelWb, parallelYandex] = await Promise.all([
@@ -179,6 +231,19 @@ async function main() {
     assert.equal(parallelWb.ok, true); assert.equal(parallelYandex.ok, true);
     const allRunning = await command({ action: 'status' });
     assert.equal(allRunning.jobs.filter(job => job.status === 'running').length, 3);
+    await page.goto(`chrome-extension://${id}/app.html#stores`);
+    await page.getByRole('button', { name: 'Остановить сбор', exact: true }).nth(2).waitFor();
+    const captureOutput = process.env.KUPLENO_PARALLEL_OUTPUT;
+    if (captureOutput) { await fs.mkdir(captureOutput, { recursive: true }); await page.screenshot({ path: path.join(captureOutput, 'parallel-desktop.png'), fullPage: true }); }
+    await page.setViewportSize({ width: 390, height: 844 });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'Concurrent store controls fit mobile');
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    assert.equal(await page.getByRole('button', { name: 'Обновить покупки', exact: true }).first().evaluate(el => getComputedStyle(el).transitionDuration), '0s', 'Reduced motion disables store control transitions');
+    if (captureOutput) await page.screenshot({ path: path.join(captureOutput, 'parallel-mobile-reduced.png'), fullPage: false });
+    await page.emulateMedia({ reducedMotion: 'no-preference' });
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.goto(`chrome-extension://${id}/app.html`);
+
     assert.equal(allRunning.job, null, 'Legacy unqualified status never picks an arbitrary active job');
     assert.equal((await command({ action: 'cancel' })).ok, false, 'Ambiguous legacy cancellation is rejected');
     assert.equal((await command({ action: 'cancel', id: parallelOzon.job.id })).job.status, 'cancelled');

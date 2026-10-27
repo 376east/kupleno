@@ -228,6 +228,10 @@ function validateState(state) {
     throw storageError('INVALID_STATE', 'Некорректный архив исходных строк чеков.');
   }
   validateSettings(state.settings);
+  const applied = state.metadata.appliedCollections;
+  if (applied != null && (!isPlainObject(applied) || ['ozon', 'wildberries', 'yandex'].some(source => applied[source] != null && typeof applied[source] !== 'string'))) {
+    throw storageError('INVALID_METADATA', 'Некорректные подтверждения сбора.');
+  }
   const collection = state.metadata.collection;
   if (collection != null) {
     if (!isPlainObject(collection)) throw storageError('INVALID_METADATA', 'Некорректная диагностика сбора.');
