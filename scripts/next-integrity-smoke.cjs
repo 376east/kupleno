@@ -120,6 +120,7 @@ const money = text => text.replace(/\s/g, '');
     await reopened.evaluate(async () => { const tab = await chrome.tabs.getCurrent(); await chrome.tabs.setZoom(tab.id, 1); });
     await reopened.setViewportSize({ width: 390, height: 844 });
     await reopened.emulateMedia({ reducedMotion: 'reduce' });
+    await reopened.waitForFunction(() => document.documentElement.scrollWidth <= innerWidth, null, { timeout: 5000 });
     for (const theme of ['light', 'dark']) {
       if (await reopened.locator('html').getAttribute('data-theme') !== theme) await reopened.getByRole('button', { name: theme === 'dark' ? 'Включить тёмную тему' : 'Включить светлую тему', exact: true }).click();
       assert.equal(await reopened.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
