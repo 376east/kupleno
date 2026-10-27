@@ -67,6 +67,13 @@ jobs:
       - run: npm run preview:design
         env:
           KUPLENO_DESIGN_OUTPUT: ${{ runner.temp }}/kupleno-design
+      - name: Prove preview package reproducibility
+        shell: bash
+        run: |
+          python3 scripts/package-preview.py --output "$RUNNER_TEMP/preview-first.zip"
+          npm --prefix extension/next run build
+          python3 scripts/package-preview.py --output "$RUNNER_TEMP/preview-second.zip"
+          cmp "$RUNNER_TEMP/preview-first.zip" "$RUNNER_TEMP/preview-second.zip"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: kupleno-preview-${{ github.sha }}
