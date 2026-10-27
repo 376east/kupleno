@@ -25,7 +25,7 @@ export function parseOzonReceipt(text: string, receipt: Receipt): Purchase[] {
     for (let next = index + 1; next < lines.length && !/^\d{1,3}\.\s/.test(lines[next]!) && !/^ИТОГ/i.test(lines[next]!); next += 1) {
       const line = lines[next]!;
       const amountMatch = line.match(/≡\s*(-?\d[\d\s]*(?:[,.]\d{1,2})?)/);
-      if (amountMatch) { cents = moneyMinor(amountMatch[1]); seenAmount = true; }
+      if (amountMatch && !/НДС/i.test(line)) { cents = moneyMinor(amountMatch[1]); seenAmount = true; }
       else if (!seenAmount) titleParts.push(line);
     }
     const title = titleParts.join(' ').replace(/\s+/g, ' ').trim();

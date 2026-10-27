@@ -37,6 +37,49 @@ test('full settlement wins over advance wording and title stops at amount', () =
   assert.equal(rows[0]?.title, 'Товар');
 });
 
+test('keeps item totals when VAT amounts follow them in PDF layout', () => {
+  const text = `Кассовый чек
+01.01.2026 10:00
+1. Товар первый
+продолжение названия
+2 x 120,00 ≡240,00
+в т.ч. НДС 20% ≡40,00
+ИНН продавца: 0000000000
+2. Товар второй
+1 x 60,00 ≡60,00
+в т.ч. НДС 20% ≡10,00
+3. Доставка
+1 x 30,00 ≡30,00
+БЕЗ НДС ≡30,00
+ИТОГ ≡330,00
+БЕЗ НДС ≡30,00
+в т.ч. НДС 20% ≡50,00
+ПОЛНЫЙ РАСЧЕТ
+ПРЕДОПЛАТА ≡330,00`;
+  const receipt = { id: 'fixture', url: 'https://ozon.test/fixture' };
+  const rows = parseOzonReceipt(text, receipt);
+  assert.deepEqual(rows.map(row => [row.title, row.amount, row.parse_quality]), [
+    ['Товар первый продолжение названия', '240.00', 'complete'],
+    ['Товар второй', '60.00', 'complete'],
+    ['Доставка', '30.00', 'complete']
+  ]);
+  assert.ok(rows.every(row => row.ozon_settlement_kind === 'full'));
+  const mismatch = parseOzonReceipt(text.replace('ИТОГ ≡330,00', 'ИТОГ ≡331,00'), receipt);
+  assert.equal(mismatch[0]?.parse_quality, 'fallback');
+  assert.equal(mismatch[0]?.raw_title, 'fallback=receipt_total_mismatch');
+});
+
+test('real item amount overrides a trailing title number but VAT preserves inline price', () => {
+  const receipt = { id: 'fixture', url: 'https://ozon.test/fixture' };
+  const numbered = parseOzonReceipt('1. Монитор 27\n1 x 240,00 ≡240,00\nв т.ч. НДС 20% ≡40,00\nИТОГ ≡240,00', receipt);
+  assert.equal(numbered[0]?.amount, '240.00');
+  assert.equal(numbered[0]?.parse_quality, 'complete');
+  const inline = parseOzonReceipt('1. Товар 100,00 ₽\nв т.ч. НДС 20% ≡16,67\nИТОГ ≡100,00', receipt);
+  assert.equal(inline[0]?.title, 'Товар');
+  assert.equal(inline[0]?.amount, '100.00');
+  assert.equal(inline[0]?.parse_quality, 'complete');
+});
+
 test('passes every existing Ozon receipt fixture', async () => {
   const fixtures = JSON.parse(await readFile(new URL('../../fixtures/ozon-receipts.json', import.meta.url), 'utf8')) as Array<{ text: string; expected: { rows: number; amount?: string; type?: string; quality?: string } }>;
   for (const fixture of fixtures) {
