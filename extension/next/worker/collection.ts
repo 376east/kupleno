@@ -7,18 +7,31 @@ import type { Source } from '../model';
 import { yandexRequest } from './yandex-request';
 import { ozonRequest } from './ozon-request';
 import { withDeadline } from '../deadline';
+import { yandexOrdersDomStep } from '../collectors/yandex-orders-dom';
+import { readUnresolvedOrderIds, readYandexOrdersDomResult } from '../collection';
+import { readDocumentTabs, readYandexDocumentsResult, type DocumentTab } from '../collection';
+import { readYandexOrderDocuments, yandexOrderDocumentsStep } from './yandex-order-documents';
 
 const key = 'kupleno-next-jobs';
 const legacyKey = 'kupleno-next-job';
+const documentTabsKey = 'kupleno-next-yandex-document-tabs';
+let documentTabs: DocumentTab[] = [], documentStoreValid = true;
+const documentReservations = new Set<AbortController>();
+const documentRequests = new Map<string, Set<AbortController>>();
 let jobs: Partial<Record<Source, Job>> = {};
 const running = new Map<string, AbortController>();
 let writes = Promise.resolve();
 let offscreenCreation: Promise<void> | undefined;
+const domRuns = new Map<string, { steps: number; startedAt: number; seen: Set<string>; waitingForIds?: string[] }>();
 const jobById = (id: unknown) => Object.values(jobs).find(job => job.id === id);
-const init = browser.storage.local.get([key, legacyKey]).then(async data => {
+const init = browser.storage.local.get([key, legacyKey, documentTabsKey]).then(async data => {
   const legacy = data[legacyKey] as Job | undefined;
   if (data[key]) jobs = data[key] as typeof jobs;
   else if (legacy && Object.hasOwn(SOURCES, legacy.source)) jobs = { [legacy.source]: legacy };
+  const tracked = data[documentTabsKey] === undefined ? [] : readDocumentTabs(data[documentTabsKey]);
+  documentStoreValid = !!tracked;
+  documentTabs = tracked || [];
+  if (documentStoreValid) await cleanupDocumentTabs();
   const contexts = await browser.runtime.getContexts({ contextTypes: ['OFFSCREEN_DOCUMENT'], documentUrls: [browser.runtime.getURL('/offscreen.html')] });
   const alive: string[] = contexts.length ? await withDeadline(browser.runtime.sendMessage({ type: 'KUPLENO_OFFSCREEN', action: 'status' }), 'Обработчик не ответил.', 3000).then(reply => reply?.ids || [], () => []) : [];
   for (const job of Object.values(jobs)) {
@@ -47,6 +60,8 @@ function response(selected?: Job | null): JobResponse {
 }
 
 async function closeCollectionTab(job: Job | null) {
+  if (job) domRuns.delete(job.id);
+  if (job) await cleanupDocumentTabs(job.id);
   if (!job || job.marketTabId === undefined) return;
   const tab = await browser.tabs.get(job.marketTabId).catch(() => null);
   const targetUrl = tab?.pendingUrl || tab?.url;
@@ -78,7 +93,21 @@ async function marketContext(job: Job, controller: AbortController) {
     const html = document.documentElement.innerHTML.replace(/&quot;/g, '"').replace(/&amp;/g, '&');
     // nosemgrep: detect-non-literal-regexp -- read is scoped to this injected function and called only with fixed header names below.
     const read = (key: string) => html.match(new RegExp(`"${key}"\\s*:\\s*"([^"\\r\\n]{1,2000})"`))?.[1] || '';
-    return { sk: read('sk'), version: read('-version') || read('version'), marketFrontGlue: read('marketFrontGlue'), pageId: read('page') || 'market:orders', retpath: location.href };
+    let initialOrders: { orderIds: string[]; pageToken: string } | undefined;
+    if (location.origin === 'https://market.yandex.ru' && location.pathname === '/my/orders') {
+      const ids = new Set<string>();
+      const add = (id: string) => {
+        if (/^\d+$/.test(id) && Number.isSafeInteger(Number(id)) && Number(id) > 0) ids.add(id);
+        if (ids.size > 100000) throw new Error('Слишком много заказов на странице Яндекс Маркета.');
+      };
+      for (const match of html.matchAll(/\/my\/order\/(\d+)/g)) add(match[1]!);
+      for (const match of html.matchAll(/"(?:orderGroupIds|ordersGroupsIds)"\s*:\s*\[([^\]]*)\]/g)) for (const id of match[1]!.match(/\d+/g) || []) add(id);
+      let pageToken = '';
+      const raw = html.match(/"pageToken"\s*:\s*("(?:[^"\\]|\\.)*")/)?.[1];
+      if (raw) try { const value = JSON.parse(raw); if (typeof value === 'string' && value.length <= 8000) pageToken = value; } catch { /* API bootstrap remains available. */ }
+      initialOrders = { orderIds: [...ids], pageToken };
+    }
+    return { sk: read('sk'), version: read('-version') || read('version'), marketFrontGlue: read('marketFrontGlue'), pageId: read('page') || 'market:orders', retpath: location.href, ...(initialOrders ? { initialOrders } : {}) };
   } });
   return { ...result[0]?.result, marketTabId: tab.id };
   } catch (error) {
@@ -97,6 +126,45 @@ async function persist(source: Source, change: Job | null | ((job: Job | null) =
   });
   writes = task.catch(() => {});
   await task;
+}
+
+async function writeDocumentTabs(change: (value: DocumentTab[]) => DocumentTab[]) {
+  const task = writes.then(async () => {
+    if (!documentStoreValid) throw new Error('Учёт вкладок документов недоступен.');
+    const next = readDocumentTabs(change(documentTabs));
+    if (!next) throw new Error('Некорректный учёт вкладок документов.');
+    await browser.storage.local.set({ [documentTabsKey]: next });
+    documentTabs = next;
+  });
+  writes = task.catch(() => {});
+  await task;
+}
+
+async function cleanupDocumentTabs(ownerJobId?: string) {
+  if (ownerJobId) for (const controller of documentRequests.get(ownerJobId) || []) controller.abort();
+  for (const record of documentTabs.filter(item => !ownerJobId || item.ownerJobId === ownerJobId)) {
+    let released = false;
+    try {
+      const tab = await browser.tabs.get(record.tabId);
+      const expected = `https://market.yandex.ru/my/order/${record.orderId}`, address = tab.pendingUrl || tab.url;
+      const initial = tab.url === 'about:blank' && tab.pendingUrl === expected && tab.status === 'loading';
+      if (initial) { await browser.tabs.remove(record.tabId); released = true; }
+      else if (address !== expected) released = true; // The human owns a changed location.
+      else if (!tab.pendingUrl && tab.status === 'complete') {
+        const checked = await withDeadline(browser.scripting.executeScript({ target: { tabId: record.tabId }, world: 'ISOLATED', func: yandexOrderDocumentsStep, args: [expected, 'inspect'] }), 'Не удалось проверить вкладку документов.', 1500);
+        const state = checked[0]?.result?.state;
+        if (state === 'blocked' || state === 'unsafe') released = true;
+        else if (state === 'safe') {
+          const fresh = await browser.tabs.get(record.tabId);
+          if (!fresh.pendingUrl && fresh.url === expected) await browser.tabs.remove(record.tabId);
+          released = true;
+        }
+      }
+    } catch {
+      try { released = !(await browser.tabs.query({})).some(tab => tab.id === record.tabId); } catch { /* Retain ownership while tab APIs are unavailable. */ }
+    }
+    if (released) await writeDocumentTabs(value => value.filter(item => !(item.tabId === record.tabId && item.ownerJobId === record.ownerJobId && item.orderId === record.orderId)));
+  }
 }
 
 async function wbToken(tabId?: number): Promise<string> {
@@ -212,10 +280,18 @@ async function handle(command: Command): Promise<JobResponse> {
     await closeCollectionTab(job);
     return response(jobs[job.source] || null);
   }
+  if (command.action === 'clearReceiptCache') {
+    if (command.source !== 'yandex') return { ok: false, error: 'Неизвестный кэш чеков.' };
+    await ensureOffscreen();
+    const cleared = await withDeadline(browser.runtime.sendMessage({ type: 'KUPLENO_OFFSCREEN', action: 'clearReceiptCache' }), 'Не удалось очистить локальные копии чеков.', 10000);
+    if (!cleared?.ok) throw new Error('Не удалось очистить локальные копии чеков. Повторите удаление истории.');
+    return response();
+  }
   if (command.action !== 'start') return { ok: false, error: 'Неизвестная команда сбора.' };
   if (!Object.hasOwn(SOURCES, command.source)) return { ok: false, error: 'Неизвестный магазин.' };
   if (typeof command.profile !== 'string' || !command.profile || command.profile.length > 120) return { ok: false, error: 'Выберите профиль для сбора.' };
-  const job: Job = { id: crypto.randomUUID(), source: command.source, profile: command.profile, status: 'running', startedAt: new Date().toISOString(), updatedAt: new Date().toISOString(), message: `Подключаем ${SOURCES[command.source].name}…`, progress: { done: 0, total: 0 } };
+  if ('refreshReceipts' in command && (command.source !== 'yandex' || typeof command.refreshReceipts !== 'boolean')) return { ok: false, error: 'Некорректный режим чтения чеков.' };
+  const job: Job = { id: crypto.randomUUID(), source: command.source, profile: command.profile, ...(command.refreshReceipts === true ? { refreshReceipts: true } : {}), status: 'running', startedAt: new Date().toISOString(), updatedAt: new Date().toISOString(), message: `Подключаем ${SOURCES[command.source].name}…`, progress: { done: 0, total: 0 } };
   // Reserve this source before opening a tab; other sources can start immediately.
   await persist(job.source, previous => {
     if (previous?.status === 'running' || previous?.status === 'completed') throw new Error('Сначала завершите сохранение предыдущего сбора этого магазина.');
@@ -247,6 +323,65 @@ async function handle(command: Command): Promise<JobResponse> {
 
 export function registerCollection() {
   browser.runtime.onMessage.addListener((message: unknown, sender, reply) => {
+    if (message && typeof message === 'object' && 'type' in message && message.type === 'KUPLENO_YANDEX_DOCUMENTS') {
+      if (sender.id !== browser.runtime.id || sender.url !== browser.runtime.getURL('/offscreen.html') || !('id' in message) || !('orderId' in message) || !readUnresolvedOrderIds([message.orderId])) { reply({ ok: false }); return; }
+      void init.then(async () => {
+        const current = jobById(message.id);
+        if (!current || current.source !== 'yandex' || current.status !== 'running' || !documentStoreValid) throw new Error('Сбор документов недоступен.');
+        if (new Set([...documentRequests.values()].flatMap(values => [...values]).concat([...documentReservations])).size >= 2 || documentTabs.length + documentReservations.size >= 64) throw new Error('Достигнут лимит вкладок документов.');
+        const controller = new AbortController(), active = documentRequests.get(current.id) || new Set<AbortController>();
+        active.add(controller); documentRequests.set(current.id, active); documentReservations.add(controller);
+        let registered: number | undefined;
+        try {
+          const result = await readYandexOrderDocuments(message.orderId, { browser, signal: controller.signal,
+            onNoTab: () => { documentReservations.delete(controller); },
+            isCurrent: () => jobById(current.id)?.status === 'running' && (registered === undefined || documentTabs.some(item => item.tabId === registered && item.ownerJobId === current.id)),
+            onOpened: async (tabId, orderId) => {
+              await writeDocumentTabs(value => {
+                if (value.some(item => item.tabId === tabId)) throw new Error('Вкладка документов уже зарегистрирована.');
+                return [...value, { tabId, orderId, ownerJobId: current.id }];
+              });
+              registered = tabId;
+              documentReservations.delete(controller);
+            },
+            onReleased: async (tabId, orderId) => {
+              await writeDocumentTabs(value => value.filter(item => !(item.tabId === tabId && item.orderId === orderId && item.ownerJobId === current.id)));
+              documentReservations.delete(controller);
+            },
+          });
+          const safe = readYandexDocumentsResult(result);
+          if (!safe) throw new Error('Документы заказа не распознаны.');
+          return safe;
+        } finally { active.delete(controller); if (!active.size) documentRequests.delete(current.id); }
+      }).then(result => reply({ ok: true, result })).catch(() => reply({ ok: false, error: 'Не удалось прочитать документы заказа Яндекс Маркета.' }));
+      return true;
+    }
+    if (message && typeof message === 'object' && 'type' in message && message.type === 'KUPLENO_YANDEX_ORDERS_DOM') {
+      if (sender.id !== browser.runtime.id || sender.url !== browser.runtime.getURL('/offscreen.html') || !('id' in message) || !('step' in message) || typeof message.step !== 'number' || !Number.isSafeInteger(message.step) || message.step < 1 || message.step > 300) { reply({ ok: false }); return; }
+      void init.then(async () => {
+        const current = jobById(message.id);
+        if (!current || current.source !== 'yandex' || current.status !== 'running' || current.marketTabId === undefined) throw new Error('Сбор уже завершён.');
+        const budget: { steps: number; startedAt: number; seen: Set<string>; waitingForIds?: string[] } = domRuns.get(current.id) || { steps: 0, startedAt: Date.now(), seen: new Set<string>() };
+        if (message.step !== budget.steps + 1) throw new Error('Чтение списка Яндекс Маркета прервано.');
+        domRuns.set(current.id, budget);
+        if (++budget.steps > 300 || Date.now() - budget.startedAt > 120000) throw new Error('Достигнут лимит чтения списка Яндекс Маркета.');
+        const tab = await browser.tabs.get(current.marketTabId);
+        const address = new URL(tab.pendingUrl || tab.url || 'about:blank');
+        if (address.origin !== 'https://market.yandex.ru' || address.pathname !== '/my/orders' || address.searchParams.get('filter') !== 'COMPLETED') throw new Error('Страница списка Яндекс Маркета изменилась.');
+        const live = jobById(current.id);
+        if (live?.status !== 'running' || live.marketTabId !== current.marketTabId) throw new Error('Сбор уже завершён.');
+        const executions = await withDeadline(browser.scripting.executeScript({ target: { tabId: current.marketTabId }, func: yandexOrdersDomStep, args: [budget.waitingForIds || null] }), 'Список Яндекс Маркета не ответил.', 5000);
+        const result = readYandexOrdersDomResult(executions[0]?.result);
+        if (!result) throw new Error('Список Яндекс Маркета не распознан.');
+        const fresh = result.orderIds.some(id => !budget.seen.has(id));
+        for (const id of result.orderIds) budget.seen.add(id);
+        if (budget.seen.size > 100000) throw new Error('Слишком много заказов в списке Яндекс Маркета.');
+        if (result.clicked) budget.waitingForIds = [...budget.seen];
+        else if (fresh) budget.waitingForIds = undefined;
+        return result;
+      }).then(result => reply({ ok: true, result })).catch(() => reply({ ok: false, error: 'Не удалось продолжить чтение списка Яндекс Маркета.' }));
+      return true;
+    }
     if (message && typeof message === 'object' && 'type' in message && message.type === 'KUPLENO_OZON_REQUEST') {
       if (sender.id !== browser.runtime.id || sender.url !== browser.runtime.getURL('/offscreen.html') || !('id' in message) || !('url' in message)) { reply({ ok: false }); return; }
       void init.then(async () => {
@@ -261,7 +396,8 @@ export function registerCollection() {
       void init.then(async () => {
         const current = jobById(message.id);
         if (!current || current.source !== 'yandex' || current.status !== 'running') throw new Error('Сбор уже завершён.');
-        return yandexRequest(message.url, message.body, current.marketTabId, 'headerContext' in message ? message.headerContext : undefined);
+        const requestTabId = current.marketTabId;
+        return yandexRequest(message.url, message.body, requestTabId, 'headerContext' in message ? message.headerContext : undefined, () => { const live = jobById(current.id); return live?.id === current.id && live.source === 'yandex' && live.status === 'running' && live.marketTabId === requestTabId; });
       }).then(result => reply({ ok: true, ...result })).catch(error => reply({ ok: false, error: error instanceof Error ? error.message : 'Магазин не ответил.' }));
       return true;
     }
@@ -281,6 +417,10 @@ export function registerCollection() {
           } else if (event.action === 'finished') {
             if (!event.error && !event.result) throw new Error('Обработчик не передал результат.');
             if (event.result && (!Array.isArray(event.result.rows) || event.result.rows.length > 100000 || !Array.isArray(event.result.warnings) || !event.result.stats || typeof event.result.stats !== 'object')) throw new Error('Некорректный результат сбора.');
+            if (event.result?.unresolvedOrderIds !== undefined && (current.source !== 'yandex' || !readUnresolvedOrderIds(event.result.unresolvedOrderIds))) throw new Error('Некорректные ссылки на заказы.');
+            for (const field of ['failedDocumentOrderIds', 'failedReceiptOrderIds'] as const) {
+              if (event.result?.[field] !== undefined && (current.source !== 'yandex' || !readUnresolvedOrderIds(event.result[field]))) throw new Error('Некорректные ссылки на заказы.');
+            }
             const failureStats = readFailureStats(event.failureStats);
             if (event.failureStats !== undefined && (!event.error || !failureStats)) throw new Error('Некорректная диагностика сбора.');
             await persist(current.source, value => value?.id === event.id && value.status === 'running' ? { ...value, status: event.error ? 'failed' : 'completed', ...(event.result ? { result: event.result } : {}), ...(event.error ? { error: event.error } : {}), ...(failureStats ? { failureStats } : {}), updatedAt: new Date().toISOString() } : value);

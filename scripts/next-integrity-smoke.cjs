@@ -45,7 +45,8 @@ const money = text => text.replace(/\s/g, '');
     const shot = async name => { if (output) await page.screenshot({ path: path.join(output, `${name}.png`), animations: 'disabled' }); };
     const upload = async (state, version) => page.locator('input[type=file]').first().setInputFiles({ name: `synthetic-v${version}.json`, mimeType: 'application/json', buffer: Buffer.from(backup(state, version)) });
     const confirm = () => page.getByRole('dialog').getByRole('button', { name: 'Загрузить историю', exact: true }).click();
-    const saved = () => page.evaluate(async () => {
+    let savedPage = page;
+    const saved = () => savedPage.evaluate(async () => {
       const db = await new Promise((resolve, reject) => { const r = indexedDB.open('kupleno-storage-v2'); r.onsuccess = () => resolve(r.result); r.onerror = () => reject(r.error); });
       try {
         const tx = db.transaction(['current', 'history', 'meta']);
@@ -83,6 +84,7 @@ const money = text => text.replace(/\s/g, '');
     assert.deepEqual((await saved())[0][0].state, changed, 'Export never writes diagnostics into the saved history');
     await page.close();
     const reopened = await context.newPage(); detailVideo = reopened.video(); await reopened.goto(url);
+    savedPage = reopened;
     // Use a separate new tab, not only a React refresh, to prove persisted state.
     await reopened.getByRole('heading', { name: 'Обзор', exact: true }).waitFor();
     assert.equal(money(await reopened.locator('.expense-report .kpi-value').first().innerText()), '19,00₽');
@@ -132,6 +134,72 @@ const money = text => text.replace(/\s/g, '');
       assert.equal(await reopened.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
       if (output) await reopened.screenshot({ path: path.join(output, `overview-mobile-${theme}.png`) });
     }
+    // Source deletion must clear derived RAW first, and keep the DB intact if that fails.
+    const mixed = structuredClone(sample);
+    mixed.rows.push({ rowId: 'synthetic-yandex', source: 'yandex', profile: 'personal', date: '2026-01-01', title: 'Синтетический чек', amount: '100.00', currency: 'RUB', type: 'purchase', marketplace_id: 'synthetic-yandex' },
+      { rowId: 'synthetic-wb', source: 'wildberries', profile: 'personal', date: '2026-01-01', title: 'Синтетическая покупка', amount: '50.00', currency: 'RUB', type: 'purchase', marketplace_id: 'synthetic-wb' });
+    await reopened.getByRole('link', { name: 'Настройки', exact: true }).click();
+    await reopened.locator('input[type=file]').first().setInputFiles({ name: 'synthetic-cache-clear.json', mimeType: 'application/json', buffer: Buffer.from(backup(mixed, 2)) });
+    await reopened.getByRole('dialog').getByRole('button', { name: 'Загрузить историю', exact: true }).click();
+    await reopened.getByRole('heading', { name: 'Обзор', exact: true }).waitFor();
+    const cacheName = 'kupleno-yandex-receipts-v1';
+    await reopened.evaluate(async name => {
+      const cache = await caches.open(name);
+      await cache.put('https://kupleno-yandex-receipts.invalid/v1/' + 'a'.repeat(64), new Response('<div>synthetic-raw-cache-only</div>'));
+      const other = await caches.open('synthetic-other-store-cache');
+      await other.put('https://example.test/other-store', new Response('Other store fixture'));
+    }, cacheName);
+    await reopened.getByRole('link', { name: 'Магазины', exact: true }).click();
+    const yandexPanel = reopened.locator('.store-panel').filter({ has: reopened.getByRole('heading', { name: 'Яндекс Маркет', exact: true }) });
+    const wbPanel = reopened.locator('.store-panel').filter({ has: reopened.getByRole('heading', { name: 'Wildberries', exact: true }) });
+    await yandexPanel.getByRole('button', { name: 'Перечитать чеки', exact: true }).waitFor();
+    await context.route('https://market.yandex.ru/**', route => route.abort('blockedbyclient'));
+    await reopened.evaluate(() => {
+      window.__cacheOriginalMessage = chrome.runtime.sendMessage.bind(chrome.runtime);
+      window.__cacheOriginalPermissionRequest = chrome.permissions.request.bind(chrome.permissions);
+      chrome.permissions.request = async () => true;
+      chrome.runtime.sendMessage = (message, ...args) => {
+        if (message?.type === 'KUPLENO_JOB' && message.action === 'start' && message.source === 'yandex') {
+          window.__cacheForceCommand = message;
+          return new Promise(resolve => { window.__cacheReleaseForce = () => resolve({ ok: false, error: 'Синтетический перехват команды' }); });
+        }
+        return window.__cacheOriginalMessage(message, ...args);
+      };
+    });
+    try {
+      await yandexPanel.getByRole('button', { name: 'Перечитать чеки', exact: true }).click();
+      await reopened.waitForFunction(() => typeof window.__cacheReleaseForce === 'function');
+      assert.equal((await reopened.evaluate(() => window.__cacheForceCommand)).refreshReceipts, true);
+      assert.equal(await yandexPanel.getByRole('button', { name: 'Перечитать чеки', exact: true }).isDisabled(), true);
+      assert.equal(await wbPanel.getByRole('button', { name: 'Обновить покупки', exact: true }).isEnabled(), true, 'Force reread blocks only its own store');
+      await reopened.evaluate(() => window.__cacheReleaseForce());
+      await reopened.waitForFunction(() => ![...document.querySelectorAll('button')].find(button => button.textContent === 'Перечитать чеки')?.disabled);
+    } finally { await reopened.evaluate(() => {
+      chrome.runtime.sendMessage = window.__cacheOriginalMessage; chrome.permissions.request = window.__cacheOriginalPermissionRequest;
+      delete window.__cacheOriginalMessage; delete window.__cacheOriginalPermissionRequest;
+    }); }
+    const beforeClear = await saved();
+    await worker.evaluate(() => {
+      const send = chrome.runtime.sendMessage.bind(chrome.runtime);
+      globalThis.__restoreSyntheticCacheClear = () => { chrome.runtime.sendMessage = send; };
+      chrome.runtime.sendMessage = (message, ...args) => message?.type === 'KUPLENO_OFFSCREEN' && message.action === 'clearReceiptCache'
+        ? Promise.resolve({ ok: false }) : send(message, ...args);
+    });
+    try {
+      await yandexPanel.getByRole('button', { name: 'Удалить историю', exact: true }).click();
+      await reopened.getByRole('dialog').getByRole('button', { name: 'Удалить историю', exact: true }).click();
+      await reopened.getByRole('dialog').getByRole('alert').getByText(/Не удалось очистить локальные копии чеков/).waitFor();
+      assert.deepEqual(await saved(), beforeClear, 'Cache clear failure preserves current/history/meta and allows retry');
+      assert.equal(await reopened.evaluate(name => caches.has(name), cacheName), true);
+    } finally { await worker.evaluate(() => { globalThis.__restoreSyntheticCacheClear(); delete globalThis.__restoreSyntheticCacheClear; }); }
+    await reopened.getByRole('dialog').getByRole('button', { name: 'Удалить историю', exact: true }).click();
+    await reopened.getByRole('dialog').waitFor({ state: 'hidden' });
+    assert.equal(await reopened.evaluate(name => caches.has(name), cacheName), false);
+    assert.equal(await reopened.evaluate(() => caches.has('synthetic-other-store-cache')), true, 'Source clear does not erase other CacheStorage namespaces');
+    const afterClear = (await saved())[0][0].state;
+    assert.deepEqual(afterClear.rows, mixed.rows.filter(row => row.source !== 'yandex'), 'Deleting Yandex preserves all other store rows and fields');
+    assert.equal(afterClear.rows.some(row => row.source === 'yandex'), false);
+    console.log('PASS: Yandex force-reread UI is per-store; failed cache clear preserves DB; retry clears RAW before source history and preserves other stores.');
     assert.deepEqual(errors, []);
     if (output) await fs.writeFile(path.join(output, 'scenario.json'), JSON.stringify({ synthetic: true, expectedKopecks: { all: 1900, work: 1698, day: 2002, item: 1001 }, atomicFailure: 'QuotaExceededError after current.put', backupVersions: [1, 2], newTabReopen: true, browserZoom: 2, mobile: 390, reducedMotion: true }, null, 2));
     await reopened.close();

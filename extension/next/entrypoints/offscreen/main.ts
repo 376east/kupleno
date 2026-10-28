@@ -2,10 +2,13 @@ import { browser } from 'wxt/browser';
 import { readPdf } from '../../collectors/pdf';
 import { collectOzon } from '../../collectors/ozon-collect';
 import { collectYandex } from '../../collectors/yandex-collect';
+import { YandexReceiptCache } from '../../collectors/yandex-receipt-cache';
 import type { Job, CollectionResult } from '../../collection';
 import { withDeadline } from '../../deadline';
+import { readUnresolvedOrderIds, readYandexOrdersDomResult, readYandexDocumentsResult } from '../../collection';
 
 const tasks = new Map<string, { source: Job['source']; controller: AbortController; delivery?: ReturnType<typeof setTimeout> }>();
+const yandexReceiptCache = new YandexReceiptCache(globalThis.caches);
 
 async function finish(id: string, result?: CollectionResult, error?: string, failureStats?: CollectionResult['stats']) {
   const task = tasks.get(id);
@@ -25,6 +28,10 @@ browser.runtime.onMessage.addListener((message, sender, reply) => {
   // A website and the report page cannot supply executable jobs or authenticated request headers.
   if (sender.url && sender.url !== browser.runtime.getURL('/background.js')) { reply({ ok: false }); return; }
   if (message.action === 'status') { reply({ ok: true, ids: [...tasks.keys()] }); return; }
+  if (message.action === 'clearReceiptCache') {
+    void yandexReceiptCache.clear().then(() => reply({ ok: true }), () => reply({ ok: false }));
+    return true;
+  }
   if (message.action === 'cancel') {
     const task = tasks.get(message.id);
     if (task) { task.controller.abort(); clearTimeout(task.delivery); tasks.delete(message.id); }
@@ -38,9 +45,27 @@ browser.runtime.onMessage.addListener((message, sender, reply) => {
   const controller = new AbortController();
   tasks.set(job.id, { source: job.source, controller });
   const signal = controller.signal;
+  let domStep = 0;
   reply({ ok: true });
   const options = {
     signal,
+    receiptCache: job.source === 'yandex' ? yandexReceiptCache.begin({ signal, bypass: job.refreshReceipts === true }) : undefined,
+    readOrderDocuments: job.source === 'yandex' ? async (orderId: string) => {
+      signal.throwIfAborted();
+      const response = await withDeadline(browser.runtime.sendMessage({ type: 'KUPLENO_YANDEX_DOCUMENTS', id: job.id, orderId }), 'Документы заказа не ответили.', 35000);
+      signal.throwIfAborted();
+      const result = response?.ok && readYandexDocumentsResult(response.result);
+      if (!result) throw Object.assign(new Error('Не удалось прочитать документы заказа Яндекс Маркета.'), { code: 'YANDEX_DOCUMENTS_BLOCKED' });
+      return result;
+    } : undefined,
+    readOrdersDom: job.source === 'yandex' ? async () => {
+      signal.throwIfAborted();
+      const response = await withDeadline(browser.runtime.sendMessage({ type: 'KUPLENO_YANDEX_ORDERS_DOM', id: job.id, step: ++domStep }), 'Не удалось прочитать список Яндекс Маркета.', 7000);
+      signal.throwIfAborted();
+      const result = response?.ok && readYandexOrdersDomResult(response.result);
+      if (!result) throw new Error('Не удалось продолжить чтение списка Яндекс Маркета.');
+      return result;
+    } : undefined,
     fetch: async (input: Parameters<typeof fetch>[0], options?: RequestInit) => {
       signal.throwIfAborted();
       const url = new URL(String(input));
@@ -65,7 +90,9 @@ browser.runtime.onMessage.addListener((message, sender, reply) => {
         for (const [field, suffix] of [['html', 'html'], ['challenge', 'challenge'], ['login', 'login'], ['redirected', 'redirected'], ['challengeOpened', 'challenge-opened'], ['liveSk', 'live-sk'], ['contextSk', 'context-sk'], ['contextSkUsed', 'context-sk-used']] as const) {
           if (response[field] === true) headers.set(`x-kupleno-yandex-${suffix}`, '1');
         }
-        if (response.error && ![...headers].length) throw new Error(response.error);
+        if (response.requestTimeoutUnsettled === true) throw Object.assign(new Error('Запрос Яндекс Маркета не завершился. Сбор остановлен.'), { code: 'YANDEX_REQUEST_TIMEOUT_UNSETTLED' });
+        if (response.requestTimeout === true && !['html', 'challenge', 'login', 'redirected', 'challengeOpened'].some(field => response[field] === true)) throw Object.assign(new Error('Истекло время запроса Яндекс Маркета.'), { code: 'YANDEX_REQUEST_TIMEOUT' });
+        if (response.error && !['html', 'challenge', 'login', 'redirected', 'challengeOpened'].some(field => response[field] === true)) throw new Error(response.error);
         return new Response(response.text, { status: response.status, headers });
       }
       return fetch(input, { ...options, signal: AbortSignal.any([signal, AbortSignal.timeout(25000)]) });
@@ -76,5 +103,11 @@ browser.runtime.onMessage.addListener((message, sender, reply) => {
   };
   let lastDiagnostics: CollectionResult['stats'] | undefined;
   const task = job.source === 'ozon' ? collectOzon({ ...options, readPdf }) : collectYandex({ ...options, context: message.context, onDiagnostics: stats => { lastDiagnostics = { ...stats }; } });
-  void task.then(result => finish(job.id, result)).catch(error => finish(job.id, undefined, error instanceof Error ? error.message : 'Не удалось обработать чеки.', lastDiagnostics));
+  void task.then(result => {
+    if (result.unresolvedOrderIds !== undefined && !readUnresolvedOrderIds(result.unresolvedOrderIds)) throw new Error('Некорректные ссылки на заказы.');
+    for (const ids of [result.failedDocumentOrderIds, result.failedReceiptOrderIds]) {
+      if (ids !== undefined && (job.source !== 'yandex' || !readUnresolvedOrderIds(ids))) throw new Error('Некорректные ссылки на заказы.');
+    }
+    return finish(job.id, result);
+  }).catch(error => finish(job.id, undefined, error instanceof Error ? error.message : 'Не удалось обработать чеки.', lastDiagnostics));
 });

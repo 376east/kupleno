@@ -27,3 +27,15 @@ test('clearing WB includes legacy rows and records without deleting other stores
   assert.deepEqual(next.settings.refundClaims, [{ source: 'ozon', manualMatchRowIds: ['ozon'] }]);
   assert.equal(state.rows.length, 3);
 });
+
+test('clearing Yandex removes its diagnostic order references and preserves other stores', () => {
+  const references = { yandex: ['123456'], wildberries: ['654321'] };
+  const state: State = { rows: [], settings: {}, metadata: { collection: {
+    unresolvedOrderIdsBySource: references, failedDocumentOrderIdsBySource: references, failedReceiptOrderIdsBySource: references,
+  } } };
+  const next = clearSource(state, 'yandex');
+  for (const field of ['unresolvedOrderIdsBySource', 'failedDocumentOrderIdsBySource', 'failedReceiptOrderIdsBySource']) {
+    assert.deepEqual((next.metadata.collection as Record<string, unknown>)[field], { wildberries: ['654321'] });
+  }
+  assert.deepEqual(references.yandex, ['123456']);
+});
