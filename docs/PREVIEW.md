@@ -71,6 +71,8 @@ npm run preview:browser
 
 ## Данные
 
+В «Магазинах» показаны оплаты и возвраты по чекам, у которых подтверждены фискальный номер, вид операции и сумма способов оплаты. Зачёт ранее оплаченного аванса показан отдельно. Повторный сбор учитывает каждый фискальный документ магазина один раз. Старые копии открываются как прежде, а суммы по чекам появляются после их чтения. Раздел «Покупки» сохраняет товарные суммы. [Расчёт](../extension/next/fiscal-payments.mjs), [парсеры](../extension/next/collectors/fiscal.ts).
+
 `Purchase` содержит rowId, date, source, title, amount и необязательные category/profile/type/receipt_url/parse_quality. Схема допускает неизвестные поля ради round-trip. Сумма в строке операции - decimal, арифметика выполняется в целых копейках. Не путать одинаковую сумму с идентичностью операции. [Модель](../extension/next/model.ts), [арифметика](../extension/next/domain.mjs).
 
 База `kupleno-storage-v2`: stores current/history/meta. Оболочка `{state, revision, epoch}`; запись требует ожидаемые revision/epoch, чтобы не затереть изменения другой вкладки. Сохраняются последние 12 состояний. Backup v1/v2 читается с проверкой структуры и опасных ключей. [storage.mjs](../extension/next/storage.mjs), [тесты](../extension/next/storage.test.mjs).

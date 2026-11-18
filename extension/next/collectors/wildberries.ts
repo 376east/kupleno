@@ -1,6 +1,8 @@
 import type { Purchase } from '../model';
+import type { CollectionResult } from '../collection';
 import { identifyRows } from '../preferences.mjs';
 import { moneyDecimal, moneyMinor } from '../domain.mjs';
+import { readWildberriesPayment } from './fiscal.ts';
 
 const LIST_URL = 'https://astro.wildberries.ru/api/v1/receipt-api/v1/receipts';
 const PAGE_SIZE = 50;
@@ -133,7 +135,7 @@ function receiptFromUnknown(value: unknown): Receipt | null {
 
 export async function collectWildberries(options: {
   fetch: typeof fetch; token: string; signal?: AbortSignal; onProgress?: (progress: Progress) => void | Promise<void>; knownReceiptIds?: string[];
-}): Promise<{ rows: Purchase[]; stats: Record<string, number | boolean>; warnings: string[] }> {
+}): Promise<CollectionResult> {
   if (!options.token.trim()) throw new Error('WB_TOKEN_REQUIRED');
   const known = new Set((options.knownReceiptIds || []).map((id) => id.trim()).filter(Boolean));
   const receipts = new Map<string, Receipt>();
@@ -168,6 +170,7 @@ export async function collectWildberries(options: {
   if (pages >= MAX_PAGES && cursor) { incomplete = true; warnings.push('Wildberries: достигнут лимит страниц чеков.'); }
   if (invalidReceipts) { incomplete = true; warnings.push(`Wildberries: не распознаны ссылки на ${invalidReceipts} чеков.`); }
   const rows: Purchase[] = [];
+  const fiscalPayments: NonNullable<CollectionResult['fiscalPayments']> = [];
   let failedReceipts = 0;
   let processed = 0;
   for (const receipt of receipts.values()) {
@@ -183,6 +186,8 @@ export async function collectWildberries(options: {
       const items = parseReceiptHtml(html, receipt);
       if (!items.length || items.some(row => !row.date)) throw new Error('WB_RECEIPT_EMPTY');
       rows.push(...items);
+      const payment = readWildberriesPayment(html, items[0]!.date, items[0]!.currency || 'RUB');
+      if (payment) fiscalPayments.push(payment);
     } catch (error) {
       if ((error as { name?: string }).name === 'AbortError' || options.signal?.aborted) throw error;
       failedReceipts += 1;
@@ -193,5 +198,5 @@ export async function collectWildberries(options: {
   if (failedReceipts) warnings.push(`Wildberries: не удалось прочитать ${failedReceipts} чеков. Ранее сохранённая история остаётся.`);
   if (!rows.length && (failedReceipts || invalidReceipts) && !known.size) throw new Error(warnings.at(-1));
   const qualityCount = (quality: string) => new Set(rows.filter(row => row.parse_quality === quality).map(row => row.marketplace_id)).size;
-  return { rows, warnings, stats: { receipts: receipts.size, pages, failedReceipts, invalidReceipts, skippedKnown: known.size > 0, incomplete, itemRows: rows.length, fallbackReceipts: qualityCount('fallback'), unverifiedReceipts: qualityCount('unverified') } };
+  return { rows, fiscalPayments, warnings, stats: { receipts: receipts.size, pages, failedReceipts, invalidReceipts, skippedKnown: known.size > 0, incomplete, itemRows: rows.length, fallbackReceipts: qualityCount('fallback'), unverifiedReceipts: qualityCount('unverified') } };
 }

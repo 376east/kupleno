@@ -1,4 +1,6 @@
 export type Source = 'ozon' | 'wildberries' | 'yandex';
+export interface FiscalPayment { id: string; date: string; paid: number; advance: number }
+export interface StoredFiscalPayment extends FiscalPayment { source: Source }
 export interface Purchase {
   rowId: string; date: string; source: string; title: string;
   amount: string | number; currency?: string; type?: string;
@@ -12,7 +14,7 @@ export interface Settings {
   overrides?: Record<string, Partial<Purchase>>;
   [key: string]: unknown;
 }
-export interface State { rows: Purchase[]; settings: Settings; metadata: Record<string, unknown>; [key: string]: unknown }
+export interface State { rows: Purchase[]; settings: Settings; metadata: Record<string, unknown>; fiscalPayments?: StoredFiscalPayment[]; [key: string]: unknown }
 export interface Envelope { state: State; revision: number; epoch: number }
 export interface Expected { expectedRevision: number; expectedEpoch: number }
 export interface Snapshot { id: string; createdAt: string; rows: number; revision: number }

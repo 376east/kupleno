@@ -3,6 +3,7 @@ import { collectWildberries } from '../collectors/wildberries';
 import type { Job, Command, JobResponse } from '../collection';
 import { readFailureStats } from '../collection';
 import { SOURCES } from '../domain.mjs';
+import { isFiscalPaymentList } from '../fiscal-payments.mjs';
 import type { Source } from '../model';
 import { yandexRequest } from './yandex-request';
 import { ozonRequest } from './ozon-request';
@@ -417,6 +418,7 @@ export function registerCollection() {
           } else if (event.action === 'finished') {
             if (!event.error && !event.result) throw new Error('Обработчик не передал результат.');
             if (event.result && (!Array.isArray(event.result.rows) || event.result.rows.length > 100000 || !Array.isArray(event.result.warnings) || !event.result.stats || typeof event.result.stats !== 'object')) throw new Error('Некорректный результат сбора.');
+            if (event.result?.fiscalPayments !== undefined && !isFiscalPaymentList(event.result.fiscalPayments)) throw new Error('Некорректные оплаты по чекам.');
             if (event.result?.unresolvedOrderIds !== undefined && (current.source !== 'yandex' || !readUnresolvedOrderIds(event.result.unresolvedOrderIds))) throw new Error('Некорректные ссылки на заказы.');
             for (const field of ['failedDocumentOrderIds', 'failedReceiptOrderIds'] as const) {
               if (event.result?.[field] !== undefined && (current.source !== 'yandex' || !readUnresolvedOrderIds(event.result[field]))) throw new Error('Некорректные ссылки на заказы.');

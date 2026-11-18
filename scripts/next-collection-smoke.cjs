@@ -529,7 +529,12 @@ async function main() {
           });
           return new Response(JSON.stringify({ receipts: [{ receiptUid: 'parallel-wb', link: 'https://receipt.wb.ru/parallel-wb', operationSum: 100, operationDateTime: '2026-01-01T10:00:00Z' }] }));
         }
-        if (String(input) === 'https://receipt.wb.ru/parallel-wb') return new Response('<h2>Кассовый чек</h2>Приход<div class="products-item"><div class="products-cell products-cell_name"><div class="products-prop-value">Наименование Книга</div></div><div class="products-cell products-cell_price"></div><div class="products-cell products-cell_cost"><div class="products-prop-value">100,00 ₽</div></div></div><div class="total"></div>');
+        if (String(input) === 'https://receipt.wb.ru/parallel-wb') {
+          const property = (label, value) => '<div class="property-name">' + label + '</div><div class="property-value">' + value + '</div>';
+          return new Response('<div class="check-header-column first">Приход<br></div><div class="products-item"><div class="products-cell products-cell_name"><div class="products-prop-value">Наименование Книга</div></div><div class="products-cell products-cell_price"></div><div class="products-cell products-cell_cost"><div class="products-prop-value">100,00 ₽</div></div></div><div class="total">'
+            + property('Итого', '100.00') + property('Электронными', '25.00') + property('Аванс', '75.00')
+            + property('№ ФН', '101') + property('№ ФД', '202') + property('ФПД', '303') + '</div>');
+        }
         return original(input, init);
       };
     });
@@ -587,6 +592,8 @@ async function main() {
       await new Promise(resolve => setTimeout(resolve, 100));
     }
     assert.equal(wbDone.job.status, 'completed', JSON.stringify(wbDone));
+    const fiscalPayment = { id: '101:202:303', date: '2026-01-01 10:00', paid: 2500, advance: 7500 };
+    assert.deepEqual(wbDone.job.result.fiscalPayments, [fiscalPayment]);
     const restarted = await restartWorker();
     assert.equal(restarted.status.jobs.find(job => job.source === 'wildberries').status, 'completed', 'Completed results survive restart');
     assert.equal(restarted.status.jobs.find(job => job.source === 'yandex').status, 'running', 'Offscreen source survives worker restart');
@@ -606,7 +613,7 @@ async function main() {
     await command({ action: 'ack', id: parallelWb.job.id });
     assert.equal((await command({ action: 'status', source: 'yandex' })).job.id, parallelYandex.job.id);
     // Seed three pending durable results simultaneously to exercise Stores+App fresh-state writes.
-    const completed = ['ozon', 'wildberries', 'yandex'].map(source => ({ ...legacy, id: 'apply-' + source, source, result: { rows: [{ rowId: 'apply-' + source, source, date: '2026-01-01', title: 'Synthetic ' + source, amount: '100.00', marketplace_id: 'apply-' + source }], stats: { receipts: 1 }, warnings: [] } }));
+    const completed = ['ozon', 'wildberries', 'yandex'].map(source => ({ ...legacy, id: 'apply-' + source, source, result: { rows: [{ rowId: 'apply-' + source, source, date: '2026-01-01', title: 'Synthetic ' + source, amount: '100.00', marketplace_id: 'apply-' + source }], stats: { receipts: 1 }, warnings: [], ...(source === 'wildberries' ? { fiscalPayments: wbDone.job.result.fiscalPayments } : {}) } }));
     await page.evaluate(jobs => chrome.storage.local.set({ 'kupleno-next-jobs': Object.fromEntries(jobs.map(job => [job.source, job])) }), completed);
     await restartWorker();
     await page.goto(`chrome-extension://${id}/app.html#stores`);
@@ -621,6 +628,7 @@ async function main() {
       finally { database.close(); }
     });
     assert.deepEqual(persisted.state.rows.map(row => row.source).sort(), ['ozon', 'wildberries', 'yandex']);
+    assert.deepEqual(persisted.state.fiscalPayments, [{ ...fiscalPayment, source: 'wildberries' }]);
     assert.equal(Object.keys(persisted.state.metadata.appliedCollections).length, 3);
     for (const source of ['ozon', 'wildberries', 'yandex']) {
       const stats = persisted.state.metadata.collection.stats[source];
@@ -630,6 +638,9 @@ async function main() {
       assert.equal(stats.appliedArchivedRowsBefore, 0);
     }
     await page.reload();
+    const wbPanel = stores.filter({ has: page.getByRole('heading', { name: 'Wildberries', exact: true }) });
+    await wbPanel.getByText(/25,00\s*₽.*оплачено с учётом возвратов/).waitFor();
+    await wbPanel.getByText(/Зачёт ранее оплаченного аванса: 75,00\s*₽/).waitFor();
     assert.equal((await command({ action: 'status' })).jobs.length, 0);
     await context.clearCookies();
     await page.goto(`chrome-extension://${id}/app.html`);

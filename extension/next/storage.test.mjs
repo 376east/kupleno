@@ -283,12 +283,12 @@ test('sparse legacy records and nullable fields preserve unknown data', () => {
 });
 
 test('IndexedDB store keeps epochs, history and legacy database read-only', async (t) => {
-  const source = await readFile(new URL('./storage.mjs', import.meta.url), 'utf8');
-  const domain = await readFile(new URL('./domain.mjs', import.meta.url), 'utf8');
+  const modules = new Map(await Promise.all(['storage.mjs', 'domain.mjs', 'fiscal-payments.mjs'].map(async name =>
+    ['/' + name, await readFile(new URL(name, import.meta.url), 'utf8')])));
   const server = createServer((request, response) => {
-    if (request.url === '/storage.mjs' || request.url === '/domain.mjs') {
+    if (modules.has(request.url)) {
       response.writeHead(200, { 'content-type': 'text/javascript' });
-      response.end(request.url === '/storage.mjs' ? source : domain);
+      response.end(modules.get(request.url));
       return;
     }
     response.writeHead(200, { 'content-type': 'text/html' });

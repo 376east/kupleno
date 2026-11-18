@@ -4,11 +4,36 @@ import { applyCollectionResult, createStateUpdater } from './collection-state.ts
 import type { Job } from './collection';
 import type { Envelope, Expected, State, Source } from './model';
 import { readUnresolvedOrderIds, collectionAttemptDiagnostics, readDocumentTabs, readYandexDocumentsResult } from './collection.ts';
+import { parseBackup, serializeBackup } from './storage.mjs';
+import { summarizeFiscalPayments } from './fiscal-payments.mjs';
+import { clearSource } from './source-data.ts';
 
 const empty = (): State => ({ rows: [], settings: {}, metadata: {} });
 const job = (source: Source): Job => ({ id: `${source}-job`, source, profile: 'personal', status: 'completed', startedAt: '2026-01-01', updatedAt: '2026-01-01', message: '', progress: { done: 1, total: 1 }, result: {
   rows: [{ rowId: source, source, title: source, date: '2026-01-01', amount: '100.00', marketplace_id: source }], stats: { receipts: 1 }, warnings: []
 } });
+
+test('fiscal payments survive a repeat, partial collection and backup without counting the advance twice', () => {
+  const ozon = job('ozon');
+  const date = '2026-01-01 10:00';
+  const first = { id: '101:1:301', date, paid: 10000, advance: 0 };
+  const settlement = { id: '101:2:302', date, paid: 2000, advance: 10000 };
+  const refund = { id: '101:3:303', date, paid: -2000, advance: 0 };
+  ozon.result!.fiscalPayments = [first, settlement, refund, settlement];
+  const saved = applyCollectionResult(empty(), ozon);
+  const repeat = { ...ozon, id: 'later', result: { ...ozon.result!, fiscalPayments: [settlement], stats: { incomplete: true } } };
+  const later = applyCollectionResult(saved, repeat);
+  const yandex = job('yandex');
+  yandex.result!.fiscalPayments = [first];
+  const both = applyCollectionResult(later, yandex);
+  const restored = parseBackup(serializeBackup(both)).state;
+  assert.deepEqual(restored.fiscalPayments, both.fiscalPayments);
+  assert.deepEqual(summarizeFiscalPayments(restored.fiscalPayments!, 'ozon'), { paid: 12000, refunded: 2000, advance: 10000, count: 3, net: 10000 });
+  assert.equal(summarizeFiscalPayments(restored.fiscalPayments!, 'yandex')?.net, 10000);
+  assert.deepEqual(clearSource(restored, 'ozon').fiscalPayments, [{ ...first, source: 'yandex' }]);
+  assert.equal(parseBackup(serializeBackup(empty())).state.fiscalPayments, undefined);
+  assert.throws(() => serializeBackup({ ...both, fiscalPayments: [{ ...first, source: 'ozon', paid: 0.5 }] }), /оплаты по чекам/);
+});
 
 test('unresolved order references are bounded and source metadata preserves neighbours', () => {
   const state = empty();

@@ -5,6 +5,7 @@ export function clearSource(state: State, source: Source): State {
   const next = structuredClone(state);
   const ids = new Set(next.rows.filter(row => sourceOf(row) === source).map(row => row.rowId));
   next.rows = next.rows.filter(row => sourceOf(row) !== source);
+  if (next.fiscalPayments) next.fiscalPayments = next.fiscalPayments.filter(payment => payment.source !== source);
   if (Array.isArray(next.settlementOriginals)) next.settlementOriginals = next.settlementOriginals.filter(row => sourceOf(row) !== source);
   for (const id of ids) if (next.settings.overrides) delete next.settings.overrides[id];
   for (const key of ['refundClaims','warranties']) {

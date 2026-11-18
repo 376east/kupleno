@@ -3,12 +3,14 @@ import type { Job } from './collection.ts';
 import { readUnresolvedOrderIds } from './collection.ts';
 import { SOURCES, mergeCollection, sourceOf } from './domain.mjs';
 import { applyCollectionRows, identifyRows } from './preferences.mjs';
+import { isFiscalPaymentList, mergeFiscalPayments } from './fiscal-payments.mjs';
 
 export function applyCollectionResult(state: State, job: Job): State {
   if (job.status !== 'completed' || !job.result) throw new Error('Сбор ещё не завершён.');
   const applied = state.metadata.appliedCollections as Record<string, string> | undefined;
   if (applied?.[job.source] === job.id || state.metadata.lastAppliedCollection === job.id) return state;
   const result = job.result;
+  if (result.fiscalPayments !== undefined && !isFiscalPaymentList(result.fiscalPayments)) throw new Error('Некорректные оплаты по чекам.');
   const unresolvedOrderIds = result.unresolvedOrderIds === undefined ? undefined : readUnresolvedOrderIds(result.unresolvedOrderIds);
   if (result.unresolvedOrderIds !== undefined && (job.source !== 'yandex' || !unresolvedOrderIds)) throw new Error('Некорректные ссылки на заказы.');
   const failedDocumentOrderIds = result.failedDocumentOrderIds === undefined ? undefined : readUnresolvedOrderIds(result.failedDocumentOrderIds);
@@ -21,7 +23,8 @@ export function applyCollectionResult(state: State, job: Job): State {
     appliedRowsAfter: merged.filter(inProfile).length,
     appliedArchivedRowsBefore: Array.isArray(state.settlementOriginals) ? state.settlementOriginals.filter(inProfile).length : 0 };
   const previous = state.metadata.collection as { sources?: string[]; stats?: Record<string, unknown>; warnings?: string[]; unresolvedOrderIdsBySource?: Record<string, string[]>; failedDocumentOrderIdsBySource?: Record<string, string[]>; failedReceiptOrderIdsBySource?: Record<string, string[]> } | undefined;
-  return { ...applyCollectionRows(state, identifyRows(merged)), metadata: {
+  const payments = result.fiscalPayments?.length ? mergeFiscalPayments(state.fiscalPayments || [], job.source, result.fiscalPayments) : state.fiscalPayments;
+  return { ...applyCollectionRows(state, identifyRows(merged)), ...(payments ? { fiscalPayments: payments } : {}), metadata: {
     ...state.metadata, appliedCollections: { ...applied, [job.source]: job.id }, lastAppliedCollection: job.id, lastRunAt: job.updatedAt,
     collection: {
       ...previous,

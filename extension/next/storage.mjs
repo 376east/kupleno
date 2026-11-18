@@ -1,4 +1,5 @@
 import { moneyMinor } from './domain.mjs';
+import { isFiscalPaymentList } from './fiscal-payments.mjs';
 
 const DEFAULT_DB_NAME = 'kupleno-storage-v2';
 const DB_VERSION = 1;
@@ -224,6 +225,9 @@ function validateState(state) {
   }
   if (state.rows.length > MAX_ROWS) throw storageError('TOO_MANY_ROWS', 'Слишком много покупок.');
   validateJson(state);
+  if (own(state, 'fiscalPayments') && !isFiscalPaymentList(state.fiscalPayments, true)) {
+    throw storageError('INVALID_STATE', 'Некорректные оплаты по чекам.');
+  }
   if (own(state, 'settlementOriginals') && (!Array.isArray(state.settlementOriginals) || state.settlementOriginals.some(row => !isPlainObject(row)))) {
     throw storageError('INVALID_STATE', 'Некорректный архив исходных строк чеков.');
   }

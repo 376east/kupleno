@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import { browser } from 'wxt/browser';
-import { SOURCES, sourceHealth, sourceOf } from '../domain.mjs';
+import { formatMoney, SOURCES, sourceHealth, sourceOf } from '../domain.mjs';
 import { storeOrigins, type Command, type Job, type JobResponse } from '../collection';
 import { settingsWithDefaults } from '../preferences.mjs';
 import { applyCollectionResult } from '../collection-state';
 import type { Purchase, State, Source } from '../model';
 import { StoreMark, Dialog, operationCount } from './components';
 import { clearSource } from '../source-data';
+import { summarizeFiscalPayments } from '../fiscal-payments.mjs';
 
 const sources = Object.keys(storeOrigins) as Source[];
 
@@ -122,6 +123,7 @@ export function Stores({ state, rows, update, onSelect }: { state: State; rows: 
     {Object.entries(SOURCES).map(([sourceName, info]) => {
       const source = sourceName as Source;
       const purchases = rows.filter(row => sourceOf(row) === source);
+      const payments = summarizeFiscalPayments(state.fiscalPayments || [], source);
       const unread = purchases.filter(row => row.parse_quality === 'fallback');
       const active = jobs.find(job => job.source === source);
       const blocked = starting.includes(source) || active?.status === 'running' || active?.status === 'completed';
@@ -135,6 +137,11 @@ export function Stores({ state, rows, update, onSelect }: { state: State; rows: 
         : active?.status === 'completed' ? saving ? 'Сохраняем покупки…' : 'Покупки собраны. Ожидают сохранения.'
         : failure ? 'Сбор не завершён.' : success[source] || (health.state === 'partial' ? 'История собрана частично.' : 'Не запущен');
       return <section className="panel store-panel" key={source}><StoreMark source={source} /><div className="store-summary"><h2>{info.name}</h2><p>{purchases.length ? `${operationCount(purchases.length)} в истории` : 'История ещё не загружена'}</p><div className="store-status" role="status">{status}</div><progress className="store-meter" aria-label={`Ход сбора ${info.name}`} aria-hidden={!running} data-active={running || undefined} value={running ? active.progress.total ? active.progress.done : undefined : 0} max={active?.progress.total || 1} /></div><div className="row-actions"><button className="primary" disabled={!canCollect || blocked} onClick={() => void start([source])}>Обновить покупки</button>{source === 'yandex' && canCollect && purchases.length > 0 && !running && <button className="secondary" disabled={blocked} title="Заново скачать чеки из магазина" onClick={() => void start([source], true)}>Перечитать чеки</button>}{running ? <button className="secondary" onClick={() => void command({ type: 'KUPLENO_JOB', action: 'cancel', id: active.id }).then(result => setJobs(value => value.map(job => job.id === active.id ? readJobs(result).find(next => next.id === job.id) || job : job))).catch(e => setErrors(value => ({ ...value, [source]: String(e) })))}>Остановить сбор</button> : <a className="action" href={info.url} target="_blank" rel="noreferrer">Чеки в магазине ↗</a>}{running ? <button className="quiet" onClick={() => void copyDiagnostics(source)}>Скопировать сведения</button> : <button className="quiet" disabled={!canCollect || !purchases.length || clearBusy || blocked} onClick={() => { setError(''); setClearing(source); }}>Удалить историю</button>}</div>
+        {!!payments?.count && <div className="store-details">
+          <p><strong>{formatMoney(payments.net)}</strong> · оплачено с учётом возвратов</p>
+          <p>Проверено чеков: {payments.count.toLocaleString('ru-RU')}. Оплачено {formatMoney(payments.paid)}, возвращено {formatMoney(payments.refunded)}.</p>
+          {payments.advance !== 0 && <p>Зачёт ранее оплаченного аванса: {formatMoney(payments.advance)}.</p>}
+        </div>}
         {!failure && health.warnings.length > 0 && <div className="store-details" role="status">{health.warnings.map((warning, index) => <p key={index}>{warning}</p>)}</div>}
         {failure && <div className="callout" role="alert"><strong>Не удалось завершить сбор</strong><p>{failure}</p><div className="row-actions"><button className="secondary" onClick={() => void copyDiagnostics(source)}>Скопировать сведения</button>{active?.status === 'completed' && !saving && <button onClick={() => { attempted.current.delete(active.id); setJobs([...jobs]); }}>Повторить сохранение</button>}</div></div>}
         {unread.length > 0 && <div className="callout"><strong>Нужна проверка {unread.length} чеков</strong><p>Итог известен, но список товаров прочитан не полностью.</p><button onClick={() => onSelect(unread[0]!.rowId)}>Открыть первый чек</button></div>}

@@ -1,6 +1,7 @@
 import type { CollectionResult } from '../collection';
-import type { Purchase } from '../model';
+import type { FiscalPayment, Purchase } from '../model';
 import { parseOzonReceipt } from './ozon.ts';
+import { readOzonPayment } from './fiscal.ts';
 
 interface Receipt { id: string; url: string; date?: string; orderId?: string }
 const origin = 'https://www.ozon.ru';
@@ -145,6 +146,7 @@ export async function collectOzon(options: { fetch: typeof fetch; readPdf: (byte
   }
   if (!receipts.size && (!emptyKnown || incomplete)) throw new Error(warnings[0] || 'Ozon: чеки не найдены. Проверьте вход в магазин.');
   const rows: Purchase[] = [];
+  const fiscalPayments: FiscalPayment[] = [];
   let failed = 0, done = 0;
   const failures = new Map<string, number>();
   for (const receipt of receipts.values()) {
@@ -156,10 +158,13 @@ export async function collectOzon(options: { fetch: typeof fetch; readPdf: (byte
       if (Number(response.headers.get('content-length')) > 20 * 1024 * 1024) throw new Error('PDF слишком большой.');
       const bytes = new Uint8Array(await response.arrayBuffer());
       if (bytes.byteLength > 20 * 1024 * 1024) throw new Error('PDF слишком большой.');
-      const parsed = parseOzonReceipt(await options.readPdf(bytes, options.signal), receipt);
+      const text = await options.readPdf(bytes, options.signal);
+      const parsed = parseOzonReceipt(text, receipt);
       if (!parsed.length) throw new Error('Сумма и товары в PDF не распознаны');
       if (parsed.some(row => !row.date)) throw new Error('Дата в PDF не распознана');
       rows.push(...parsed); cap(rows.length);
+      const payment = readOzonPayment(text, parsed[0]!.date);
+      if (payment) fiscalPayments.push(payment);
     } catch (e) {
       if (options.signal?.aborted || (e as { code?: string }).code === 'ROW_LIMIT_EXCEEDED') throw e;
       failed++;
@@ -186,5 +191,5 @@ export async function collectOzon(options: { fetch: typeof fetch; readPdf: (byte
     incomplete = true;
     warnings.push(`Ozon: у ${unverifiedReceipts} чеков не распознан итог. Суммы товаров требуют проверки.`);
   }
-  return { rows, processedReceipts: [...new Set(rows.map(row => row.receipt_url || row.marketplace_id || '').filter(Boolean))], warnings, stats: { receipts: receipts.size, pages, failedReceipts: failed, incomplete, removed: 0, fallbackReceipts: new Set(rows.filter(row => row.parse_quality === 'fallback').map(row => row.marketplace_id)).size, unverifiedReceipts, ...diagnostics } };
+  return { rows, fiscalPayments, processedReceipts: [...new Set(rows.map(row => row.receipt_url || row.marketplace_id || '').filter(Boolean))], warnings, stats: { receipts: receipts.size, pages, failedReceipts: failed, incomplete, removed: 0, fallbackReceipts: new Set(rows.filter(row => row.parse_quality === 'fallback').map(row => row.marketplace_id)).size, unverifiedReceipts, ...diagnostics } };
 }

@@ -1,12 +1,11 @@
 import type { Purchase } from '../model';
 import { identifyRows } from '../preferences.mjs';
 import { moneyDecimal, moneyMinor, reconcileSettlementReceipts } from '../domain.mjs';
+import { ozonTotalLabel as totalLabel, readOzonTotal } from './fiscal.ts';
 
 type Receipt = { id: string; url: string; date?: string; orderId?: string };
 const dateValue = (value: string | undefined) => String(value || '').replace('T', ' ').replace(/Z$/, '').slice(0, 16);
 const orderFrom = (receipt: Receipt) => receipt.orderId || receipt.id.match(/^(.+?)-[0-9a-f]{8}-[0-9a-f-]{27,}/i)?.[1] || '';
-const totalLabel = /^ИТОГ(?:О)?(?=$|[\s:≡])/i;
-const totalAmount = /^[\s:≡]*(-?\d[\d \u00a0\u202f]*(?:[,.]\d{1,2})?)\s*(?:₽|руб\.?)?$/i;
 const itemLine = /^\d{1,3}\.(?!\d)\s*(.*)$/;
 
 export function parseOzonReceipt(text: string, receipt: Receipt): Purchase[] {
@@ -34,9 +33,7 @@ export function parseOzonReceipt(text: string, receipt: Receipt): Purchase[] {
     if (title && cents !== null) items.push({ title, cents });
   }
   const totalIndex = lines.findIndex((line) => totalLabel.test(line));
-  const inlineTotal = lines[totalIndex]?.replace(totalLabel, '').trim() ?? '';
-  const totalText = totalIndex < 0 ? '' : /^[\s:≡]*$/.test(inlineTotal) ? lines[totalIndex + 1] ?? '' : inlineTotal;
-  const total = moneyMinor(totalText.match(totalAmount)?.[1] || '');
+  const total = readOzonTotal(lines, totalIndex);
   const fallback = (reason: string): Purchase[] => total === null ? [] : identifyRows([{
     rowId: '', source: 'ozon', date, amount: moneyDecimal(isRefund ? -Math.abs(total) : Math.abs(total)), title: `Ozon PDF не разобран (${receipt.id})`,
     type: isRefund ? 'refund' : 'purchase', currency: 'RUB', marketplace_id: receipt.id, receipt_url: receipt.url,

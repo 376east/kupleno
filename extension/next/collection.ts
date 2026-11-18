@@ -1,11 +1,11 @@
-import type { Purchase, Source } from './model';
+import type { FiscalPayment, Purchase, Source } from './model';
 
 export const storeOrigins: Record<Source, string[]> = {
   ozon: ['https://www.ozon.ru/*', 'https://ozon.ru/*'],
   wildberries: ['https://www.wildberries.ru/*', 'https://wildberries.ru/*', 'https://astro.wildberries.ru/*', 'https://receipt.wb.ru/*'],
   yandex: ['https://market.yandex.ru/*', 'https://check.yandex.ru/*'],
 };
-export interface CollectionResult { rows: Purchase[]; stats: Record<string, number | boolean>; warnings: string[]; processedReceipts?: string[]; unresolvedOrderIds?: string[]; failedDocumentOrderIds?: string[]; failedReceiptOrderIds?: string[] }
+export interface CollectionResult { rows: Purchase[]; stats: Record<string, number | boolean>; warnings: string[]; fiscalPayments?: FiscalPayment[]; processedReceipts?: string[]; unresolvedOrderIds?: string[]; failedDocumentOrderIds?: string[]; failedReceiptOrderIds?: string[] }
 export interface YandexOrdersDomResult { orderIds: string[]; clicked: boolean; hasMore: boolean; blocked: boolean; ambiguous: boolean; limit: boolean; fatal: boolean }
 export type YandexDocumentsFailureReason = 'navigation' | 'button' | 'dialog' | 'loading' | 'error' | 'unrecognized' | 'request';
 export interface YandexDocumentsResult { urls: string[]; complete: boolean; blocked: boolean; failureReason?: YandexDocumentsFailureReason }

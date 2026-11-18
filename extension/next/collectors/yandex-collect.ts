@@ -2,6 +2,7 @@ import type { CollectionResult, YandexOrdersDomResult, YandexDocumentsResult } f
 import { readUnresolvedOrderIds, readYandexOrdersDomResult, readYandexDocumentsResult } from '../collection.ts';
 import type { Purchase } from '../model';
 import { parseYandexReceipt } from './yandex.ts';
+import { readYandexPayment } from './fiscal.ts';
 import { mapConcurrent } from './pool.ts';
 import type { YandexReceiptCacheSession } from './yandex-receipt-cache.ts';
 
@@ -457,6 +458,7 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
   }
   const chunks = await mapConcurrent(pendingReceipts, 4, async receipt => {
     let rows: Purchase[] = [];
+    let payment: ReturnType<typeof readYandexPayment>;
     let failureCounter: 'receiptForbiddenErrors' | 'receiptRateLimitErrors' | 'receiptHttpErrors' | 'receiptNetworkErrors' | 'receiptParseErrors' | 'receiptOversizeErrors' | 'receiptRedirectErrors' = 'receiptNetworkErrors';
     try {
       options.signal?.throwIfAborted();
@@ -491,6 +493,7 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
       failureCounter = 'receiptParseErrors';
       if (!parsed?.length || parsed.some(row => !row.date)) throw new Error('Не удалось прочитать чек.');
       rowCount += parsed.length; cap(rowCount); rows = parsed;
+      if (html !== undefined) payment = readYandexPayment(html, receipt.url, parsed[0]!.date);
       if (fromCache) diagnostics.cachedReceipts++;
       else if (options.receiptCache && parsed.every(row => row.parse_quality === 'complete' && !!row.date)) {
         try { await options.receiptCache.write(receipt.url, html!); }
@@ -503,11 +506,12 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
       failedReceipts++; incomplete = true;
     }
     await options.onProgress?.({ done: ++done, total: receipts.size, message: `Яндекс Маркет: прочитано ${done} из ${receipts.size} чеков.` });
-    return rows;
+    return { rows, payment };
   }, options.signal);
   // Cache priority changes scheduling only; keep receipt order stable for row identities and annotations.
-  const rows = chunks.map((rows, index) => ({ rows, url: pendingReceipts[index]!.url }))
+  const rows = chunks.map(({ rows }, index) => ({ rows, url: pendingReceipts[index]!.url }))
     .sort((a,b) => a.url.localeCompare(b.url)).flatMap(chunk => chunk.rows);
+  const fiscalPayments = chunks.flatMap(({ payment }) => payment ? [payment] : []);
   if (!rows.length && metadataStopped) throw metadataStopError;
   if (failedOrders || failedReceipts) incomplete = true;
   if (failedOrders || failedReceipts) warnings.push(`Яндекс Маркет: ошибки у ${failedOrders} заказов и ${failedReceipts} чеков. Ранее сохранённая история остаётся.`);
@@ -521,7 +525,7 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
   if (failedOrders && failures.size) warnings.push(`Яндекс Маркет: причины пропуска — ${[...failures].slice(0,3).join(' ')}`);
   const unresolvedOrderIds = readUnresolvedOrderIds([...new Set(states.filter(state => state.unresolved.size > 0).map(state => String(Number(state.orderId))))].slice(0, 1000));
   if (!unresolvedOrderIds) throw new Error('Некорректные ссылки на заказы.');
-  return { rows, unresolvedOrderIds, failedDocumentOrderIds: [...failedDocumentOrderIds].slice(0, 1000), failedReceiptOrderIds: [...failedReceiptOrderIds].slice(0, 1000), processedReceipts: [...new Set(rows.map(row => row.receipt_url || row.marketplace_id || '').filter(Boolean))], warnings, stats: { orders: orderIds.size, receipts: receipts.size, pages, failedOrders, failedReceipts, removed: 0, incomplete, ...diagnostics, ...pagination, fallbackReceipts: new Set(rows.filter(row => row.parse_quality === 'fallback').map(row => row.marketplace_id)).size, unverifiedReceipts: new Set(rows.filter(row => row.parse_quality === 'unverified').map(row => row.marketplace_id)).size } };
+  return { rows, fiscalPayments, unresolvedOrderIds, failedDocumentOrderIds: [...failedDocumentOrderIds].slice(0, 1000), failedReceiptOrderIds: [...failedReceiptOrderIds].slice(0, 1000), processedReceipts: [...new Set(rows.map(row => row.receipt_url || row.marketplace_id || '').filter(Boolean))], warnings, stats: { orders: orderIds.size, receipts: receipts.size, pages, failedOrders, failedReceipts, removed: 0, incomplete, ...diagnostics, ...pagination, fallbackReceipts: new Set(rows.filter(row => row.parse_quality === 'fallback').map(row => row.marketplace_id)).size, unverifiedReceipts: new Set(rows.filter(row => row.parse_quality === 'unverified').map(row => row.marketplace_id)).size } };
   }
   try { const result = await run(); finishStage(); result.stats = { ...result.stats, ...timings }; completedStats = result.stats; return result; }
   catch (error) { incomplete = true; throw error; }
