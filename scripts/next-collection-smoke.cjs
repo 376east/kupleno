@@ -548,15 +548,15 @@ async function main() {
     await stores.filter({ has: page.getByRole('heading', { name: 'Ozon', exact: true }) }).getByRole('button', { name: 'Остановить сбор', exact: true }).waitFor();
     assert.deepEqual(await Promise.all(otherStoreButtons.map(button => button.boundingBox())), idlePositions, 'Starting Ozon must not move the other store buttons');
     for (const name of ['Wildberries', 'Яндекс Маркет']) assert.equal(await stores.filter({ has: page.getByRole('heading', { name, exact: true }) }).getByRole('button', { name: 'Обновить покупки', exact: true }).isEnabled(), true, name + ' remains enabled');
-    await page.goto(`chrome-extension://${id}/app.html`);
-    const [parallelWb, parallelYandex] = await Promise.all([
-      command({ action: 'start', source: 'wildberries', profile: 'personal' }),
-      command({ action: 'start', source: 'yandex', profile: 'personal' })
-    ]);
-    assert.equal(parallelWb.ok, true); assert.equal(parallelYandex.ok, true);
-    for (const { job } of [parallelWb, parallelYandex]) assert.equal(job.status, 'running', JSON.stringify({ source: job.source, status: job.status, error: job.error }));
+    const updateAll = page.getByRole('button', { name: 'Обновить все магазины', exact: true });
+    await updateAll.click();
+    await page.getByRole('button', { name: 'Остановить сбор', exact: true }).nth(2).waitFor();
+    assert.equal(await updateAll.isEnabled(), false, 'All stores already have active jobs');
     const allRunning = await command({ action: 'status' });
     assert.equal(allRunning.jobs.filter(job => job.status === 'running').length, 3, JSON.stringify(allRunning.jobs.map(({ source, status, error, diagnostic, startedAt, updatedAt }) => ({ source, status, error, diagnostic, startedAt, updatedAt }))));
+    assert.equal(allRunning.jobs.find(job => job.source === 'ozon').id, parallelOzon.job.id, 'Batch preserves the active Ozon job');
+    const parallelWb = { job: allRunning.jobs.find(job => job.source === 'wildberries') };
+    const parallelYandex = { job: allRunning.jobs.find(job => job.source === 'yandex') };
     await page.goto(`chrome-extension://${id}/app.html#stores`);
     await page.getByRole('button', { name: 'Остановить сбор', exact: true }).nth(2).waitFor();
     const captureOutput = process.env.KUPLENO_PARALLEL_OUTPUT;
