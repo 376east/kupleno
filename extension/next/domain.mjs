@@ -99,6 +99,23 @@ export function largePurchases(rows, limit = 6) {
     .slice(0, limit);
 }
 
+export function fiscalIdentity(parts) {
+  if (parts.some(part => typeof part !== 'string' || !/^\d{1,20}$/.test(part))) return undefined;
+  return parts.map(part => part.replace(/^0+(?=\d)/, '')).join(':');
+}
+
+export function readYandexFiscalId(url) {
+  try {
+    const parsed = new URL(url);
+    if (parsed.origin !== 'https://check.yandex.ru' || parsed.username || parsed.password) return undefined;
+    const fields = ['fn', 'n', 'fpd'].map(key => parsed.searchParams.getAll(key));
+    if (fields.some(values => values.length !== 1)) return undefined;
+    return fiscalIdentity(fields.map(([value]) => value));
+  } catch {
+    return undefined;
+  }
+}
+
 export function receiptKey(row) {
   const identity = row.receipt_url || row.marketplace_id;
   return identity ? `${sourceOf(row)}\u0001${row.profile || 'personal'}\u0001${identity}` : '';
@@ -128,6 +145,13 @@ const predecessorKey = value => JSON.stringify([value.receipt, value.item]);
 const settlementDate = row => String(row.date).replace('T', ' ').slice(0, 16);
 const settlementContent = row => JSON.stringify([sourceOf(row), row.profile || 'personal', normalizedText(row.title), moneyMinor(row.amount), currencyOf(row)]);
 const finalReceiptIdentity = row => JSON.stringify([receiptKey(row), row.item_index, settlementContent(row), String(row.date).slice(0, 10)]);
+
+function yandexFiscalLine(row) {
+  if (sourceOf(row) !== 'yandex' || row.import_origin === 'csv' || row.parse_quality !== 'complete'
+    || typeof row.item_index !== 'string' || !/^\d+$/.test(row.item_index) || moneyMinor(row.amount) === null) return '';
+  const id = readYandexFiscalId(row.receipt_url);
+  return id ? JSON.stringify([id, row.item_index, settlementContent(row), isRefund(row), settlementDate(row)]) : '';
+}
 
 export function reconcileSettlementReceipts(input, activeReceipts) {
   const rows = input.map(row => ({ ...row })), groups = new Map(), linked = new Map(), removed = new Set();
@@ -179,20 +203,47 @@ export function mergeCollection(existing, incoming, { source, profile = 'persona
   if (incoming.some(row => sourceOf(row) !== source)) throw new TypeError('В результате смешаны разные магазины.');
   const priorFinals = new Map(existing.filter(row => predecessor(row) && settlementSignature(row) && settlementKind(row) === 'full')
     .map(row => [finalReceiptIdentity(row), row]));
-  const additions = incoming.map(row => {
+  const priorFiscalLines = new Map();
+  const priorCompleteFiscalIds = new Set();
+  if (source === 'yandex') for (const row of existing) {
+    if ((row.profile || 'personal') !== profile) continue;
+    const key = yandexFiscalLine(row);
+    if (key) {
+      priorFiscalLines.set(key, priorFiscalLines.has(key) ? null : row);
+      priorCompleteFiscalIds.add(readYandexFiscalId(row.receipt_url));
+    }
+  }
+  const skippedFiscalIds = new Set();
+  const accepted = source === 'yandex' && priorCompleteFiscalIds.size ? incoming.filter(row => {
+    if (!['fallback', 'unverified'].includes(row.parse_quality)) return true;
+    const id = readYandexFiscalId(row.receipt_url);
+    if (!priorCompleteFiscalIds.has(id)) return true;
+    skippedFiscalIds.add(id);
+    return false;
+  }) : incoming;
+  const replacedFiscalRows = new Set();
+  const additions = accepted.map(row => {
     const addition = { ...row, source, profile };
+    const matchingLine = source === 'yandex' ? priorFiscalLines.get(yandexFiscalLine(addition)) : undefined;
+    if (matchingLine && !replacedFiscalRows.has(matchingLine)) {
+      replacedFiscalRows.add(matchingLine);
+      return { ...matchingLine, ...addition, rowId: matchingLine.rowId };
+    }
     const previous = settlementSignature(addition) && settlementKind(addition) === 'full' ? priorFinals.get(finalReceiptIdentity(addition)) : undefined;
     return previous ? { ...previous, ...addition, rowId: previous.rowId, settlement_predecessor: previous.settlement_predecessor } : addition;
   });
   const incomingReceipts = new Set(additions.map(receiptKey).filter(Boolean));
   for (const identity of processedReceipts) {
     if (typeof identity !== 'string' || !identity || identity.length > 8192) throw new TypeError('Некорректная ссылка обработанного чека.');
+    if (skippedFiscalIds.size && skippedFiscalIds.has(readYandexFiscalId(identity))) continue;
     incomingReceipts.add(`${source}\u0001${profile}\u0001${identity}`);
   }
   const incomingIds = new Set(additions.map(row => row.rowId).filter(Boolean));
   const retained = existing.filter(row => {
     if (sourceOf(row) !== source || (row.profile || 'personal') !== profile) return true;
-    if (replace && complete && row.import_origin !== 'csv') return false;
+    if (replacedFiscalRows.has(row)) return false;
+    if (replace && complete && row.import_origin !== 'csv'
+      && !(skippedFiscalIds.size && skippedFiscalIds.has(readYandexFiscalId(row.receipt_url)))) return false;
     const key = receiptKey(row);
     return key ? !incomingReceipts.has(key) : !incomingIds.has(row.rowId);
   });

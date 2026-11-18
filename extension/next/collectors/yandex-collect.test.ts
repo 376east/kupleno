@@ -108,6 +108,58 @@ test('dialog duplicate of an API fiscal URL is fetched once while a distinct act
   assert.deepEqual(result.unresolvedOrderIds, ['123456']);
 });
 
+test('a fiscal receipt shared by API and another order dialog is read once without assigning all goods to one order', async () => {
+  const official = 'https://check.yandex.ru/?fn=0101&n=202&fpd=303';
+  const alias = 'https://check.yandex.ru/?fpd=303&n=0202&fn=101';
+  const fetched: string[] = [];
+  const result = await collectYandex({
+    readOrderDocuments: async id => {
+      assert.equal(id, '234567');
+      return { urls: [alias], complete: true, blocked: false };
+    },
+    fetch: async (input, init) => {
+      const url = new URL(String(input));
+      if (url.pathname === '/my/orders') return new Response('');
+      if (url.hostname === 'check.yandex.ru') {
+        fetched.push(url.href);
+        return new Response(`<p>01.01.2026 10:00</p>${receipt.replace('<td>1</td>', '<td>1.</td>')}`);
+      }
+      if (url.searchParams.get('r')?.includes('resolveConsolidationOrders')) return orderList([123456, 234567]);
+      const { orderId } = JSON.parse(String(init?.body)).params[0];
+      return envelope({ result: ['r'], collections: { orderReceipt: { r: orderId === 123456 ? { fiscalUrl: official } : {} } } });
+    },
+  });
+  assert.deepEqual(fetched, [official]);
+  assert.equal(result.stats.receipts, 1);
+  assert.equal(result.stats.domReceiptUrlsAdded, 0);
+  assert.equal(result.rows.length, 1);
+  assert.equal(result.rows[0]?.yandex_order_id, '');
+  assert.equal(result.rows[0]?.parse_quality, 'complete');
+});
+
+test('previously seen orders recover receipts only when the current listing shares a known order', async () => {
+  for (const overlap of [true, false]) {
+    const fetched: number[] = [];
+    const result = await collectYandex({
+      knownOrderIds: ['123456', '234567'],
+      fetch: async (input, init) => {
+        const url = new URL(String(input));
+        if (url.pathname === '/my/orders') return new Response('');
+        if (url.hostname === 'check.yandex.ru') return new Response(`<p>01.01.2026 10:00</p>${receipt}`);
+        if (url.searchParams.get('r')?.includes('resolveConsolidationOrders')) return orderList([overlap ? 123456 : 345678]);
+        const { orderId } = JSON.parse(String(init?.body)).params[0];
+        fetched.push(orderId);
+        return envelope({ result: ['r'], collections: { orderReceipt: { r: { fiscalUrl: 'https://check.yandex.ru/' + orderId } } } });
+      },
+    });
+    assert.deepEqual(fetched.sort((a, b) => a - b), overlap ? [123456, 234567] : [345678]);
+    assert.equal(result.stats.listedOrders, 1);
+    assert.equal(result.stats.knownOrdersAdded, overlap ? 1 : 0);
+    assert.equal(result.stats.incomplete, overlap);
+    assert.equal(result.rows.length, overlap ? 2 : 1);
+  }
+});
+
 test('blocked document UI stops queued order pages with at most two reads in flight', async () => {
   let calls = 0, active = 0, peak = 0;
   const result = await collectYandex({ readOrderDocuments: async orderId => {
@@ -1187,6 +1239,7 @@ test('explicit API end avoids DOM fallback while fatal or blocked DOM IDs are ne
   for (const state of ['explicit', 'fatal', 'blocked', 'limit']) {
     let domSteps = 0;
     const result = await collectYandex({ context: { initialOrders: { orderIds: ['123456'], pageToken: 'same' } },
+      knownOrderIds: state === 'fatal' || state === 'blocked' ? ['123456', '345678'] : undefined,
       readOrdersDom: async () => { domSteps++; return domResult({ orderIds: ['234567'], ...(state === 'fatal' ? { fatal: true } : state === 'blocked' ? { blocked: true } : { limit: true }) }); },
       fetch: async input => {
         const url = new URL(String(input));
@@ -1197,6 +1250,7 @@ test('explicit API end avoids DOM fallback while fatal or blocked DOM IDs are ne
     });
     assert.equal(domSteps, state === 'explicit' ? 0 : 1);
     assert.equal(result.stats.orders, state === 'limit' ? 2 : 1);
+    assert.equal(result.stats.knownOrdersAdded, 0);
     assert.equal(result.stats.incomplete, state !== 'explicit');
   }
 });

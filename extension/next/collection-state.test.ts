@@ -1,12 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { applyCollectionResult, createStateUpdater } from './collection-state.ts';
+import { applyCollectionResult, createStateUpdater, knownYandexOrderIds } from './collection-state.ts';
 import type { Job } from './collection';
 import type { Envelope, Expected, State, Source } from './model';
 import { readUnresolvedOrderIds, collectionAttemptDiagnostics, readDocumentTabs, readYandexDocumentsResult } from './collection.ts';
 import { parseBackup, serializeBackup } from './storage.mjs';
 import { summarizeFiscalPayments } from './fiscal-payments.mjs';
 import { clearSource } from './source-data.ts';
+import { sourceHealth } from './domain.mjs';
 
 const empty = (): State => ({ rows: [], settings: {}, metadata: {} });
 const job = (source: Source): Job => ({ id: `${source}-job`, source, profile: 'personal', status: 'completed', startedAt: '2026-01-01', updatedAt: '2026-01-01', message: '', progress: { done: 1, total: 1 }, result: {
@@ -33,6 +34,47 @@ test('fiscal payments survive a repeat, partial collection and backup without co
   assert.deepEqual(clearSource(restored, 'ozon').fiscalPayments, [{ ...first, source: 'yandex' }]);
   assert.equal(parseBackup(serializeBackup(empty())).state.fiscalPayments, undefined);
   assert.throws(() => serializeBackup({ ...both, fiscalPayments: [{ ...first, source: 'ozon', paid: 0.5 }] }), /оплаты по чекам/);
+});
+
+test('Yandex cannot report a complete refresh when previously saved fiscal documents disappeared', () => {
+  const completed = job('yandex');
+  const first = 'https://check.yandex.ru/?fn=1&n=2&fpd=3';
+  const old = 'https://check.yandex.ru/?fn=1&n=4&fpd=5';
+  const row = completed.result!.rows[0]!;
+  const archived = 'https://check.yandex.ru/?fn=1&n=8&fpd=9';
+  const state: State = { ...empty(), settlementOriginals: [{ ...row, rowId: 'archived', receipt_url: archived }], rows: [
+    { ...row, rowId: 'first', receipt_url: first },
+    { ...row, rowId: 'missing', receipt_url: old },
+    { ...row, rowId: 'other-profile', profile: 'work', receipt_url: 'https://check.yandex.ru/?fn=1&n=6&fpd=7' },
+    { ...row, rowId: 'legacy-without-fiscal-id', receipt_url: 'https://check.yandex.ru/legacy' },
+  ] };
+  const aliased = 'https://check.yandex.ru/?fpd=3&fn=01&n=2';
+  completed.result!.rows = [{ ...row, rowId: 'refreshed-first', receipt_url: aliased }];
+  const saved = applyCollectionResult(state, completed);
+  const partial = sourceHealth('yandex', saved.metadata);
+  assert.equal(partial.state, 'partial');
+  assert.equal(partial.stats.appliedKnownReceiptsMissing, 2);
+  assert.match(partial.warnings[0]!, /не прочитано ранее сохранённых чеков — 2/);
+  assert.equal(saved.rows.find(row => row.rowId === 'missing')?.receipt_url, old);
+  assert.deepEqual(saved.settlementOriginals, state.settlementOriginals);
+  assert.equal(completed.result!.stats.incomplete, undefined);
+
+  const repaired = applyCollectionResult(saved, { ...completed, id: 'repaired', result: {
+    ...completed.result!, rows: [...completed.result!.rows, { ...row, rowId: 'missing', receipt_url: old }, { ...row, rowId: 'archived', receipt_url: archived }],
+  } });
+  assert.equal(sourceHealth('yandex', repaired.metadata).state, 'ready');
+  assert.equal(sourceHealth('yandex', repaired.metadata).stats.appliedKnownReceiptsMissing, undefined);
+});
+
+test('only saved Yandex fiscal orders in the selected profile seed recovery', () => {
+  const row = { ...job('yandex').result!.rows[0]!, receipt_url: 'https://check.yandex.ru/?fn=1&n=2&fpd=3' };
+  const state = { ...empty(), settlementOriginals: [{ ...row, yandex_order_id: '101' }], rows: [
+    { ...row, yandex_order_id: '101' }, { ...row, yandex_order_id: '999', profile: 'work' },
+    { ...row, yandex_order_id: '123', import_origin: 'csv' }, { ...row, yandex_order_id: '121', receipt_url: 'https://check.yandex.ru/opaque' },
+    { ...row, yandex_order_id: '102', date: '2026-02-02' }, { ...row, yandex_order_id: '090' },
+  ] };
+  assert.deepEqual(knownYandexOrderIds(state, 'personal'), ['102', '101']);
+  assert.deepEqual(knownYandexOrderIds(state, 'work'), ['999']);
 });
 
 test('unresolved order references are bounded and source metadata preserves neighbours', () => {

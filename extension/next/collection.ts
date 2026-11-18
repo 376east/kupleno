@@ -64,5 +64,5 @@ export function collectionAttemptDiagnostics(value: unknown) {
   }) : [];
   return { capturedAt: new Date().toISOString(), available, attempts };
 }
-export type Command = { type: 'KUPLENO_JOB'; action: 'status' | 'cancel'; source?: Source; id?: string } | { type: 'KUPLENO_JOB'; action: 'start'; source: Source; profile: string; refreshReceipts?: boolean } | { type: 'KUPLENO_JOB'; action: 'ack'; id: string } | { type: 'KUPLENO_JOB'; action: 'clearReceiptCache'; source: 'yandex' };
+export type Command = { type: 'KUPLENO_JOB'; action: 'status' | 'cancel'; source?: Source; id?: string } | { type: 'KUPLENO_JOB'; action: 'start'; source: Source; profile: string; refreshReceipts?: boolean; knownOrderIds?: string[] } | { type: 'KUPLENO_JOB'; action: 'ack'; id: string } | { type: 'KUPLENO_JOB'; action: 'clearReceiptCache'; source: 'yandex' };
 export type JobResponse = { ok: true; job: Job | null; jobs: Job[] } | { ok: false; error: string };

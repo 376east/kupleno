@@ -22,3 +22,5 @@ export function mergeCollection(existing: Purchase[], incoming: Purchase[], opti
 
 export function reconcileSettlementReceipts(rows: Purchase[], activeReceipts?: Set<string>): { rows: Purchase[]; removed: number };
 export function settlementReplacements(rows: Purchase[]): Record<string, string>;
+export function fiscalIdentity(parts: Array<string | undefined>): string | undefined;
+export function readYandexFiscalId(url: unknown): string | undefined;

@@ -10,6 +10,24 @@ test('точные копейки, ноль и нераспознанная су
 
 const row = (id, extra = {}) => ({ rowId: id, source: 'wildberries', profile: 'personal', date: '2026-01-02', title: 'Товар', amount: '100.00', currency: 'RUB', marketplace_id: id, ...extra });
 
+test('Yandex refresh preserves an annotated fiscal line when the receipt URL and order association change', () => {
+  const previous = row('saved-id', { source: 'yandex', receipt_url: 'https://check.yandex.ru/?fn=1&n=2&fpd=3',
+    item_index: '1', parse_quality: 'complete', note: 'Сохранённая заметка', yandex_order_id: '123456' });
+  const refreshed = row('provider-id', { ...previous, rowId: 'provider-id', receipt_url: 'https://check.yandex.ru/?n=02&fpd=3&fn=1',
+    note: undefined, yandex_order_id: '' });
+  delete refreshed.note;
+  const neighbour = row('another-line', { ...previous, rowId: 'another-line', item_index: '2' });
+  const otherProfile = row('work-id', { ...previous, rowId: 'work-id', profile: 'work' });
+  const existing = [previous, neighbour, otherProfile];
+  const merged = mergeCollection(existing, [refreshed], { source: 'yandex' });
+  assert.deepEqual(merged.map(item => item.rowId), ['another-line', 'work-id', 'saved-id']);
+  assert.equal(merged.at(-1).note, previous.note);
+  assert.equal(merged.at(-1).yandex_order_id, '');
+  assert.deepEqual(mergeCollection(merged, [refreshed], { source: 'yandex' }), merged);
+  const weakRefresh = { ...refreshed, parse_quality: 'fallback', title: 'Не удалось прочитать позиции' };
+  assert.deepEqual(mergeCollection(merged, [weakRefresh], { source: 'yandex', processedReceipts: [weakRefresh.receipt_url] }), merged);
+});
+
 test('возвраты и неполные чеки учитываются, валюты не смешиваются', () => {
   const result = summarize([row('paid'), row('refund', { amount: '-20.10', type: 'refund' }), row('fallback', { amount: '7.01', parse_quality: 'fallback' }), row('gift', { amount: '0.00' }), row('dollar', { currency: 'USD' })]);
   assert.equal(result.net, 8691);

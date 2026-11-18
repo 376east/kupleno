@@ -335,7 +335,7 @@ async function main() {
       return Promise.all((await cache.keys()).map(async key => ({ key: key.url, html: await (await cache.match(key)).text() })));
     }, cacheName);
     const cacheRun = async (refreshReceipts = false, quality = 'complete') => {
-      const started = await command({ action: 'start', source: 'yandex', profile: 'personal', ...(refreshReceipts ? { refreshReceipts: true } : {}) });
+      const started = await command({ action: 'start', source: 'yandex', profile: 'personal', knownOrderIds: ['123456'], ...(refreshReceipts ? { refreshReceipts: true } : {}) });
       assert.equal(started.ok, true, JSON.stringify(started));
       let done;
       for (let attempt = 0; attempt < 300; attempt++) {
@@ -345,6 +345,7 @@ async function main() {
       }
       assert.equal(done.job.status, 'completed', JSON.stringify(done));
       assert.equal(done.job.refreshReceipts === true, refreshReceipts);
+      assert.equal(done.job.knownOrderIds, undefined, 'Known local order numbers are not persisted on the job');
       assert.ok(done.job.result.rows.every(row => row.parse_quality === quality));
       assert.ok(!JSON.stringify(done.job).includes('data-synthetic-fiscal-raw'), 'RAW HTML never enters durable jobs');
       assert.ok(!JSON.stringify(done.job).includes('kupleno-yandex-receipts.invalid'), 'Hashed cache keys never enter durable jobs');
@@ -399,6 +400,8 @@ async function main() {
       { type: 'KUPLENO_OFFSCREEN', action: 'clearReceiptCache' },
       { type: 'KUPLENO_JOB', action: 'clearReceiptCache', source: 'wildberries' },
       { type: 'KUPLENO_JOB', action: 'start', source: 'yandex', profile: 'personal', refreshReceipts: 'true' },
+      { type: 'KUPLENO_JOB', action: 'start', source: 'yandex', profile: 'personal', knownOrderIds: ['invalid'] },
+      { type: 'KUPLENO_JOB', action: 'start', source: 'ozon', profile: 'personal', knownOrderIds: ['123456'] },
       { type: 'KUPLENO_JOB', action: 'start', source: 'wildberries', profile: 'personal', refreshReceipts: true }
     ]) assert.notEqual(await page.evaluate(message => chrome.runtime.sendMessage(message).then(result => result?.ok, () => false), message), true, 'Untrusted or invalid cache/force command rejected');
     assert.deepEqual(await cacheEntries(), beforeUntrustedClear);

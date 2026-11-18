@@ -40,6 +40,8 @@ browser.runtime.onMessage.addListener((message, sender, reply) => {
   if (message.action !== 'run' || !message.job?.id) { reply({ ok: false }); return; }
   const job = message.job as Job;
   if (job.source !== 'ozon' && job.source !== 'yandex') { reply({ ok: false }); return; }
+  const knownOrderIds = readUnresolvedOrderIds(message.knownOrderIds);
+  if (message.knownOrderIds !== undefined && (job.source !== 'yandex' || !knownOrderIds)) { reply({ ok: false }); return; }
   if (tasks.has(job.id)) { reply({ ok: true }); return; }
   if ([...tasks.values()].some(task => task.source === job.source)) { reply({ ok: false }); return; }
   const controller = new AbortController();
@@ -102,7 +104,7 @@ browser.runtime.onMessage.addListener((message, sender, reply) => {
     },
   };
   let lastDiagnostics: CollectionResult['stats'] | undefined;
-  const task = job.source === 'ozon' ? collectOzon({ ...options, readPdf }) : collectYandex({ ...options, context: message.context, onDiagnostics: stats => { lastDiagnostics = { ...stats }; } });
+  const task = job.source === 'ozon' ? collectOzon({ ...options, readPdf }) : collectYandex({ ...options, context: message.context, knownOrderIds, onDiagnostics: stats => { lastDiagnostics = { ...stats }; } });
   void task.then(result => {
     if (result.unresolvedOrderIds !== undefined && !readUnresolvedOrderIds(result.unresolvedOrderIds)) throw new Error('Некорректные ссылки на заказы.');
     for (const ids of [result.failedDocumentOrderIds, result.failedReceiptOrderIds]) {

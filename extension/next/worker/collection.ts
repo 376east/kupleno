@@ -292,6 +292,8 @@ async function handle(command: Command): Promise<JobResponse> {
   if (!Object.hasOwn(SOURCES, command.source)) return { ok: false, error: 'Неизвестный магазин.' };
   if (typeof command.profile !== 'string' || !command.profile || command.profile.length > 120) return { ok: false, error: 'Выберите профиль для сбора.' };
   if ('refreshReceipts' in command && (command.source !== 'yandex' || typeof command.refreshReceipts !== 'boolean')) return { ok: false, error: 'Некорректный режим чтения чеков.' };
+  const knownOrderIds = command.source === 'yandex' ? readUnresolvedOrderIds(command.knownOrderIds) : undefined;
+  if ('knownOrderIds' in command && !knownOrderIds) return { ok: false, error: 'Некорректные номера сохранённых заказов.' };
   const job: Job = { id: crypto.randomUUID(), source: command.source, profile: command.profile, ...(command.refreshReceipts === true ? { refreshReceipts: true } : {}), status: 'running', startedAt: new Date().toISOString(), updatedAt: new Date().toISOString(), message: `Подключаем ${SOURCES[command.source].name}…`, progress: { done: 0, total: 0 } };
   // Reserve this source before opening a tab; other sources can start immediately.
   await persist(job.source, previous => {
@@ -309,7 +311,7 @@ async function handle(command: Command): Promise<JobResponse> {
     } else {
       await ensureOffscreen();
       controller.signal.throwIfAborted();
-      const reply = await withDeadline(browser.runtime.sendMessage({ type: 'KUPLENO_OFFSCREEN', action: 'run', job: active, context }), 'Обработчик чеков не ответил за 30 секунд. Повторите сбор.');
+      const reply = await withDeadline(browser.runtime.sendMessage({ type: 'KUPLENO_OFFSCREEN', action: 'run', job: active, context, knownOrderIds }), 'Обработчик чеков не ответил за 30 секунд. Повторите сбор.');
       if (!reply?.ok) throw new Error('Обработчик чеков занят. Повторите сбор.');
       running.delete(job.id);
     }

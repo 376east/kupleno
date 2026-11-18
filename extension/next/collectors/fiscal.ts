@@ -1,16 +1,11 @@
 import type { FiscalPayment } from '../model';
-import { moneyMinor } from '../domain.mjs';
+import { fiscalIdentity, moneyMinor, readYandexFiscalId } from '../domain.mjs';
 
 const paymentLabels = /^(наличными|безналичными|электронными|аванс|зач[её]т предварительной оплаты|кредит|встречное предоставление)\s*:?$/i;
 const offsetLabels = /^(аванс|зач[её]т предварительной оплаты)/i;
 const unsupportedLabels = /^(кредит|встречное предоставление)/i;
 const operation = /^(Приход|Возврат\s+прихода|Расход|Возврат\s+расхода)$/i;
 const payout = /^(Возврат\s+прихода|Расход)$/i;
-
-function identity(parts: Array<string | undefined>): string | undefined {
-  if (parts.some(part => !part || !/^\d{1,20}$/.test(part))) return undefined;
-  return parts.map(part => part!.replace(/^0+(?=\d)/, '')).join(':');
-}
 
 function fiscalPayment(id: string | undefined, date: string, kind: string, total: number | null, components: Array<[string, string | undefined]>): FiscalPayment | undefined {
   if (!id || !/^\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2})?$/.test(date) || !operation.test(kind) || total === null || !components.length) return undefined;
@@ -45,7 +40,7 @@ export function readOzonPayment(text: string, date: string): FiscalPayment | und
   const fields = [/^\s*ФН[ \t]*:[ \t]*(?:\r?\n[ \t]*)?(\d+)[ \t]*$/mi,
     /^\s*ФД[ \t]*:[ \t]*(?:\r?\n[ \t]*)?(\d+)[ \t]*$/mi,
     /^\s*ФПД[ \t]*:[ \t]*(?:\r?\n[ \t]*)?(\d+)[ \t]*$/mi];
-  const id = identity(fields.map(field => text.match(field)?.[1]));
+  const id = fiscalIdentity(fields.map(field => text.match(field)?.[1]));
   const kind = lines.slice(0, totalIndex).find(line => operation.test(line)) || '';
   const components: Array<[string, string | undefined]> = [];
   for (let index = totalIndex + 1; index < lines.length; index++) {
@@ -67,11 +62,8 @@ export function readYandexPayment(html: string, url: string, date: string): Fisc
   const plain = receiptText(html);
   const kind = plain.match(/Кассовый\s+чек[.\s]*(Возврат\s+прихода|Приход)(?:\s|$)/i)?.[1] || '';
   const fields = [/(?:^|\s)ФН\s*:\s*(\d+)/i, /(?:^|\s)ФД\s*:\s*(\d+)/i, /(?:^|\s)ФП(?:Д)?\s*:\s*(\d+)/i];
-  const id = identity(fields.map(field => plain.match(field)?.[1]));
-  if (!id) return undefined;
-  let query: URLSearchParams;
-  try { query = new URL(url).searchParams; } catch { return undefined; }
-  if (identity(['fn', 'n', 'fpd'].map(key => query.get(key) ?? undefined)) !== id) return undefined;
+  const id = fiscalIdentity(fields.map(field => plain.match(field)?.[1]));
+  if (!id || readYandexFiscalId(url) !== id) return undefined;
   const table = [...html.matchAll(/<tr\b[\s\S]*?<\/tr>/gi)].map(([row]) =>
     [...row.matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/gi)].map(cell => receiptText(cell[1]!)));
   const total = moneyMinor(table.find(cells => cells.some(cell => /^ИТОГО?\s*:?$/i.test(cell)))?.at(-1));
@@ -86,7 +78,7 @@ export function readWildberriesPayment(html: string, date: string, currency: str
   const fields = [...html.matchAll(/<div\s+class="property-name[^"]*"[^>]*>([^<]*)<\/div>\s*<div\s+class="property-value[^"]*"[^>]*>([^<]*)<\/div>/gi)]
     .map(([, label, value]) => [receiptText(label!), receiptText(value!)] as [string, string]);
   const field = (label: RegExp) => fields.find(([name]) => label.test(name))?.[1];
-  const id = identity([/^№\s*ФН$/i, /^№\s*ФД$/i, /^ФПД$/i].map(field));
+  const id = fiscalIdentity([/^№\s*ФН$/i, /^№\s*ФД$/i, /^ФПД$/i].map(field));
   const total = moneyMinor(field(/^ИТОГО?\s*:?$/i));
   return fiscalPayment(id, date, receiptText(heading || ''), total, fields.filter(([name]) => paymentLabels.test(name)));
 }

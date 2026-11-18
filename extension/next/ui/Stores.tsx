@@ -3,7 +3,7 @@ import { browser } from 'wxt/browser';
 import { formatMoney, SOURCES, sourceHealth, sourceOf } from '../domain.mjs';
 import { storeOrigins, type Command, type Job, type JobResponse } from '../collection';
 import { settingsWithDefaults } from '../preferences.mjs';
-import { applyCollectionResult } from '../collection-state';
+import { applyCollectionResult, knownYandexOrderIds } from '../collection-state';
 import type { Purchase, State, Source } from '../model';
 import { StoreMark, Dialog, operationCount } from './components';
 import { clearSource } from '../source-data';
@@ -94,7 +94,8 @@ export function Stores({ state, rows, update, onSelect }: { state: State; rows: 
         if (!granted && !await browser.permissions.contains(permissionsFor([source]))) {
           throw new Error(permissionError || `Доступ к ${SOURCES[source].name} не предоставлен. Повторите сбор и разрешите доступ в диалоге браузера.`);
         }
-        const result = await command({ type: 'KUPLENO_JOB', action: 'start', source, profile, ...(refreshReceipts ? { refreshReceipts: true } : {}) });
+        const knownOrderIds = source === 'yandex' ? knownYandexOrderIds(state, profile) : [];
+        const result = await command({ type: 'KUPLENO_JOB', action: 'start', source, profile, ...(refreshReceipts ? { refreshReceipts: true } : {}), ...(knownOrderIds.length ? { knownOrderIds } : {}) });
         if (alive.current) setJobs(value => [...value.filter(job => job.source !== source), ...readJobs(result).filter(job => job.source === source)]);
       } catch (e) { if (alive.current) setErrors(value => ({ ...value, [source]: e instanceof Error ? e.message : 'Сбор не запущен.' })); }
       finally { startingRef.current.delete(source); if (alive.current) setStarting([...startingRef.current]); }
@@ -135,7 +136,7 @@ export function Stores({ state, rows, update, onSelect }: { state: State; rows: 
       const status = starting.includes(source) ? 'Подключаем магазин…'
         : running ? progressText.charAt(0).toLocaleUpperCase('ru') + progressText.slice(1)
         : active?.status === 'completed' ? saving ? 'Сохраняем покупки…' : 'Покупки собраны. Ожидают сохранения.'
-        : failure ? 'Сбор не завершён.' : success[source] || (health.state === 'partial' ? 'История собрана частично.' : 'Не запущен');
+        : failure ? 'Сбор не завершён.' : health.state === 'partial' ? 'История собрана частично.' : success[source] || 'Не запущен';
       return <section className="panel store-panel" key={source}><StoreMark source={source} /><div className="store-summary"><h2>{info.name}</h2><p>{purchases.length ? `${operationCount(purchases.length)} в истории` : 'История ещё не загружена'}</p><div className="store-status" role="status">{status}</div><progress className="store-meter" aria-label={`Ход сбора ${info.name}`} aria-hidden={!running} data-active={running || undefined} value={running ? active.progress.total ? active.progress.done : undefined : 0} max={active?.progress.total || 1} /></div><div className="row-actions"><button className="primary" disabled={!canCollect || blocked} onClick={() => void start([source])}>Обновить покупки</button>{source === 'yandex' && canCollect && purchases.length > 0 && !running && <button className="secondary" disabled={blocked} title="Заново скачать чеки из магазина" onClick={() => void start([source], true)}>Перечитать чеки</button>}{running ? <button className="secondary" onClick={() => void command({ type: 'KUPLENO_JOB', action: 'cancel', id: active.id }).then(result => setJobs(value => value.map(job => job.id === active.id ? readJobs(result).find(next => next.id === job.id) || job : job))).catch(e => setErrors(value => ({ ...value, [source]: String(e) })))}>Остановить сбор</button> : <a className="action" href={info.url} target="_blank" rel="noreferrer">Чеки в магазине ↗</a>}{running ? <button className="quiet" onClick={() => void copyDiagnostics(source)}>Скопировать сведения</button> : <button className="quiet" disabled={!canCollect || !purchases.length || clearBusy || blocked} onClick={() => { setError(''); setClearing(source); }}>Удалить историю</button>}</div>
         {!!payments?.count && <div className="store-details">
           <p><strong>{formatMoney(payments.net)}</strong> · оплачено с учётом возвратов</p>

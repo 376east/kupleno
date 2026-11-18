@@ -3,6 +3,7 @@ import { readUnresolvedOrderIds, readYandexOrdersDomResult, readYandexDocumentsR
 import type { Purchase } from '../model';
 import { parseYandexReceipt } from './yandex.ts';
 import { readYandexPayment } from './fiscal.ts';
+import { readYandexFiscalId } from '../domain.mjs';
 import { mapConcurrent } from './pool.ts';
 import type { YandexReceiptCacheSession } from './yandex-receipt-cache.ts';
 
@@ -13,6 +14,7 @@ const orderResolvers = ['src/resolvers/orders/resolveConsolidationOrders/index:r
 const receiptResolver = 'src/resolvers/orderDocuments/resolveOrderReceiptsByOrderId:resolveOrderReceiptsByOrderId';
 const object = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const array = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
+type Receipt = { id: string; url: string; orderId: string; type: string; date?: string };
 const cap = (size: number) => { if (size > 100000) throw Object.assign(new Error('В сборе больше 100 000 операций.'), { code: 'ROW_LIMIT_EXCEEDED' }); };
 // listErrorCode is the one-based position here; zero means unrecognised or absent.
 const knownResolverCodes = ['RESOLVER_NOT_FOUND', 'NOT_FOUND', 'FORBIDDEN', 'UNAUTHORIZED', 'TOO_MANY_REQUESTS', 'INTERNAL_SERVER_ERROR', 'TIMEOUT'];
@@ -99,7 +101,7 @@ function safeReceipt(value: string) {
   if (url.protocol !== 'https:' || url.hostname !== 'check.yandex.ru' || url.username || url.password) throw new Error('Неподдерживаемая ссылка на чек Яндекс Маркета.');
   return url.href;
 }
-export async function collectYandex(options: { fetch: typeof fetch; signal?: AbortSignal; onProgress?: (p: { done: number; total: number; message: string }) => void | Promise<void>; context?: YandexContext; onDiagnostics?: (stats: Record<string, number | boolean>) => void; readOrdersDom?: () => Promise<YandexOrdersDomResult>; readOrderDocuments?: (orderId: string) => Promise<YandexDocumentsResult>; receiptCache?: YandexReceiptCacheSession }): Promise<CollectionResult> {
+export async function collectYandex(options: { fetch: typeof fetch; signal?: AbortSignal; onProgress?: (p: { done: number; total: number; message: string }) => void | Promise<void>; context?: YandexContext; knownOrderIds?: string[]; onDiagnostics?: (stats: Record<string, number | boolean>) => void; readOrdersDom?: () => Promise<YandexOrdersDomResult>; readOrderDocuments?: (orderId: string) => Promise<YandexDocumentsResult>; receiptCache?: YandexReceiptCacheSession }): Promise<CollectionResult> {
   const startedAt = Date.now();
   const timings = { listingElapsedMs: 0, metadataElapsedMs: 0, documentFallbackElapsedMs: 0, receiptFetchElapsedMs: 0, elapsedMs: 0 };
   type Stage = Exclude<keyof typeof timings, 'elapsedMs'>;
@@ -129,9 +131,22 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
     providerLiveSkResponses: 0, providerContextSkResponses: 0, providerContextSkUsedResponses: 0, transientRetries: 0, transientExhausted: 0, requestTimeoutResponses: 0, listErrorCode: 0, listErrorHttpStatus: 0, domFallbackAttempts: 0, domFallbackSteps: 0, domFallbackOrdersAdded: 0, domFallbackClicks: 0, domFallbackBlocked: 0, domFallbackLimits: 0, missingReceiptRecords: 0, missingFiscalUrlFields: 0, emptyFiscalUrls: 0, invalidFiscalUrlTypes: 0,
     domReceiptOrdersAttempted: 0, domReceiptUrlsAdded: 0, domReceiptBlocked: 0, domReceiptCompleteDialogs: 0, domReceiptLimits: 0, cachedReceipts: 0, receiptNetworkRequests: 0, cacheReadErrors: 0, cacheWriteErrors: 0,
     receiptForbiddenErrors: 0, receiptRateLimitErrors: 0, receiptHttpErrors: 0, receiptTimeoutErrors: 0, receiptNetworkErrors: 0, receiptParseErrors: 0, receiptOversizeErrors: 0, receiptRedirectErrors: 0,
-    domReceiptNavigationWaits: 0, domReceiptButtonWaits: 0, domReceiptDialogWaits: 0, domReceiptLoadingWaits: 0, domReceiptErrorWaits: 0, domReceiptUnrecognizedWaits: 0, domReceiptRequestErrors: 0 };
+    domReceiptNavigationWaits: 0, domReceiptButtonWaits: 0, domReceiptDialogWaits: 0, domReceiptLoadingWaits: 0, domReceiptErrorWaits: 0, domReceiptUnrecognizedWaits: 0, domReceiptRequestErrors: 0,
+    listedOrders: 0, knownOrdersAdded: 0 };
   const pagination = { lastPageItems: 0, lastPageIds: 0, lastPageNewIds: 0, lastPageHasNextKnown: false, lastPageHasNext: false, lastPageCursorPresent: false, lastPageCursorMatchesRequest: false, repeatedCursor: false };
-  const receipts = new Map<string, { id: string; url: string; orderId: string; type: string; date?: string }>();
+  const receipts = new Map<string, Receipt & { orderIds: Set<string> }>();
+  const addReceipt = (receipt: Receipt): boolean => {
+    const key = readYandexFiscalId(receipt.url) || receipt.url;
+    const existing = receipts.get(key);
+    if (existing) {
+      existing.orderIds.add(receipt.orderId);
+      if (existing.orderIds.size > 1) existing.orderId = '';
+      return false;
+    }
+    receipts.set(key, { ...receipt, orderIds: new Set([receipt.orderId]) });
+    cap(receipts.size);
+    return true;
+  };
   const failedDocumentOrderIds = new Set<string>(), failedReceiptOrderIds = new Set<string>();
   let checked = 0, failedReceipts = 0, metadataStopped = false, hasMetadataFatal = false;
   let metadataFatal: unknown, metadataStopError: unknown;
@@ -309,6 +324,18 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
     warnings.push('Яндекс Маркет: полнота списка в магазине не подтверждена.');
   }
   if (listingFailed && !orderIds.size) throw new Error('Яндекс Маркет: список заказов не прочитан.');
+  diagnostics.listedOrders = orderIds.size;
+  const knownOrderIds = readUnresolvedOrderIds(options.knownOrderIds) || [];
+  // A current match is required before checking old orders through the same receipt resolver.
+  if (!diagnostics.domFallbackBlocked && knownOrderIds.some(id => orderIds.has(id))) {
+    for (const id of knownOrderIds) orderIds.add(id);
+    cap(orderIds.size);
+    diagnostics.knownOrdersAdded = orderIds.size - diagnostics.listedOrders;
+    if (diagnostics.knownOrdersAdded) {
+      incomplete = true;
+      warnings.push(`Яндекс Маркет: ранее сохранённых заказов вне текущего списка магазина — ${diagnostics.knownOrdersAdded}.`);
+    }
+  }
   finishStage('metadataElapsedMs');
   const states = [...orderIds].map(orderId => ({ orderId, found: false, emptyLists: 0, done: false,
     validIds: new Set<string>(), unresolved: new Map<string, 'record' | 'field' | 'empty' | 'type' | 'unsafe'>(), errors: [] as unknown[] }));
@@ -359,9 +386,9 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
               try { url = safeReceipt(receipt.fiscalUrl); }
               catch { if (!state.validIds.has(id)) state.unresolved.set(id, 'unsafe'); continue; }
               const created = typeof receipt.createdAt === 'number' ? new Date(receipt.createdAt < 1e12 ? receipt.createdAt * 1000 : receipt.createdAt) : null;
-              receipts.set(url, { id: String(receipt.id || receiptId), url, orderId: state.orderId, type: String(receipt.type || ''), date: created && Number.isFinite(created.valueOf()) ? created.toISOString() : undefined });
+              addReceipt({ id: String(receipt.id || receiptId), url, orderId: state.orderId, type: String(receipt.type || ''), date: created && Number.isFinite(created.valueOf()) ? created.toISOString() : undefined });
               state.validIds.add(id); state.unresolved.delete(id);
-              state.found = true; cap(receipts.size);
+              state.found = true;
             }
           } catch (error) {
             if (options.signal?.aborted || object(error).code === 'ROW_LIMIT_EXCEEDED' || globalApiFailure(error)) throw error;
@@ -427,7 +454,7 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
         }
         for (const value of result.urls) {
           const url = safeReceipt(value);
-          if (!receipts.has(url)) { receipts.set(url, { id: '', url, orderId: state.orderId, type: '' }); diagnostics.domReceiptUrlsAdded++; cap(receipts.size); }
+          if (addReceipt({ id: '', url, orderId: state.orderId, type: '' })) diagnostics.domReceiptUrlsAdded++;
         }
         await options.onProgress?.({ done: ++done, total: pending.length, message: `Яндекс Маркет: проверены документы ${done} из ${pending.length} заказов.` });
       } catch (error) {
@@ -502,7 +529,7 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
     } catch (e) {
       if (options.signal?.aborted || object(e).code === 'ROW_LIMIT_EXCEEDED') throw e;
       diagnostics[object(e).name === 'TimeoutError' ? 'receiptTimeoutErrors' : failureCounter]++;
-      if (receipt.orderId) failedReceiptOrderIds.add(receipt.orderId);
+      for (const orderId of receipt.orderIds) failedReceiptOrderIds.add(orderId);
       failedReceipts++; incomplete = true;
     }
     await options.onProgress?.({ done: ++done, total: receipts.size, message: `Яндекс Маркет: прочитано ${done} из ${receipts.size} чеков.` });
