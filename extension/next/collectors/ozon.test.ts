@@ -24,6 +24,16 @@ test('reconciles only proven same-order prepayment/final pair', () => {
   assert.equal(oneFinal.rows.length, 2);
 });
 
+test('reads a split fiscal total and the preliminary payment label', () => {
+  const receipt = { id: 'fixture', url: 'https://ozon.test/fixture' };
+  const text = 'Предварительная оплата\n1. Набор для разбитого сердца\n1 x 120,00 ≡120,00\nИТОГ\n≡120,00';
+  const [row] = parseOzonReceipt(text, receipt);
+  assert.equal(row?.amount, '120.00');
+  assert.equal(row?.parse_quality, 'complete');
+  assert.equal(row?.ozon_settlement_kind, 'prepayment');
+  assert.equal(parseOzonReceipt(text.replace('ИТОГ\n≡120,00', 'ИТОГ\n≡121,00'), receipt)[0]?.amount, '121.00');
+});
+
 test('preserves unknown settlement rows without guessing a prepayment', () => {
   const row = (kind: string, id: string, index: string) => ({ rowId: '', source: 'ozon', date: '2026-01-01', title: 'Товар', amount: '100.00', marketplace_id: id, ozon_order_id: 'ORDER-1', item_index: index, ozon_settlement_kind: kind, type: 'purchase' });
   const result = reconcileOzonReceipts([row('unknown', 'early-a', '1'), row('unknown', 'early-b', '2'), row('full', 'final', '1')]);
