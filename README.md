@@ -2,13 +2,13 @@
 
 [![CI](https://github.com/376east/kupleno/actions/workflows/ci.yml/badge.svg?branch=master&event=push)](https://github.com/376east/kupleno/actions/workflows/ci.yml) [![Stack](https://img.shields.io/badge/Stack-WXT%20%C2%B7%20React-555?style=flat)](extension/next/package.json)
 
-**[Инструкция по установке](docs/PREVIEW.md#запуск)** · [Архивный ZIP 0.18.2](https://github.com/376east/kupleno/releases/tag/v0.18.2)
+**[Скачать Куплено 0.22.15](https://github.com/376east/kupleno/releases/download/v0.22.15-preview.1/kupleno-extension.zip)** · [Инструкция по установке](docs/PREVIEW.md#запуск)
 
 Покупки, возвраты и чеки Ozon, Wildberries и Яндекс Маркета в одном журнале. Данные хранятся в браузере.
 
 ## Установка
 
-Текущая версия собирается из папки `extension/next` и устанавливается в Chrome или Edge как распакованное расширение. Для сбора истории нужно войти в магазин в том же браузере. Для знакомства с журналом можно импортировать JSON или CSV.
+Распакуйте ZIP и загрузите папку расширения в режиме разработчика Chrome или Edge. Для сбора истории войдите в магазин в том же браузере. Для знакомства с журналом можно импортировать JSON или CSV.
 
 Перед обновлением экспортируйте резервную копию. Сохраняйте установленную папку расширения, чтобы сохранить доступ к локальной базе. [Резервные копии и данные](docs/PREVIEW.md#данные)
 
