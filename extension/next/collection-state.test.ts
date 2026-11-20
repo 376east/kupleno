@@ -8,11 +8,30 @@ import { parseBackup, serializeBackup } from './storage.mjs';
 import { summarizeFiscalPayments } from './fiscal-payments.mjs';
 import { clearSource } from './source-data.ts';
 import { sourceHealth } from './domain.mjs';
+import { removeProfile } from './preferences.mjs';
 
 const empty = (): State => ({ rows: [], settings: {}, metadata: {} });
 const job = (source: Source): Job => ({ id: `${source}-job`, source, profile: 'personal', status: 'completed', startedAt: '2026-01-01', updatedAt: '2026-01-01', message: '', progress: { done: 1, total: 1 }, result: {
   rows: [{ rowId: source, source, title: source, date: '2026-01-01', amount: '100.00', marketplace_id: source }], stats: { receipts: 1 }, warnings: []
 } });
+
+test('a job started before a profile merge refreshes the same receipt without duplicating history', () => {
+  const completed = { ...job('yandex'), profile: 'work' };
+  const receipt = { ...completed.result!.rows[0]!, profile: 'work', receipt_url: 'https://check.yandex.ru/?fn=1&n=2&fpd=3',
+    parse_quality: 'complete', item_index: '1', yandex_order_id: '123456' };
+  const state: State = { ...empty(), rows: [receipt], settings: {
+    profiles: ['personal', 'work', 'family'].map(id => ({ id, name: id })),
+    dataProfile: 'family', overrides: { [receipt.rowId]: { note: 'Сохранить заметку' } },
+  } };
+  const before = parseBackup(serializeBackup(removeProfile(state, 'work'))).state;
+  completed.result!.rows = [receipt];
+  const after = applyCollectionResult(before, completed);
+  assert.deepEqual(after.rows, [{ ...receipt, profile: 'personal' }]);
+  assert.deepEqual(after.settings.overrides, before.settings.overrides);
+  assert.equal(after.settings.dataProfile, 'family');
+  assert.deepEqual(knownYandexOrderIds(after, 'personal'), ['123456']);
+  assert.equal(applyCollectionResult(after, completed), after);
+});
 
 test('fiscal payments survive a repeat, partial collection and backup without counting the advance twice', () => {
   const ozon = job('ozon');

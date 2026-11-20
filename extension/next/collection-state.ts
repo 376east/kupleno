@@ -2,7 +2,7 @@ import type { Envelope, Expected, State } from './model';
 import type { Job } from './collection.ts';
 import { readUnresolvedOrderIds } from './collection.ts';
 import { SOURCES, mergeCollection, readYandexFiscalId, sourceOf } from './domain.mjs';
-import { applyCollectionRows, identifyRows } from './preferences.mjs';
+import { applyCollectionRows, identifyRows, settingsWithDefaults } from './preferences.mjs';
 import { isFiscalPaymentList, mergeFiscalPayments } from './fiscal-payments.mjs';
 
 function yandexFiscalIds(rows: State['rows']): Set<string> {
@@ -40,8 +40,11 @@ export function applyCollectionResult(state: State, job: Job): State {
   const failedReceiptOrderIds = result.failedReceiptOrderIds === undefined ? undefined : readUnresolvedOrderIds(result.failedReceiptOrderIds);
   if ((result.failedDocumentOrderIds !== undefined && (job.source !== 'yandex' || !failedDocumentOrderIds))
     || (result.failedReceiptOrderIds !== undefined && (job.source !== 'yandex' || !failedReceiptOrderIds))) throw new Error('Некорректные ссылки на заказы.');
-  const merged = mergeCollection(state.rows, result.rows, { source: job.source, profile: job.profile, processedReceipts: result.processedReceipts });
-  const inProfile = (row: State['rows'][number]) => sourceOf(row) === job.source && (row.profile || 'personal') === job.profile;
+  const { profiles } = settingsWithDefaults(state.settings);
+  // The profile can be merged while the collector still holds the original job.
+  const profile = profiles.find(candidate => candidate.id === job.profile)?.id ?? profiles[0]!.id;
+  const merged = mergeCollection(state.rows, result.rows, { source: job.source, profile, processedReceipts: result.processedReceipts });
+  const inProfile = (row: State['rows'][number]) => sourceOf(row) === job.source && (row.profile || 'personal') === profile;
   const previousRows = state.rows.filter(inProfile);
   const archivedRows = Array.isArray(state.settlementOriginals) ? state.settlementOriginals.filter(inProfile) : [];
   const warnings = [...result.warnings];
