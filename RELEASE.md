@@ -1,6 +1,37 @@
 # Выпуск Куплено
 
-> Этот документ относится к прежней версии 0.19.2. Текущая разработка: [предпросмотр 0.22.0](docs/PREVIEW.md), [план](PLAN.md), [правила участия](AGENTS.md).
+Текущий предпросмотр для Chrome и Edge собирается из [extension/next](extension/next/). [Установка и резервное копирование](docs/PREVIEW.md#запуск).
+
+## Проверка без публикации
+
+Для проверки на GitHub откройте [Build and publish preview](https://github.com/376east/kupleno/actions/workflows/release-candidate.yml). После включения workflow в основную ветку нажмите **Run workflow** и выберите ветку с нужным коммитом. Результат появится в артефакте `kupleno-preview-<run_id>-<run_attempt>`.
+
+Локально используйте Node.js 24 и Python 3.10+.
+
+```sh
+npm ci
+npm --prefix extension/next ci
+npx playwright install chromium
+python scripts/verify-next-release.py --output-dir dist/next-release
+```
+
+Команда запускает проверку типов, тесты, чистую установку в Chromium и сценарии с тестовыми ответами магазинов. Две сборки должны дать одинаковый ZIP. Рядом сохраняются `SHA256SUMS` и `provenance.txt` с версией и SHA исходников.
+
+## Публикация предпросмотра
+
+После проверки конечного коммита возьмите версию из [extension/next/package.json](extension/next/package.json) и создайте аннотированный тег. Пример для `0.22.15`.
+
+```sh
+git tag -a v0.22.15-preview.1 -m "Куплено 0.22.15 preview 1"
+git push origin refs/tags/v0.22.15-preview.1
+```
+
+Новый тег запускает ту же проверку и публикацию GitHub prerelease с `kupleno-extension.zip`, `SHA256SUMS` и `provenance.txt`. Событие обновления или удаления тега пропускается. Для повторной публикации после исправления нужен новый тег с увеличенным номером предпросмотра. Если публикация оставила черновик, проверьте состояние тега и файлов перед ручным завершением черновика.
+
+<details>
+<summary>Процесс выпуска прежней реализации 0.19.2 (архив)</summary>
+
+Следующие команды описывают архивную ветку и прежнюю конфигурацию workflow.
 
 ## Что считается выпуском
 
@@ -76,3 +107,5 @@ npm run verify:release -- vX.Y.Z
 ## Откат
 
 Git-тег и опубликованный asset не изменяются. При ошибке выпуск помечается проблемным, пользователю даётся понятная инструкция, а исправление выходит новой patch-версией. Для распакованной установки сохраняются предыдущий ZIP и backup; полный порядок описан в `docs/DATA_AND_COMPATIBILITY.md`.
+
+</details>

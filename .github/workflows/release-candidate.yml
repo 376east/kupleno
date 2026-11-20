@@ -1,69 +1,77 @@
-name: Build and publish release
+name: Build and publish preview
 
 on:
   push:
-    tags: ['v*']
+    tags: ['v*-preview.*']
   workflow_dispatch:
-    inputs:
-      tag:
-        description: Existing immutable version tag, for example v0.15.0
-        required: true
-        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-candidate-${{ inputs.tag || github.ref_name }}
+  group: preview-release-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   candidate:
-    name: Verify immutable tag and build candidate
-    if: github.event_name == 'push' || github.ref == 'refs/heads/master'
+    name: Verify and package extension/next
+    if: github.event_name == 'workflow_dispatch' || (github.event.created && !github.event.deleted)
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    outputs:
+      artifact: ${{ steps.verify.outputs.artifact }}
+      tag_object: ${{ steps.verify.outputs.tag_object }}
     steps:
-      - name: Checkout requested tag
+      - name: Checkout event commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ inputs.tag || github.ref }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
 
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version-file: .nvmrc
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            extension/next/package-lock.json
 
-      - name: Install locked test tools
-        run: npm ci
+      - name: Install locked preview and test dependencies
+        run: |
+          npm ci
+          npm --prefix extension/next ci
 
       - name: Install test Chromium
         run: npx playwright install --with-deps chromium
 
-      - name: Verify exact annotated tag and release contract
+      - name: Check preview and verify ZIP reproducibility
+        id: verify
         shell: bash
         env:
-          CANDIDATE_TAG: ${{ inputs.tag || github.ref_name }}
-        run: npm run verify:release -- "$CANDIDATE_TAG"
+          EVENT_SHA: ${{ github.event.after }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [[ "$GITHUB_EVENT_NAME" == push ]]; then
+            args=(--tag "$GITHUB_REF_NAME" --event-sha "$EVENT_SHA")
+          fi
+          python3 scripts/verify-next-release.py --output-dir dist/next-release "${args[@]}"
+          printf 'artifact=kupleno-preview-%s-%s\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+          grep '^tag_object=' dist/next-release/provenance.txt >> "$GITHUB_OUTPUT"
 
-      - name: Build release notes
-        shell: bash
-        env:
-          CANDIDATE_TAG: ${{ inputs.tag || github.ref_name }}
-        run: node scripts/release-notes.js "$CANDIDATE_TAG" dist/release-notes.md
-
-      - name: Upload verified candidate artifact
+      - name: Store verified archive
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: kupleno-release-candidate-${{ inputs.tag || github.ref_name }}
-          path: dist/
+          name: ${{ steps.verify.outputs.artifact }}
+          path: dist/next-release/
           if-no-files-found: error
           retention-days: 30
 
   publish:
-    name: Publish verified immutable assets
+    name: Publish verified GitHub prerelease
+    if: github.event_name == 'push'
     needs: candidate
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -71,44 +79,54 @@ jobs:
       actions: read
       contents: write
     steps:
-      - name: Download verified candidate artifact
+      - name: Download verified archive
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          ARTIFACT_NAME: kupleno-release-candidate-${{ inputs.tag || github.ref_name }}
+          ARTIFACT_NAME: ${{ needs.candidate.outputs.artifact }}
         run: gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "$ARTIFACT_NAME" --dir dist
 
-      - name: Publish immutable GitHub Release
+      - name: Publish GitHub prerelease
+        working-directory: dist
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          CANDIDATE_TAG: ${{ inputs.tag || github.ref_name }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          TAG_OBJECT: ${{ needs.candidate.outputs.tag_object }}
         run: |
           set -euo pipefail
+          sha256sum --check SHA256SUMS
+          grep -Fx "tag=$RELEASE_TAG" provenance.txt
+          grep -Fx "tag_object=$TAG_OBJECT" provenance.txt
 
-          if gh release view "$CANDIDATE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "Release $CANDIDATE_TAG already exists; refusing to replace immutable assets." >&2
+          check_tag() {
+            local remote_tag
+            remote_tag=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq .object.sha)
+            if [[ -z "$TAG_OBJECT" || "$remote_tag" != "$TAG_OBJECT" ]]; then
+              echo "Release tag $RELEASE_TAG changed after verification." >&2
+              return 1
+            fi
+          }
+
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $RELEASE_TAG already exists." >&2
             exit 1
           fi
 
-          cleanup_failed_draft() {
-            set +e
-            if [[ "$(gh release view "$CANDIDATE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null)" == "true" ]]; then
-              gh release delete "$CANDIDATE_TAG" --repo "$GITHUB_REPOSITORY" --yes
-            fi
-          }
-          trap cleanup_failed_draft ERR
+          cat > release-notes.md <<EOF
+          Предпросмотр Куплено для Chrome и Edge на Chromium 116 и новее.
 
-          gh release create "$CANDIDATE_TAG" \
+          Распакуйте \`kupleno-extension.zip\` и загрузите папку расширения в режиме разработчика. Перед обновлением экспортируйте резервную копию.
+          [Пошаговая установка]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/blob/$RELEASE_TAG/docs/PREVIEW.md#запуск)
+
+          CI проверяет установку и сбор с тестовыми ответами магазинов. Полнота сбора на ваших аккаунтах зависит от работы магазинов и проверяется отдельно.
+          EOF
+          check_tag
+          gh release create "$RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
-            --verify-tag \
-            --draft \
-            --title "Куплено ${CANDIDATE_TAG#v}" \
-            --notes-file dist/release-notes.md \
-            dist/kupleno-extension.zip \
-            dist/SHA256SUMS \
-            dist/provenance.txt \
-            dist/release-evidence.json
-
-          gh release edit "$CANDIDATE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
-          trap - ERR
+            --verify-tag --draft --prerelease --latest=false \
+            --title "Куплено ${RELEASE_TAG#v}" \
+            --notes-file release-notes.md \
+            kupleno-extension.zip SHA256SUMS provenance.txt
+          check_tag
+          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest=false

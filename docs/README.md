@@ -5,7 +5,6 @@
 Актуальный код находится в `extension/next`. Версия: [package.json](../extension/next/package.json).
 
 - [Запуск, данные и проверки](PREVIEW.md)
-- [Демо на вымышленных покупках](DEMO.md)
 - [План разработки](../PLAN.md)
 - [Правила разработки](../AGENTS.md)
 
