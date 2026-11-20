@@ -100,6 +100,9 @@ export function removeProfile(state, id) {
   settings.profiles = settings.profiles.filter(profile => profile.id !== id);
   const fallback = settings.profiles[0].id;
   next.rows = next.rows.map(row => row.profile === id ? { ...row, profile: fallback } : row);
+  if (Array.isArray(next.settlementOriginals)) {
+    for (const row of next.settlementOriginals) if (row.profile === id) row.profile = fallback;
+  }
   for (const patch of Object.values(settings.overrides)) if (patch.profile === id) patch.profile = fallback;
   for (const key of ['refundClaims', 'warranties']) for (const record of settings[key]) if (record.profile === id) record.profile = fallback;
   for (const key of ['budgets', 'monthClosures', 'recurringDecisions', 'anomalyDismissals']) {

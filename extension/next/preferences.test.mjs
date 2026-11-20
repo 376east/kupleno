@@ -48,6 +48,21 @@ test('удаление профиля переносит связи операц
   assert.equal(source.rows[0].profile, 'work');
 });
 
+test('при объединении профилей архивный чек остаётся доступен для дочитывания заказа', async () => {
+  const { knownYandexOrderIds } = await import('./collection-state.ts');
+  const archived = { ...row, rowId: 'pre', source: 'yandex', profile: 'work', yandex_order_id: '123456',
+    receipt_url: 'https://check.yandex.ru/?fn=1&n=2&fpd=3', future: { keep: true } };
+  const neighbour = { ...archived, rowId: 'other', profile: 'family', yandex_order_id: '234567' };
+  const source = { rows: [], settlementOriginals: [archived, neighbour], metadata: {}, settings: {
+    profiles: ['personal', 'work', 'family'].map(id => ({ id, name: id })),
+  } };
+  const merged = parseBackup(serializeBackup(removeProfile(source, 'work'))).state;
+  assert.deepEqual(merged.settlementOriginals, [{ ...archived, profile: 'personal' }, neighbour]);
+  assert.deepEqual(knownYandexOrderIds(merged, 'personal'), ['123456']);
+  assert.deepEqual(knownYandexOrderIds(merged, 'family'), ['234567']);
+  assert.equal(archived.profile, 'work');
+});
+
 test('settlement migrates annotations and purchase links while retaining original backup fields', () => {
   const prepayment = { ...row, rowId: 'pre', receipt_url: 'https://example.test/pre', ozon_order_id: 'order', ozon_settlement_kind: 'prepayment' };
   const final = { ...prepayment, rowId: 'final', receipt_url: 'https://example.test/final', date: '2026-01-02', ozon_settlement_kind: 'full' };
