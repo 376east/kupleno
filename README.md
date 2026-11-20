@@ -1,8 +1,12 @@
 # Куплено
 
-Локальный журнал покупок, возвратов и чеков Ozon, Wildberries и Яндекс Маркета.
+Покупки, возвраты и чеки Ozon, Wildberries и Яндекс Маркета в одном журнале. История хранится в браузере.
 
-<p><a href="#статус-и-ограничения"><img src="https://img.shields.io/static/v1?label=%D0%A1%D1%82%D0%B0%D1%82%D1%83%D1%81&amp;message=%D0%B2+%D1%80%D0%B0%D0%B7%D1%80%D0%B0%D0%B1%D0%BE%D1%82%D0%BA%D0%B5&amp;color=orange&amp;labelColor=555&amp;style=flat" alt="Статус: в разработке"></a> <a href="https://github.com/malyarq/kupleno/actions/workflows/ci.yml"><img src="https://github.com/malyarq/kupleno/actions/workflows/ci.yml/badge.svg?branch=main&amp;event=push" alt="CI"></a> <a href="extension/next/package.json"><img src="https://img.shields.io/static/v1?label=%D0%A1%D1%82%D0%B5%D0%BA&amp;message=React+%C2%B7+WXT&amp;color=blue&amp;labelColor=555&amp;style=flat" alt="Стек: React · WXT"></a> <a href="docs/assets/readme/current-flow.mp4"><img src="https://img.shields.io/static/v1?label=%D0%94%D0%B5%D0%BC%D0%BE&amp;message=00%3A29&amp;color=blue&amp;labelColor=555&amp;style=flat" alt="Демо: 00:29"></a></p>
+**[Установить расширение из исходников](#запуск)** · [Смотреть демо · 29 с](docs/assets/readme/current-flow.mp4)
+
+Текущая версия - preview для Chromium. [ZIP 0.18.2](https://github.com/376east/kupleno/releases/tag/v0.18.2) относится к архивной версии.
+
+<p><a href="#статус-и-ограничения"><img src="https://img.shields.io/static/v1?label=%D0%A1%D1%82%D0%B0%D1%82%D1%83%D1%81&amp;message=%D0%B2+%D1%80%D0%B0%D0%B7%D1%80%D0%B0%D0%B1%D0%BE%D1%82%D0%BA%D0%B5&amp;color=orange&amp;labelColor=555&amp;style=flat" alt="Статус: в разработке"></a> <a href="https://github.com/376east/kupleno/actions/workflows/ci.yml"><img src="https://github.com/376east/kupleno/actions/workflows/ci.yml/badge.svg?branch=master&amp;event=push" alt="CI"></a> <a href="extension/next/package.json"><img src="https://img.shields.io/static/v1?label=%D0%A1%D1%82%D0%B5%D0%BA&amp;message=React+%C2%B7+WXT&amp;color=blue&amp;labelColor=555&amp;style=flat" alt="Стек: React · WXT"></a> <a href="docs/assets/readme/current-flow.mp4"><img src="https://img.shields.io/static/v1?label=%D0%94%D0%B5%D0%BC%D0%BE&amp;message=00%3A29&amp;color=blue&amp;labelColor=555&amp;style=flat" alt="Демо: 00:29"></a></p>
 
 **[Скриншоты](#как-выглядит) · [Возможности](#что-работает) · [Запуск](#запуск) · [Архитектура](#архитектура) · [Ограничения](#статус-и-ограничения) · [Разработка](#разработка)**
 
@@ -44,7 +48,7 @@
 ### Быстрый старт
 
 ```powershell
-git clone https://github.com/malyarq/kupleno.git
+git clone https://github.com/376east/kupleno.git
 cd kupleno
 npm ci
 npm --prefix extension/next ci
@@ -78,14 +82,14 @@ flowchart TB
 | Параметр | Состояние |
 | --- | --- |
 | Стадия | В разработке. [План](PLAN.md). |
-| Версия | 0.22.13, preview. [extension/next/package.json](extension/next/package.json). |
+| Версия | 0.22.15, preview. [extension/next/package.json](extension/next/package.json). |
 | Лицензия | MIT. [LICENSE](LICENSE). |
 
 ### Ограничения
 
-Основная ветка `main` содержит новый предпросмотр **0.22.13**. Старый опубликованный код сохранён тегом [archive/pre-021-20261004](https://github.com/malyarq/kupleno/tree/archive/pre-021-20261004). [Точный откат](docs/PREVIEW.md#откат-основной-ветки).
+Основная ветка `master` содержит текущий предпросмотр **0.22.15**. Старый опубликованный код сохранён тегом [archive/pre-021-20261004](https://github.com/376east/kupleno/tree/archive/pre-021-20261004). [Точный откат](docs/PREVIEW.md#откат-основной-ветки).
 
-- `extension/next` - новый предпросмотр [0.22.13](extension/next/package.json). Его проверяют команды `preview:*`.
+- `extension/next` - новый предпросмотр [0.22.15](extension/next/package.json). Его проверяют команды `preview:*`.
 - `extension` без `next` - архивная реализация. Текущая версия исходников: `0.19.2` (только архив). Её версия хранится в [manifest](extension/manifest.json), а команды `verify:*` и старый выпуск ZIP относятся именно к ней. [Архивная документация](docs/README.md#архив-0192).
 
 Не собирайте новый продукт старым упаковщиком: он намеренно берёт только файлы прежней версии. Публикация кода предпросмотра не означает новый стабильный Release или выпуск в магазине расширений.
@@ -94,17 +98,19 @@ flowchart TB
 
 ## Разработка
 
-[Документация](docs/PREVIEW.md) · [План](PLAN.md) · [Правила](AGENTS.md) · [CI](https://github.com/malyarq/kupleno/actions/workflows/ci.yml)
+[Документация](docs/PREVIEW.md) · [План](PLAN.md) · [Правила](AGENTS.md) · [CI](https://github.com/376east/kupleno/actions/workflows/ci.yml)
 
 <details>
 <summary>Проверки и работа над проектом</summary>
 
 Перед задачей обновите ветки, посмотрите открытые PR/issues, зафиксируйте владельца и границы файлов. Небольшие проверенные изменения коммитьте и отправляйте в отдельную рабочую ветку. Не переписывайте чужую историю. Полные правила - в [AGENTS.md](AGENTS.md).
 
-[Проверки CI](https://github.com/malyarq/kupleno/actions/workflows/ci.yml) доступны участникам репозитория. Команды и охват - в [документации проверок](docs/PREVIEW.md#проверки-и-пробелы).
+[Прогоны CI](https://github.com/376east/kupleno/actions/workflows/ci.yml) доступны на GitHub. Команды и охват - в [документации проверок](docs/PREVIEW.md#проверки-и-пробелы).
 
 [Как записать демо и озвучку](docs/DEMO.md). В опубликованном ролике только вымышленные покупки; личные копии базы не входят в репозиторий.
 
 Сохраняется существующая [лицензия MIT](LICENSE); лицензии зависимостей перечислены в [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) и [файлах предпросмотра](extension/next/public/licenses/).
+
+Проект [37.6 East](https://github.com/376east).
 
 </details>
