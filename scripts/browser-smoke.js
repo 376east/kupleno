@@ -89,7 +89,7 @@ async function main() {
       const url = request.url();
       if (/^https?:/u.test(url)) externalRequests.push(url);
     });
-    await context.route('https://api.github.com/repos/malyarq/kupleno/releases/latest', (route) => route.fulfill({
+    await context.route('https://api.github.com/repos/376east/kupleno/releases/latest', (route) => route.fulfill({
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({ tag_name: `v${manifest.version}` })
@@ -868,7 +868,7 @@ async function main() {
 
     assert.deepEqual(browserErrors, []);
     assert.deepEqual(
-      [...new Set(externalRequests.filter((url) => url !== 'https://api.github.com/repos/malyarq/kupleno/releases/latest'))],
+      [...new Set(externalRequests.filter((url) => url !== 'https://api.github.com/repos/376east/kupleno/releases/latest'))],
       [],
       'чистый запуск не должен обращаться к посторонним адресам'
     );

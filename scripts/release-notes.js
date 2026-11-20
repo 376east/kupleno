@@ -3,7 +3,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const repositoryUrl = 'https://github.com/malyarq/kupleno';
+const repositoryUrl = 'https://github.com/376east/kupleno';
 
 function parseTag(rawTag) {
   const match = /^v?(\d+\.\d+\.\d+)$/.exec(rawTag || '');

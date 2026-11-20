@@ -20,7 +20,7 @@ concurrency:
 jobs:
   candidate:
     name: Verify immutable tag and build candidate
-    if: github.event_name == 'push' || github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' || github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:

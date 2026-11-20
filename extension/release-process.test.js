@@ -89,7 +89,7 @@ assert.match(candidateWorkflow, /publish:\n[\s\S]+?permissions:\n\s+actions: rea
 assert.match(candidateWorkflow, /npm run verify:release/);
 assert.match(candidateWorkflow, /workflow_dispatch:/);
 assert.match(candidateWorkflow, /inputs\.tag \|\| github\.ref_name/);
-assert.match(candidateWorkflow, /github\.event_name == 'push' \|\| github\.ref == 'refs\/heads\/main'/);
+assert.match(candidateWorkflow, /github\.event_name == 'push' \|\| github\.ref == 'refs\/heads\/master'/);
 assert.match(candidateWorkflow, /ref: \$\{\{ inputs\.tag \|\| github\.ref \}\}/);
 assert.match(candidateWorkflow, /gh release view/);
 assert.match(candidateWorkflow, /gh release create/);
@@ -108,7 +108,7 @@ for (const asset of ['kupleno-extension.zip', 'SHA256SUMS', 'provenance.txt', 'r
 const ciWorkflow = read('.github/workflows/ci.yml');
 assert.match(ciWorkflow, /^name: CI/m);
 assert.match(ciWorkflow, /permissions:\n\s+contents: read/);
-assert.match(ciWorkflow, /push:\n\s+branches:\n\s+- main/);
+assert.match(ciWorkflow, /push:\n\s+branches:\n\s+- master\b/);
 assert.match(ciWorkflow, /pull_request:/);
 assert.match(ciWorkflow, /workflow_dispatch:/);
 assert.match(ciWorkflow, /schedule:/);
