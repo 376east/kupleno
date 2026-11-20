@@ -58,7 +58,6 @@ const packageJson = JSON.parse(read('package.json'));
 assert.match(manifest.version, /^\d+\.\d+\.\d+$/);
 assert.equal(packageJson.version, manifest.version);
 assert.match(read('CHANGELOG.md'), new RegExp(`^## ${manifest.version}\\b`, 'm'));
-assert.ok(read('README.md').includes(`Текущая версия исходников: \`${manifest.version}\``));
 assert.ok(read('extension/README.md').includes(`Версия: \`${manifest.version}\``));
 
 const legacyBrandPattern = new RegExp(['market', 'trat'].join('[ _-]?'), 'i');
@@ -82,28 +81,34 @@ for (const workflow of ['.github/workflows/ci.yml', '.github/workflows/release-c
   assert.match(source, /playwright install --with-deps chromium/);
 }
 
-const candidateWorkflow = read('.github/workflows/release-candidate.yml');
-assert.match(candidateWorkflow, /^name: Build and publish release/m);
-assert.match(candidateWorkflow, /^permissions:\n\s+contents: read/m);
-assert.match(candidateWorkflow, /publish:\n[\s\S]+?permissions:\n\s+actions: read\n\s+contents: write/);
-assert.match(candidateWorkflow, /npm run verify:release/);
-assert.match(candidateWorkflow, /workflow_dispatch:/);
-assert.match(candidateWorkflow, /inputs\.tag \|\| github\.ref_name/);
-assert.match(candidateWorkflow, /github\.event_name == 'push' \|\| github\.ref == 'refs\/heads\/master'/);
-assert.match(candidateWorkflow, /ref: \$\{\{ inputs\.tag \|\| github\.ref \}\}/);
-assert.match(candidateWorkflow, /gh release view/);
-assert.match(candidateWorkflow, /gh release create/);
-assert.match(candidateWorkflow, /gh release edit/);
-assert.match(candidateWorkflow, /gh release delete/);
-assert.match(candidateWorkflow, /gh run download/);
-assert.match(candidateWorkflow, /--verify-tag/);
-assert.match(candidateWorkflow, /--draft/);
-assert.match(candidateWorkflow, /--latest/);
-assert.match(candidateWorkflow, /cleanup_failed_draft/);
-assert.match(candidateWorkflow, /refusing to replace immutable assets/);
-for (const asset of ['kupleno-extension.zip', 'SHA256SUMS', 'provenance.txt', 'release-evidence.json']) {
-  assert.ok(candidateWorkflow.includes(`dist/${asset}`), `${asset} must be published from dist/`);
-}
+// The public download describes a published preview. It can lag the source version.
+const rootReadme = read('README.md');
+assert.match(rootReadme, /\[Скачать Куплено (\d+\.\d+\.\d+)\]\(https:\/\/github\.com\/376east\/kupleno\/releases\/download\/v\1-preview\.[1-9]\d*\/kupleno-extension\.zip\)/);
+assert.ok(rootReadme.includes('(docs/PREVIEW.md#запуск)'));
+
+const releaseWorkflow = read('.github/workflows/release-candidate.yml');
+const [candidate, publish] = releaseWorkflow.split(/^  publish:\n/m);
+assert.match(candidate, /^permissions:\n  contents: read$/m);
+assert.doesNotMatch(candidate, /contents:\s*write|gh release/);
+assert.match(candidate, /^    tags: \['v\*-preview\.\*'\]$/m);
+assert.match(candidate, /^  workflow_dispatch:$/m);
+assert.match(candidate, /github\.event\.created && !github\.event\.deleted/);
+assert.match(candidate, /ref: \$\{\{ github\.sha \}\}/);
+assert.match(candidate, /npm --prefix extension\/next ci/);
+assert.match(candidate, /if \[\[ "\$GITHUB_EVENT_NAME" == push \]\]; then\n\s+args=\(--tag "\$GITHUB_REF_NAME" --event-sha "\$EVENT_SHA"\)/);
+assert.match(candidate, /python3 scripts\/verify-next-release\.py --output-dir dist\/next-release/);
+assert.match(candidate, /path: dist\/next-release\//);
+assert.doesNotMatch(releaseWorkflow, /verify:release\b|package-extension\.sh/);
+
+assert.match(publish, /^    if: github\.event_name == 'push'$/m);
+assert.match(publish, /^    needs: candidate$/m);
+assert.match(publish, /^    permissions:\n      actions: read\n      contents: write$/m);
+assert.match(publish, /gh run download .*--name "\$ARTIFACT_NAME"/);
+assert.match(publish, /sha256sum --check SHA256SUMS[\s\S]+gh release create/);
+assert.match(publish, /gh release view[\s\S]+already exists\.[\s\S]+exit 1[\s\S]+gh release create/);
+assert.match(publish, /gh release create[\s\S]+--verify-tag --draft --prerelease --latest=false/);
+assert.match(publish, /kupleno-extension\.zip SHA256SUMS provenance\.txt[\s\S]+gh release edit .*--draft=false --latest=false/);
+assert.doesNotMatch(publish, /gh release (?:delete|upload)/);
 
 const ciWorkflow = read('.github/workflows/ci.yml');
 assert.match(ciWorkflow, /^name: CI/m);

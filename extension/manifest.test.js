@@ -5,7 +5,6 @@ const path = require('node:path');
 const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, 'manifest.json'), 'utf8'));
 const html = fs.readFileSync(path.join(__dirname, 'app.html'), 'utf8');
 const background = fs.readFileSync(path.join(__dirname, 'background.js'), 'utf8');
-const rootReadme = fs.readFileSync(path.join(__dirname, '..', 'README.md'), 'utf8');
 const extensionReadme = fs.readFileSync(path.join(__dirname, 'README.md'), 'utf8');
 const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
 const changelog = fs.readFileSync(path.join(__dirname, '..', 'CHANGELOG.md'), 'utf8');
@@ -13,7 +12,6 @@ const changelog = fs.readFileSync(path.join(__dirname, '..', 'CHANGELOG.md'), 'u
 assert.match(manifest.version, /^\d+\.\d+\.\d+$/);
 assert.equal(packageJson.version, manifest.version);
 assert.match(changelog, new RegExp(`^## ${manifest.version}\\b`, 'm'));
-assert.equal(rootReadme.includes(`Текущая версия исходников: \`${manifest.version}\``), true);
 assert.equal(extensionReadme.includes(`Версия: \`${manifest.version}\``), true);
 assert.deepEqual(manifest.permissions, ['scripting', 'storage', 'unlimitedStorage']);
 assert.deepEqual(manifest.optional_permissions, ['cookies']);
