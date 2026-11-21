@@ -73,46 +73,61 @@ async function closeCollectionTab(job: Job | null) {
   if (url.hostname.replace(/^www\./, '') === expected.hostname.replace(/^www\./, '') && url.pathname.replace(/\/$/, '') === expected.pathname.replace(/\/$/, '')) await browser.tabs.remove(job.marketTabId).catch(() => {});
 }
 
+function readYandexContext(early: boolean) {
+  const ordersPage = location.origin === 'https://market.yandex.ru' && location.pathname === '/my/orders';
+  if (early && (!ordersPage || document.readyState === 'loading')) return null;
+  const html = document.documentElement.innerHTML.replace(/&quot;/g, '"').replace(/&amp;/g, '&');
+  // nosemgrep: detect-non-literal-regexp -- read is scoped to this injected function and called only with fixed header names below.
+  const read = (key: string) => html.match(new RegExp(`"${key}"\\s*:\\s*"([^"\\r\\n]{1,2000})"`))?.[1] || '';
+  let initialOrders: { orderIds: string[]; pageToken: string } | undefined;
+  if (ordersPage) {
+    const ids = new Set<string>();
+    const add = (id: string) => {
+      if (/^\d+$/.test(id) && Number.isSafeInteger(Number(id)) && Number(id) > 0) ids.add(id);
+      if (ids.size > 100000) throw new Error('Слишком много заказов на странице Яндекс Маркета.');
+    };
+    for (const match of html.matchAll(/\/my\/order\/(\d+)/g)) add(match[1]!);
+    for (const match of html.matchAll(/"(?:orderGroupIds|ordersGroupsIds)"\s*:\s*\[([^\]]*)\]/g)) for (const id of match[1]!.match(/\d+/g) || []) add(id);
+    let pageToken = '';
+    const raw = html.match(/"pageToken"\s*:\s*("(?:[^"\\]|\\.)*")/)?.[1];
+    if (raw) try { const value = JSON.parse(raw); if (typeof value === 'string' && value.length <= 8000) pageToken = value; } catch { /* API bootstrap remains available. */ }
+    initialOrders = { orderIds: [...ids], pageToken };
+  }
+  return { sk: read('sk'), version: read('-version') || read('version'), marketFrontGlue: read('marketFrontGlue'), pageId: read('page') || 'market:orders', retpath: location.href, ...(initialOrders ? { initialOrders } : {}) };
+}
+
 async function marketContext(job: Job, controller: AbortController) {
-  const source = job.source;
-  controller.signal.throwIfAborted();
+  const { source } = job;
+  const { signal } = controller;
+  signal.throwIfAborted();
   let tab = await browser.tabs.create({ url: SOURCES[source].url, active: false });
   const ownedId = tab.id;
+  const loadingMessage = `${SOURCES[source].name}: страница ещё загружается. Повторите сбор после загрузки.`;
+  if (ownedId === undefined) throw new Error(loadingMessage);
   try {
-  await persist(job.source, current => current?.id === job.id ? { ...current, marketTabId: ownedId } : current);
-  controller.signal.throwIfAborted();
-  const deadline = Date.now() + 20000;
-  while (tab.status !== 'complete' && Date.now() < deadline) {
-    await new Promise(resolve => setTimeout(resolve, 250));
-    controller.signal.throwIfAborted();
-    tab = await browser.tabs.get(tab.id!);
-  }
-  if (tab.id === undefined || tab.status !== 'complete') throw new Error(`${SOURCES[source].name}: страница ещё загружается. Повторите сбор после загрузки.`);
-  if (source === 'ozon') return { marketTabId: tab.id };
-  if (source !== 'yandex') return { marketTabId: tab.id };
-  const result = await browser.scripting.executeScript({ target: { tabId: tab.id }, func: () => {
-    const html = document.documentElement.innerHTML.replace(/&quot;/g, '"').replace(/&amp;/g, '&');
-    // nosemgrep: detect-non-literal-regexp -- read is scoped to this injected function and called only with fixed header names below.
-    const read = (key: string) => html.match(new RegExp(`"${key}"\\s*:\\s*"([^"\\r\\n]{1,2000})"`))?.[1] || '';
-    let initialOrders: { orderIds: string[]; pageToken: string } | undefined;
-    if (location.origin === 'https://market.yandex.ru' && location.pathname === '/my/orders') {
-      const ids = new Set<string>();
-      const add = (id: string) => {
-        if (/^\d+$/.test(id) && Number.isSafeInteger(Number(id)) && Number(id) > 0) ids.add(id);
-        if (ids.size > 100000) throw new Error('Слишком много заказов на странице Яндекс Маркета.');
-      };
-      for (const match of html.matchAll(/\/my\/order\/(\d+)/g)) add(match[1]!);
-      for (const match of html.matchAll(/"(?:orderGroupIds|ordersGroupsIds)"\s*:\s*\[([^\]]*)\]/g)) for (const id of match[1]!.match(/\d+/g) || []) add(id);
-      let pageToken = '';
-      const raw = html.match(/"pageToken"\s*:\s*("(?:[^"\\]|\\.)*")/)?.[1];
-      if (raw) try { const value = JSON.parse(raw); if (typeof value === 'string' && value.length <= 8000) pageToken = value; } catch { /* API bootstrap remains available. */ }
-      initialOrders = { orderIds: [...ids], pageToken };
-    }
-    return { sk: read('sk'), version: read('-version') || read('version'), marketFrontGlue: read('marketFrontGlue'), pageId: read('page') || 'market:orders', retpath: location.href, ...(initialOrders ? { initialOrders } : {}) };
-  } });
-  return { ...result[0]?.result, marketTabId: tab.id };
+    await persist(source, current => current?.id === job.id ? { ...current, marketTabId: ownedId } : current);
+    const deadline = Date.now() + 20000;
+    do {
+      signal.throwIfAborted();
+      if (source !== 'yandex' && tab.status === 'complete') return { marketTabId: ownedId };
+      const currentUrl = new URL(tab.url || 'about:blank');
+      const ordersPage = currentUrl.origin === 'https://market.yandex.ru' && currentUrl.pathname === '/my/orders';
+      if (source === 'yandex' && !tab.pendingUrl && (tab.status === 'complete' || ordersPage)) {
+        // A slow image or iframe can leave the tab loading after the orders DOM is ready.
+        const early = tab.status !== 'complete';
+        const read = browser.scripting.executeScript({ target: { tabId: ownedId }, func: readYandexContext, args: [early], injectImmediately: early });
+        const result = await withDeadline(early ? read.catch(() => null) : read, loadingMessage, Math.max(1, deadline - Date.now()));
+        signal.throwIfAborted();
+        const context = result?.[0]?.result;
+        if (!early || context) return { ...context, marketTabId: ownedId };
+      }
+      await new Promise(resolve => setTimeout(resolve, 250));
+      signal.throwIfAborted();
+      tab = await browser.tabs.get(ownedId);
+    } while (Date.now() < deadline);
+    throw new Error(loadingMessage);
   } catch (error) {
-    if (ownedId !== undefined) await closeCollectionTab({ source, marketTabId: ownedId } as Job);
+    await closeCollectionTab({ source, marketTabId: ownedId } as Job);
     throw error;
   }
 }

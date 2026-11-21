@@ -223,6 +223,7 @@ async function main() {
     let yandexMode = 'normal', challengeCandidate = '', metadataGate, releaseHumanNavigation, headerPhase = '';
     let domClicks = 0, documentClicks = 0;
     let holdHumanNavigation = false, unsafeNavigations = 0;
+    let holdOrdersImage = false, releaseOrdersImage, readOrdersWhileLoading = false;
     const ozonRequestPages = new Set();
     await context.route('https://www.ozon.ru/**', async route => {
       if (route.request().isNavigationRequest()) return route.fulfill({contentType:'text/html',body:'<html><script>window.fetch = () => new Promise(() => {});</script><body>Receipt page</body></html>'});
@@ -234,6 +235,10 @@ async function main() {
     });
     await context.route('https://market.yandex.ru/**', async route => {
       const url = new URL(route.request().url()); requests.push(url.href);
+      if (url.pathname === '/synthetic-orders-image.png') {
+        await new Promise(resolve => { releaseOrdersImage = resolve; });
+        return route.abort().catch(() => {});
+      }
       if (url.pathname === '/synthetic-document-click') { documentClicks++; return route.fulfill({ json: { ok: true } }); }
       if (url.pathname.startsWith('/my/order/')) return route.fulfill({ contentType: 'text/html; charset=utf-8', body: `<html><button id=docs>Чеки и другие документы</button><script>document.getElementById('docs').onclick=()=>{fetch('/synthetic-document-click');const dialog=document.createElement('div');dialog.setAttribute('role','dialog');dialog.innerHTML='<h2>Документы по заказу</h2><a href="https://check.yandex.ru/doc/purchase">Чек</a><a href="https://check.yandex.ru/doc/delivery">Чек доставки</a><a href="https://market.yandex.ru/document">Подтверждение покупки</a>';document.body.append(dialog);};</script></html>` });
       if (url.pathname === '/synthetic-dom-click') { domClicks++; return route.fulfill({ json: { ok: true } }); }
@@ -242,6 +247,7 @@ async function main() {
         return route.fulfill({ contentType: 'text/html', body: '<html><body><h1>Synthetic human verification page</h1></body></html>' });
       }
       if (url.pathname === '/api/resolve/') {
+        if (holdOrdersImage && releaseOrdersImage) readOrdersWhileLoading ||= await route.request().frame().page().evaluate(() => document.readyState === 'interactive');
         const requestBody = route.request().postDataJSON();
         const receiptRequest = url.searchParams.get('r')?.includes('resolveOrderReceiptsByOrderId');
         assert.equal(requestBody.params.length, 1);
@@ -280,7 +286,8 @@ async function main() {
       const captured = headerPhase && headerPhase !== 'absent' ? '<script id="synthetic-header-context" type="application/json">{"sk":"cached-sk-secret","-version":"cached-version","marketFrontGlue":"cached-glue","page":"market:orders:cached"}</script>' : '';
       if (yandexMode === 'dom-fatal') return route.fulfill({ contentType: 'text/html; charset=utf-8', body: '<html><script type="application/json">{"pageToken":"owned-tab-cursor"}</script><h1>Что-то пошло не так</h1><button>Показать ещё</button></html>' });
       if (yandexMode === 'dom-fallback' || yandexMode === 'dom-stuck') return route.fulfill({ contentType: 'text/html; charset=utf-8', body: `<html><script type="application/json">{"pageToken":"owned-tab-cursor"}</script><button data-route="/my/order/123456">Order</button><button id="more">Показать ещё</button><script>let loaded=0;document.getElementById('more').onclick=()=>{fetch('/synthetic-dom-click');${yandexMode === 'dom-stuck' ? '' : "setTimeout(()=>{const item=document.createElement('button');item.dataset.route='/my/order/'+(loaded===0?'234567':'345678');item.textContent='Order';document.body.append(item);if(++loaded===2)document.getElementById('more').remove();},1100);"}};</script></html>` });
-      return route.fulfill({ contentType: 'text/html', body: '<html>' + (yandexMode === 'transport-list' ? '' : '<a href="/my/order/123456">Order</a>') + '<script type="application/json">{"pageToken":"owned-tab-cursor"}</script>' + captured + '</html>' });
+      const ordersImage = holdOrdersImage ? '<img src="/synthetic-orders-image.png" alt="">' : '';
+      return route.fulfill({ contentType: 'text/html', body: '<html>' + (yandexMode === 'transport-list' ? '' : '<a href="/my/order/123456">Order</a>') + '<script type="application/json">{"pageToken":"owned-tab-cursor"}</script>' + captured + ordersImage + '</html>' });
     });
     await context.route('https://evil.test/**', route => { unsafeNavigations++; return route.fulfill({ contentType: 'text/html', body: '<html>Must not be opened</html>' }); });
     await context.route('https://check.yandex.ru/**', route => route.fulfill({ contentType: 'text/html', body: '<div>01.01.2026 12:00</div><table><tr><td>1</td><td>Книга</td><td>1</td><td>100,00</td></tr><tr><td>ИТОГ</td><td>100,00</td></tr></table>' }));
@@ -355,7 +362,11 @@ async function main() {
     };
     const financial = result => result.rows.map(({ receipt_url, item_index, amount, type, title, rowId }) => ({ receipt_url, item_index, amount, type, title, rowId })).sort((a,b) => a.receipt_url.localeCompare(b.receipt_url));
     assert.equal((await command({ action: 'clearReceiptCache', source: 'yandex' })).ok, true);
-    const cold = await cacheRun();
+    let cold;
+    holdOrdersImage = true;
+    try { cold = await cacheRun(); }
+    finally { holdOrdersImage = false; releaseOrdersImage?.(); }
+    assert.equal(readOrdersWhileLoading, true, 'An unfinished image does not delay Yandex collection after the order document is ready');
     assert.equal(cold.stats.receiptNetworkRequests, 1); assert.equal(cold.stats.cachedReceipts, 0);
     assert.equal((await cacheEntries()).length, 1);
     assert.ok((await cacheEntries())[0].html.includes('data-synthetic-fiscal-raw'));
