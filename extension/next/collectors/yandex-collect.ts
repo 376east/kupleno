@@ -96,7 +96,14 @@ function resultData(payload: unknown, diagnostics: Record<string, number>, index
       else if (!Array.isArray(root.results)) diagnostics.responseResultsMalformed!++;
     }
   }
-  if (!Object.keys(data).length || errors.length) throw Object.assign(new Error('Яндекс Маркет вернул неизвестный формат ответа.'), { resolverCode, resolverHttpStatus, documentsFallback: errors.length > 0 && !restricted });
+  if (!Object.keys(data).length || errors.length) {
+    const code = typeof entry.error === 'string' ? entry.error : object(entry.error).code;
+    const systemicError = !list && !restricted && !root.error && !!entry.error && code !== 'NOT_FOUND'
+      ? typeof code === 'string' && code.length <= 80 ? code : '_' : undefined;
+    throw Object.assign(new Error('Яндекс Маркет вернул неизвестный формат ответа.'), {
+      resolverCode, resolverHttpStatus, documentsFallback: errors.length > 0 && !restricted, systemicError,
+    });
+  }
   return data;
 }
 function safeReceipt(value: string) {
@@ -342,9 +349,8 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
   finishStage('metadataElapsedMs');
   const states = [...orderIds].map(orderId => ({ orderId, found: false, emptyLists: 0, done: false,
     validIds: new Set<string>(), unresolved: new Map<string, 'record' | 'field' | 'empty' | 'type' | 'unsafe'>(), errors: [] as unknown[] }));
-  try {
-    for (const archived of [false, true]) {
-      const pending = states.filter(state => !state.done);
+  let useDocuments = false;
+  const loadMetadata = async (pending: typeof states, archived: boolean) => {
       const batches = pending.map(state => [state]);
       await mapConcurrent(batches, 2, async batch => { try {
         if (metadataStopped) throw metadataStopError;
@@ -422,6 +428,23 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
         else { hasMetadataFatal = true; metadataFatal = error; }
         throw error;
       } }, options.signal);
+  };
+  try {
+    const probe = options.readOrderDocuments && states.length > 4 ? states.slice(0, 4) : [];
+    const uniformError = (attempts: number) => {
+      const signature = object(probe[0]?.errors[0]).systemicError;
+      return signature !== undefined && probe.every(state => !state.found && !state.unresolved.size
+        && state.errors.length === attempts && state.errors.every(error => object(error).systemicError === signature));
+    };
+    await loadMetadata(probe, false);
+    if (uniformError(1)) {
+      await loadMetadata(probe, true);
+      useDocuments = uniformError(2);
+      if (useDocuments) warnings.push('Яндекс Маркет: запросы чеков не работают. Чеки читаются из карточек заказов.');
+    }
+    if (!useDocuments) {
+      await loadMetadata(states.slice(probe.length), false);
+      await loadMetadata(states.filter(state => !state.done), true);
     }
   } catch (error) {
     options.signal?.throwIfAborted();
@@ -435,7 +458,7 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
   finishStage(options.readOrderDocuments && !metadataStopped ? 'documentFallbackElapsedMs' : undefined);
   if (options.readOrderDocuments && !metadataStopped) {
     const savedOrders = new Set(knownOrderIds);
-    const pending = states.filter(state => state.unresolved.size > 0
+    const pending = states.filter(state => useDocuments || state.unresolved.size > 0
       || (!state.found && state.errors.length > 0 && state.errors.every(error => object(error).documentsFallback === true)))
       .sort((a, b) => Number(savedOrders.has(a.orderId)) - Number(savedOrders.has(b.orderId)));
     const started = Date.now();

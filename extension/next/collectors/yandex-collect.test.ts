@@ -113,6 +113,28 @@ test('receipt resolver errors in both passes fall back to the order dialog unles
   assert.equal(result.stats.incomplete, true);
 });
 
+test('four matching errors in both metadata passes move the whole queue to order dialogs', async () => {
+  const ids = Array.from({ length: 10 }, (_, index) => 123456 + index);
+  for (const archiveWorks of [false, true]) {
+    const queried: string[] = [];
+    const result = await collectYandex({ readOrderDocuments: async orderId => {
+      queried.push(orderId);
+      return { urls: [`https://check.yandex.ru/dialog-${orderId}`], complete: true, blocked: false };
+    }, fetch: async (input, init) => {
+      const url = new URL(String(input));
+      if (url.pathname === '/my/orders') return new Response('');
+      if (url.hostname === 'check.yandex.ru') return new Response(`<p>01.01.2026 10:00</p>${receipt}`);
+      if (url.searchParams.get('r')?.includes('resolveConsolidationOrders')) return orderList(ids);
+      const { orderId, archived } = JSON.parse(String(init?.body)).params[0];
+      if (archiveWorks && archived) return envelope({ result: ['r'], collections: { orderReceipt: { r: { fiscalUrl: `https://check.yandex.ru/api-${orderId}` } } } });
+      return Response.json({ results: [{ error: { code: 'UPSTREAM_ERROR' } }] });
+    } });
+    assert.equal(result.stats.receiptMetadataRequests, archiveWorks ? 20 : 8);
+    assert.deepEqual(queried, archiveWorks ? [] : ids.map(String));
+    assert.equal(result.rows.length, ids.length);
+  }
+});
+
 test('dialog duplicate of an API fiscal URL is fetched once while a distinct actual URL is parsed', async () => {
   const fetched: string[] = [];
   const result = await collectYandex({ readOrderDocuments: async () => ({ urls: ['https://check.yandex.ru/same?key=one', 'https://check.yandex.ru/distinct?key=two'], complete: true, blocked: false }), fetch: async input => {
