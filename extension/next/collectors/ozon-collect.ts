@@ -2,6 +2,7 @@ import type { CollectionResult } from '../collection';
 import type { FiscalPayment, Purchase } from '../model';
 import { parseOzonReceipt } from './ozon.ts';
 import { readOzonPayment } from './fiscal.ts';
+import { mapConcurrent } from './pool.ts';
 
 interface Receipt { id: string; url: string; date?: string; orderId?: string }
 const origin = 'https://www.ozon.ru';
@@ -81,6 +82,7 @@ export function ozonList(text: string) {
 }
 
 export async function collectOzon(options: { fetch: typeof fetch; readPdf: (bytes: Uint8Array, signal?: AbortSignal) => Promise<string>; signal?: AbortSignal; onProgress?: (p: { done: number; total: number; message: string }) => void | Promise<void> }): Promise<CollectionResult> {
+  const started = performance.now();
   const receipts = new Map<string, Receipt>(), warnings: string[] = [];
   const diagnostics = {
     unrecognizedListResponses: 0, unrecognizedListJsonResponses: 0, unrecognizedListHtmlResponses: 0,
@@ -145,11 +147,13 @@ export async function collectOzon(options: { fetch: typeof fetch; readPdf: (byte
     }
   }
   if (!receipts.size && (!emptyKnown || incomplete)) throw new Error(warnings[0] || 'Ozon: чеки не найдены. Проверьте вход в магазин.');
-  const rows: Purchase[] = [];
-  const fiscalPayments: FiscalPayment[] = [];
-  let failed = 0, done = 0;
+  const pdfStarted = performance.now();
+  const pending = [...receipts.values()];
+  const collected: Array<{ rows: Purchase[]; payment?: FiscalPayment } | undefined> = [];
+  let failed = 0, done = 0, rowCount = 0, stopped = false;
   const failures = new Map<string, number>();
-  for (const receipt of receipts.values()) {
+  const readReceipt = async (receipt: Receipt, index: number) => {
+    if (stopped) return;
     options.signal?.throwIfAborted();
     try {
       const response = await options.fetch(safeUrl(receipt.url, true), { signal: options.signal, credentials: 'include' });
@@ -162,9 +166,9 @@ export async function collectOzon(options: { fetch: typeof fetch; readPdf: (byte
       const parsed = parseOzonReceipt(text, receipt);
       if (!parsed.length) throw new Error('Сумма и товары в PDF не распознаны');
       if (parsed.some(row => !row.date)) throw new Error('Дата в PDF не распознана');
-      rows.push(...parsed); cap(rows.length);
+      rowCount += parsed.length; cap(rowCount);
       const payment = readOzonPayment(text, parsed[0]!.date);
-      if (payment) fiscalPayments.push(payment);
+      collected[index] = { rows: parsed, payment };
     } catch (e) {
       if (options.signal?.aborted || (e as { code?: string }).code === 'ROW_LIMIT_EXCEEDED') throw e;
       failed++;
@@ -175,13 +179,24 @@ export async function collectOzon(options: { fetch: typeof fetch; readPdf: (byte
       failures.set(reason, (failures.get(reason) || 0) + 1);
       if (/^HTTP 40[13]$/.test(reason)) {
         const message = `Ozon отказал в доступе к PDF (${reason}). Сбор остановлен.`;
-        if (!rows.length) throw new Error(message);
-        incomplete = true; warnings.push(message); break;
+        if (!rowCount) throw new Error(message);
+        if (!stopped) warnings.push(message);
+        stopped = true; incomplete = true;
+        return;
       }
-      if (!rows.length && reason.startsWith('Ozon: ошибка получения PDF') && failures.get(reason)! >= 3) throw new Error(`Ozon: три запроса PDF завершились одной ошибкой. Сбор остановлен. ${reason}`);
+      if (!rowCount && reason.startsWith('Ozon: ошибка получения PDF') && failures.get(reason)! >= 3) throw new Error(`Ozon: три запроса PDF завершились одной ошибкой. Сбор остановлен. ${reason}`);
     }
     await options.onProgress?.({ done: ++done, total: receipts.size, message: `Ozon: обработано ${done} из ${receipts.size} чеков.` });
+  };
+  // Verify access and the PDF transport before starting more than one receipt request.
+  let checked = 0;
+  while (checked < pending.length && !rowCount) {
+    await readReceipt(pending[checked]!, checked);
+    checked++;
   }
+  await mapConcurrent(pending.slice(checked), 2, (receipt, index) => readReceipt(receipt, checked + index), options.signal);
+  const rows = collected.flatMap(result => result?.rows || []);
+  const fiscalPayments = collected.flatMap(result => result?.payment ? [result.payment] : []);
   if (failed) warnings.push(`Ozon: не удалось прочитать ${failed} чеков. Ранее сохранённые операции останутся в истории.`);
   const failureDetails = [...failures].map(([reason, count]) => `${reason}: ${count}`).join('; ');
   if (!rows.length && failed) throw new Error(`${warnings.at(-1)} Причины: ${failureDetails}.${incomplete ? ` ${warnings[0]}` : ''}`);
@@ -191,5 +206,6 @@ export async function collectOzon(options: { fetch: typeof fetch; readPdf: (byte
     incomplete = true;
     warnings.push(`Ozon: у ${unverifiedReceipts} чеков не распознан итог. Суммы товаров требуют проверки.`);
   }
-  return { rows, fiscalPayments, processedReceipts: [...new Set(rows.map(row => row.receipt_url || row.marketplace_id || '').filter(Boolean))], warnings, stats: { receipts: receipts.size, pages, failedReceipts: failed, incomplete, removed: 0, fallbackReceipts: new Set(rows.filter(row => row.parse_quality === 'fallback').map(row => row.marketplace_id)).size, unverifiedReceipts, ...diagnostics } };
+  const finished = performance.now();
+  return { rows, fiscalPayments, processedReceipts: [...new Set(rows.map(row => row.receipt_url || row.marketplace_id || '').filter(Boolean))], warnings, stats: { receipts: receipts.size, pages, failedReceipts: failed, incomplete, removed: 0, fallbackReceipts: new Set(rows.filter(row => row.parse_quality === 'fallback').map(row => row.marketplace_id)).size, unverifiedReceipts, listingElapsedMs: Math.round(pdfStarted - started), receiptFetchElapsedMs: Math.round(finished - pdfStarted), elapsedMs: Math.round(finished - started), ...diagnostics } };
 }

@@ -84,6 +84,42 @@ test('Ozon retains parsed receipts and reports partial PDF failure', async () =>
   assert.equal(result.rows.length, 1); assert.equal(result.stats.failedReceipts, 1); assert.ok(result.warnings.some(text => text.includes('HTTP 500: 1')));
 });
 
+test('Ozon reads two PDFs concurrently after the first success and preserves receipt order', async () => {
+  let releaseSecond!: () => void;
+  const second = new Promise<void>(resolve => { releaseSecond = resolve; });
+  let active = 0, peak = 0;
+  const result = await collectOzon({ fetch: async input => {
+    const url = new URL(String(input));
+    if (!url.pathname.includes('downloadCheque')) return new Response(page(['a', 'b', 'c']));
+    const id = url.searchParams.get('id');
+    peak = Math.max(peak, ++active);
+    try {
+      if (id === 'b') await second;
+      if (id === 'c') releaseSecond();
+      return new Response('pdf');
+    } finally { active--; }
+  }, readPdf });
+  assert.equal(peak, 2);
+  assert.deepEqual(result.processedReceipts?.map(url => new URL(url).searchParams.get('id')), ['a', 'b', 'c']);
+  for (const field of ['listingElapsedMs', 'receiptFetchElapsedMs', 'elapsedMs']) assert.ok(Number.isSafeInteger(result.stats[field]) && Number(result.stats[field]) >= 0);
+});
+
+test('a PDF access denial stops admitting new work after collection has started', async () => {
+  const requested: string[] = [];
+  const result = await collectOzon({ fetch: async input => {
+    const url = new URL(String(input));
+    if (!url.pathname.includes('downloadCheque')) return new Response(page(['a', 'b', 'c', 'd']));
+    const id = url.searchParams.get('id')!;
+    requested.push(id);
+    if (id === 'c') await new Promise(resolve => setTimeout(resolve, 10));
+    return new Response('pdf', { status: id === 'b' ? 403 : 200 });
+  }, readPdf });
+  assert.deepEqual(requested, ['a', 'b', 'c']);
+  assert.equal(result.stats.incomplete, true);
+  assert.equal(result.stats.failedReceipts, 1);
+  assert.equal(result.rows.length, 2);
+});
+
 test('unknown terminal list responses identify each section without declaring the history complete', async () => {
   const result = await collectOzon({ fetch: async input => {
     const url = new URL(String(input));
