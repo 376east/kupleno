@@ -164,7 +164,7 @@ test('unknown Ozon responses expose only structural counters, never response con
 
 test('Ozon accepts the observed metadata-only end only after a matching content page', async () => {
   const metadata = {
-    browser: {}, client: {}, layoutTrackingInfo: '', location: {}, seo: {}, userInfo: { authenticated: true, label: 'private-user' }, shared: '', segments: [],
+    browser: {}, client: {}, layoutTrackingInfo: '', location: {}, seo: {}, userInfo: { authenticated: true, label: 'private-user' }, shared: '',
     pageInfo: { url: '/my/e-check', layoutId: 1, layoutVersion: 2, pageType: 'checks', ruleId: 3, pageTypeTracking: 'checks' },
     pageToken: 'private-cursor', serverTiming: [], userToken: 'private-token', experimentsConfig: {}, requestID: 'private-request', verticalInfo: {}, resolveParams: {}, isPrefetched: false,
   };
@@ -173,18 +173,19 @@ test('Ozon accepts the observed metadata-only end only after a matching content 
     { pageInfo: { ...metadata.pageInfo, url: 'https://example.test/my/e-check' } },
     { pageInfo: { ...metadata.pageInfo, layoutVersion: 999 } },
     { isPrefetched: true }, { userInfo: null }, { userInfo: {} }, { userInfo: { authenticated: false } }, { unexpected: true }, { widgetStates: {} }, { error: true },
+    { segments: {} }, { userToken: undefined },
   ];
-  for (const invalid of [null, ...invalidEnds]) {
+  for (const [overrides, valid] of [[{}, true], [{ segments: [] }, true], ...invalidEnds.map(fields => [fields, false] as const)] as const) {
     const result = await collectOzon({ fetch: async input => {
       const url = new URL(String(input));
       if (url.pathname.includes('downloadCheque')) return new Response('pdf');
-      if (url.pathname.includes('entrypoint')) return new Response(JSON.stringify({ ...metadata, ...invalid }));
-      return new Response(JSON.stringify({ ...metadata, ...JSON.parse(page(['a'], '/my/e-check?page=2')), layout: [] }));
+      if (url.pathname.includes('entrypoint')) return new Response(JSON.stringify({ ...metadata, ...overrides }));
+      return new Response(JSON.stringify({ ...metadata, ...JSON.parse(page(['a'], '/my/e-check?page=2')), layout: [], trackingTokenAliases: {} }));
     }, readPdf });
     assert.equal(result.rows.length, 1);
-    assert.equal(result.stats.incomplete, invalid !== null);
-    assert.equal(result.stats.metadataListEnds, invalid === null ? 2 : 0);
-    assert.equal(result.stats.unrecognizedListResponses, invalid === null ? 0 : 2);
+    assert.equal(result.stats.incomplete, !valid);
+    assert.equal(result.stats.metadataListEnds, valid ? 2 : 0);
+    assert.equal(result.stats.unrecognizedListResponses, valid ? 0 : 2);
     assert.doesNotMatch(JSON.stringify({ stats: result.stats, warnings: result.warnings }), /private-cursor|private-token|private-request|private-user/);
   }
   await assert.rejects(collectOzon({ fetch: async () => new Response(JSON.stringify(metadata)), readPdf }), /не полностью/);
