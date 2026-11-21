@@ -193,10 +193,27 @@ async function main() {
   });
   const fixtureNavigationErrors = [];
   let fixtureWorkerUrl;
+  const redirectFixtureBody = Buffer.from('<html><body>Synthetic redirected response</body></html>').toString('base64');
   context.on('page', target => {
     void (async () => {
       try { await target.waitForURL(url => url.href.startsWith('about:blank#kupleno-fixture='), { timeout: 15000, waitUntil: 'commit' }); }
       catch { return; }
+      // Playwright routes only the first request in a redirect chain. Keep the
+      // redirected response local while Chromium still follows the actual 302.
+      const redirects = await context.newCDPSession(target);
+      redirects.on('Fetch.requestPaused', ({ requestId, redirectedRequestId }) => {
+        const reply = redirectedRequestId
+          ? redirects.send('Fetch.fulfillRequest', {
+            requestId, responseCode: 200, body: redirectFixtureBody,
+            responseHeaders: [{ name: 'Content-Type', value: 'text/html' }],
+          })
+          : redirects.send('Fetch.continueRequest', { requestId });
+        void reply.catch(error => fixtureNavigationErrors.push(error.message));
+      });
+      await redirects.send('Fetch.enable', { patterns: [
+        { urlPattern: 'https://market.yandex.ru/login' },
+        { urlPattern: 'https://market.yandex.ru/showcaptcha?*' },
+      ] });
       const worker = context.serviceWorkers().find(worker => worker.url() === fixtureWorkerUrl);
       assert.ok(worker, 'Synthetic navigation has its exact worker');
       assert.equal(await worker.evaluate(marker => {
