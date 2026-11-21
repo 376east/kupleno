@@ -10,10 +10,15 @@ const orderList = (ids: number[]) => envelope({ result: 'list', collections: { o
 const receipt = '<table><tr><td>1</td><td>Книга</td><td>1</td><td>100,00</td></tr><tr><td>ИТОГ</td><td>100,00</td></tr></table>';
 const domResult = (change: Partial<YandexOrdersDomResult> = {}): YandexOrdersDomResult => ({ orderIds: [], clicked: false, hasMore: false, blocked: false, ambiguous: false, limit: false, fatal: false, ...change });
 
-test('DOM fallback unions API seed IDs after pagination errors and keeps incompleteness explicit', async () => {
+test('DOM fallback waits through a hidden load-more button, unions seed IDs and keeps incompleteness explicit', async () => {
   let steps = 0;
   const result = await collectYandex({ context: { initialOrders: { orderIds: ['123456'], pageToken: 'cursor' } },
-    readOrdersDom: async () => ++steps === 1 ? domResult({ orderIds: ['123456', '234567'], clicked: true, hasMore: true }) : domResult({ orderIds: ['123456', '234567', '345678'] }),
+    readOrdersDom: async () => {
+      steps++;
+      if (steps === 1) return domResult({ orderIds: ['123456', '234567'], clicked: true, hasMore: true });
+      if (steps <= 4) return domResult({ orderIds: ['123456', '234567'] });
+      return domResult({ orderIds: ['123456', '234567', '345678'] });
+    },
     fetch: async (input, init) => {
       const url = new URL(String(input));
       if (url.hostname === 'check.yandex.ru') return new Response(receipt);
@@ -22,7 +27,7 @@ test('DOM fallback unions API seed IDs after pagination errors and keeps incompl
       return envelope({ result: ['r'], collections: { orderReceipt: { r: { fiscalUrl: `https://check.yandex.ru/${orderId}`, createdAt: 1767225600 } } } });
     },
   });
-  assert.equal(steps, 2);
+  assert.equal(steps, 11);
   assert.equal(result.rows.length, 3);
   assert.equal(result.stats.domFallbackOrdersAdded, 2);
   assert.equal(result.stats.domFallbackClicks, 1);
@@ -132,6 +137,7 @@ test('four matching errors in both metadata passes move the whole queue to order
     assert.equal(result.stats.receiptMetadataRequests, archiveWorks ? 20 : 8);
     assert.deepEqual(queried, archiveWorks ? [] : ids.map(String));
     assert.equal(result.rows.length, ids.length);
+    assert.equal(result.stats.failedOrders, 0);
   }
 });
 

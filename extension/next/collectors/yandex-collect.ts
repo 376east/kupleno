@@ -312,6 +312,7 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
   if (listingFailed && options.readOrdersDom) {
     diagnostics.domFallbackAttempts++;
     const started = Date.now();
+    let quietSteps = 0;
     for (let step = 0; step < 300; step++) {
       options.signal?.throwIfAborted();
       if (Date.now() - started > 120000) { diagnostics.domFallbackLimits++; break; }
@@ -328,7 +329,9 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
       if (result.limit) { diagnostics.domFallbackLimits++; break; }
       if (result.clicked) diagnostics.domFallbackClicks++;
       await options.onProgress?.({ done: step + 1, total: 0, message: `Яндекс Маркет: список в магазине, найдено ${orderIds.size} заказов.` });
-      if (!result.hasMore) break;
+      // The store can temporarily remove its load-more button while replacing the list.
+      if (result.hasMore || result.clicked || orderIds.size > before) quietSteps = 0;
+      else if (++quietSteps >= 6) break;
       if (step === 299) { diagnostics.domFallbackLimits++; break; }
       await new Promise(resolve => setTimeout(resolve, 500));
     }
@@ -443,7 +446,7 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
     if (uniformError(1)) {
       await loadMetadata(probe, true);
       useDocuments = uniformError(2);
-      if (useDocuments) warnings.push('Яндекс Маркет: запросы чеков не работают. Чеки читаются из карточек заказов.');
+      if (useDocuments) warnings.push('Яндекс Маркет: магазин не вернул чеки по API. Читаем документы в карточках заказов.');
     }
     if (!useDocuments) {
       await loadMetadata(states.slice(probe.length), false);
@@ -509,6 +512,11 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
         throw error;
       } }, options.signal);
     } catch (error) { options.signal?.throwIfAborted(); if (fatal) throw failure; if (object(error).code !== 'YANDEX_DOCUMENTS_STOPPED') throw error; }
+    if (useDocuments) {
+      failedOrders = candidates.length - diagnostics.cachedOrderDialogs - diagnostics.domReceiptCompleteDialogs;
+      failures.clear();
+      if (failedOrders) rememberFailure(new Error('Часть карточек не удалось прочитать полностью.'));
+    }
     if (candidates.length) { incomplete = true; warnings.push('Яндекс Маркет: покрытие отсутствующих в API чеков не подтверждено.'); }
   }
   finishStage('receiptFetchElapsedMs');
