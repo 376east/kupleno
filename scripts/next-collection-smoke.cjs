@@ -298,7 +298,15 @@ async function main() {
     });
     await context.route('https://evil.test/**', route => { unsafeNavigations++; return route.fulfill({ contentType: 'text/html', body: '<html>Must not be opened</html>' }); });
     await context.route('https://check.yandex.ru/**', route => route.fulfill({ contentType: 'text/html', body: '<div>01.01.2026 12:00</div><table><tr><td>1</td><td>Книга</td><td>1</td><td>100,00</td></tr><tr><td>ИТОГ</td><td>100,00</td></tr></table>' }));
-    await context.route('https://www.wildberries.ru/**', route => route.fulfill({contentType:'text/html',body:'<html>WB test</html>'}));
+    let holdWbImage = false, releaseWbImage;
+    await context.route('https://www.wildberries.ru/**', async route => {
+      if (new URL(route.request().url()).pathname === '/synthetic-wb-image.png') {
+        await new Promise(resolve => { releaseWbImage = resolve; });
+        return route.abort().catch(() => {});
+      }
+      const content = holdWbImage ? '<button>Открыть</button><img src="/synthetic-wb-image.png" alt="">' : 'WB test';
+      return route.fulfill({ contentType: 'text/html; charset=utf-8', body: '<html><body>' + content + '</body></html>' });
+    });
     const page = await context.newPage();
     await page.goto(`chrome-extension://${id}/app.html`);
     const sendCommand = message => page.evaluate(message => chrome.runtime.sendMessage({ type: 'KUPLENO_JOB', ...message }), message);
@@ -310,6 +318,32 @@ async function main() {
       }
       return sendCommand(message);
     };
+    async function checkWbReadiness() {
+      await context.clearCookies({ name: 'wbid-sdk-id-token', domain: 'www.wildberries.ru' });
+      const wbUser = await context.newPage(); await wbUser.goto('https://www.wildberries.ru/lk/receipts/get');
+      holdWbImage = true;
+      const startedAt = Date.now();
+      let started;
+      try { started = await command({ action: 'start', source: 'wildberries', profile: 'personal' }); }
+      finally { holdWbImage = false; releaseWbImage?.(); }
+      assert.equal(started.ok, true);
+      assert.ok(Number.isInteger(started.job.marketTabId), 'Without a session cookie WB opens its own tab');
+      assert.equal(typeof releaseWbImage, 'function');
+      assert.ok(Date.now() - startedAt < 10000, 'WB must check session readiness while an image is still loading: ' + JSON.stringify(started.job.failureStats));
+      let result;
+      for (let i = 0; i < 100; i++) {
+        result = await command({ action: 'status', source: 'wildberries' });
+        if (result.job.status === 'failed') break;
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      assert.equal(result.job.status, 'failed');
+      assert.deepEqual(result.job.failureStats, { wbSessionUnavailable: true });
+      await page.waitForFunction(id => chrome.tabs.get(id).then(() => false, () => true), started.job.marketTabId);
+      assert.equal(wbUser.isClosed(), false);
+      await wbUser.close();
+      console.log('PASS: WB starts session check while a nonessential image is pending and closes only its own tab.');
+    }
+    if (process.argv.includes('--wb-readiness')) return await checkWbReadiness();
     async function finish(source, expectedRows = 1) {
       const scope = source ? { source } : {};
       let result;
@@ -691,18 +725,7 @@ async function main() {
     assert.equal(cancelled.job.status,'cancelled');
     assert.equal(await page.evaluate(id => chrome.tabs.get(id).then(() => true, () => false), cancelled.job.marketTabId), false, 'Cancellation closes tab');
     assert.ok(Date.now()-cancelledAt<7000,'Cancellation must not wait for network');
-    await context.clearCookies({ name: 'wbid-sdk-id-token', domain: 'www.wildberries.ru' });
-    const wbUser = await context.newPage(); await wbUser.goto('https://www.wildberries.ru/lk/receipts/get');
-    const wbStart = await command({action:'start',source:'wildberries',profile:'personal'});
-    assert.equal(wbStart.ok,true);
-    assert.ok(Number.isInteger(wbStart.job.marketTabId), 'Without a session cookie WB opens its own tab to try page storage');
-    let wbResult;
-    for(let i=0;i<100;i++) { wbResult=await command({action:'status'}); if(wbResult.job.status==='failed') break; await new Promise(r=>setTimeout(r,100)); }
-    assert.equal(wbResult.job.status,'failed');
-    // execute() closes in finally, immediately after publishing its terminal state.
-    for(let i=0;i<30;i++) { if(!await page.evaluate(id=>chrome.tabs.get(id).then(()=>true,()=>false),wbStart.job.marketTabId)) break; await new Promise(r=>setTimeout(r,100)); }
-    assert.equal(await page.evaluate(id=>chrome.tabs.get(id).then(()=>true,()=>false),wbStart.job.marketTabId),false);
-    assert.equal(wbUser.isClosed(),false);
+    await checkWbReadiness();
     // A failed run is exported separately; historical warnings must not mask the current failure.
     const oldWarning = 'Яндекс Маркет: предупреждение прежнего сбора.';
     const prior = structuredClone(persisted.state);
@@ -751,6 +774,10 @@ async function main() {
     const attempts = exportedFailure.state.metadata.collectionDiagnostics;
     assert.equal(attempts.available, true);
     assert.deepEqual(attempts.attempts.find(job => job.source === 'yandex').failureStats, htmlFailure.failureStats);
+    const exportedWb = attempts.attempts.find(job => job.source === 'wildberries');
+    assert.deepEqual(exportedWb.failureStats, { wbSessionUnavailable: true });
+    assert.equal(exportedWb.error, undefined);
+    assert.equal(exportedWb.diagnostic, undefined);
     assert.deepEqual(exportedFailure.state.rows, failureBaseline.state.rows);
     assert.deepEqual(exportedFailure.state.settings, failureBaseline.state.settings);
     assert.deepEqual((await saved()).state, failureBaseline.state, 'Export diagnostics are a snapshot, not a database write');

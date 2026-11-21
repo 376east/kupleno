@@ -96,13 +96,24 @@ function readYandexContext(early: boolean) {
   return { sk: read('sk'), version: read('-version') || read('version'), marketFrontGlue: read('marketFrontGlue'), pageId: read('page') || 'market:orders', retpath: location.href, ...(initialOrders ? { initialOrders } : {}) };
 }
 
+function wbReceiptsReady() {
+  if (!['https://www.wildberries.ru', 'https://wildberries.ru'].includes(location.origin)
+    || location.pathname !== '/lk/receipts/get' || document.readyState === 'loading') return false;
+  return [...document.querySelectorAll('button,[role="button"]')].some(button =>
+    (button.getAttribute('aria-label')?.trim() || button.textContent?.trim()) === 'Открыть'
+    && !button.matches('[disabled],[aria-disabled="true"]')
+    && !button.closest('[hidden],[aria-hidden="true"]') && button.getClientRects().length > 0);
+}
+
+const marketLoadingMessage = (source: Source) => `${SOURCES[source].name}: страница ещё загружается. Повторите сбор после загрузки.`;
+
 async function marketContext(job: Job, controller: AbortController) {
   const { source } = job;
   const { signal } = controller;
   signal.throwIfAborted();
   let tab = await browser.tabs.create({ url: SOURCES[source].url, active: false });
   const ownedId = tab.id;
-  const loadingMessage = `${SOURCES[source].name}: страница ещё загружается. Повторите сбор после загрузки.`;
+  const loadingMessage = marketLoadingMessage(source);
   if (ownedId === undefined) throw new Error(loadingMessage);
   try {
     await persist(source, current => current?.id === job.id ? { ...current, marketTabId: ownedId } : current);
@@ -111,6 +122,13 @@ async function marketContext(job: Job, controller: AbortController) {
       signal.throwIfAborted();
       if (source !== 'yandex' && tab.status === 'complete') return { marketTabId: ownedId };
       const currentUrl = new URL(tab.url || 'about:blank');
+      if (source === 'wildberries' && !tab.pendingUrl && currentUrl.protocol === 'https:'
+        && ['www.wildberries.ru', 'wildberries.ru'].includes(currentUrl.hostname) && currentUrl.pathname === '/lk/receipts/get') {
+        const read = browser.scripting.executeScript({ target: { tabId: ownedId }, func: wbReceiptsReady, injectImmediately: true });
+        const result = await withDeadline(read.catch(() => null), loadingMessage, Math.max(1, deadline - Date.now()));
+        signal.throwIfAborted();
+        if (result?.[0]?.result === true) return { marketTabId: ownedId };
+      }
       const ordersPage = currentUrl.origin === 'https://market.yandex.ru' && currentUrl.pathname === '/my/orders';
       if (source === 'yandex' && !tab.pendingUrl && (tab.status === 'complete' || ordersPage)) {
         // A slow image or iframe can leave the tab loading after the orders DOM is ready.
@@ -235,6 +253,11 @@ async function execute(job: Job, controller: AbortController, sessionCookie: str
   } catch (error) {
     if (jobs[job.source]?.id === job.id && jobs[job.source]?.status === 'running') {
       const diagnostic = error instanceof Error ? error.message : 'Сбор не завершён.';
+      const status = /^WB_LIST_HTTP_([1-5]\d{2})$/.exec(diagnostic);
+      const failureStats: Job['failureStats'] = diagnostic === 'WB_SESSION_NOT_FOUND' || diagnostic === 'WB_TOKEN_REQUIRED' ? { wbSessionUnavailable: true }
+        : status ? { wbListHttpStatus: Number(status[1]) }
+        : diagnostic === 'WB_LIST_NON_JSON' || diagnostic.startsWith('WB_LIST_UNKNOWN_PAYLOAD shape=') ? { wbListFormatUnknown: true }
+        : undefined;
       const message = diagnostic.startsWith('WB_LIST_UNKNOWN_PAYLOAD') ? 'Wildberries изменил формат списка чеков. Скопируйте сведения об ошибке — в них есть структура ответа для исправления сборщика.'
         : diagnostic === 'WB_SESSION_NOT_FOUND' ? 'Не удалось получить сессию Wildberries из открытой вкладки. Откройте страницу чеков WB и повторите сбор.'
         : /WB_(TOKEN_REQUIRED|LIST_HTTP_401)/.test(diagnostic) ? 'Wildberries отклонил сессию. Обновите страницу магазина и повторите сбор.'
@@ -242,7 +265,8 @@ async function execute(job: Job, controller: AbortController, sessionCookie: str
         : diagnostic === 'WB_LIST_NON_JSON' ? 'Wildberries вернул страницу вместо списка чеков. Откройте магазин, проверьте вход и повторите сбор.'
         : diagnostic.startsWith('WB_LIST_HTTP_') ? `Wildberries временно не отдал историю (код ${diagnostic.split('_').at(-1)}). Повторите сбор позже.` : diagnostic;
       await persist(job.source, value => value?.id === job.id && value.status === 'running'
-        ? { ...value, status: controller.signal.aborted ? 'cancelled' : 'failed', error: message, diagnostic: diagnostic.slice(0, 2000), updatedAt: new Date().toISOString() } : value);
+        ? { ...value, status: controller.signal.aborted ? 'cancelled' : 'failed', error: message, diagnostic: diagnostic.slice(0, 2000),
+          ...(failureStats && !controller.signal.aborted ? { failureStats } : {}), updatedAt: new Date().toISOString() } : value);
     }
   } finally { await closeCollectionTab(job); running.delete(job.id); }
 }
@@ -325,8 +349,11 @@ async function handle(command: Command): Promise<JobResponse> {
       running.delete(job.id);
     }
   } catch (error) {
+    const message = error instanceof Error ? error.message : 'Не удалось запустить сбор.';
+    const wbPageLoadingTimeout = job.source === 'wildberries' && !controller.signal.aborted && message === marketLoadingMessage(job.source);
     await persist(job.source, value => value?.id === job.id && value.status === 'running'
-      ? { ...value, status: controller.signal.aborted ? 'cancelled' : 'failed', error: error instanceof Error ? error.message : 'Не удалось запустить сбор.', updatedAt: new Date().toISOString() } : value);
+      ? { ...value, status: controller.signal.aborted ? 'cancelled' : 'failed', error: message,
+        ...(wbPageLoadingTimeout ? { failureStats: { wbPageLoadingTimeout } } : {}), updatedAt: new Date().toISOString() } : value);
     await closeCollectionTab(jobById(job.id) || null);
     running.delete(job.id);
   }
