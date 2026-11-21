@@ -312,7 +312,8 @@ test('continues reading responsive order dialogs after five minutes', async t =>
   assert.equal(result.rows.length, orderIds.length);
 });
 
-test('blocked document UI stops queued order pages with at most two reads in flight', async () => {
+test('blocked document UI stops queued order pages with at most three reads in flight', async () => {
+  const orderIds = [123456, 234567, 345678, 456789];
   let calls = 0, active = 0, peak = 0;
   const result = await collectYandex({ readOrderDocuments: async orderId => {
     calls++; peak = Math.max(peak, ++active);
@@ -322,13 +323,13 @@ test('blocked document UI stops queued order pages with at most two reads in fli
     const url = new URL(String(input));
     if (url.pathname === '/my/orders') return new Response('');
     if (url.hostname === 'check.yandex.ru') return new Response(`<p>01.01.2026 10:00</p>${receipt}`);
-    if (url.searchParams.get('r')?.includes('resolveConsolidationOrders')) return orderList([123456, 234567, 345678]);
+    if (url.searchParams.get('r')?.includes('resolveConsolidationOrders')) return orderList(orderIds);
     return envelope({ result: ['r'], collections: { orderReceipt: { r: {} } } });
   } });
-  assert.equal(calls, 2); assert.equal(peak, 2);
+  assert.equal(calls, 3); assert.equal(peak, 3);
   assert.equal(result.rows.length, 1);
   assert.equal(result.stats.domReceiptBlocked, 1);
-  assert.deepEqual(result.unresolvedOrderIds, ['123456', '234567', '345678']);
+  assert.deepEqual(result.unresolvedOrderIds, orderIds.map(String));
 });
 
 test('document progress failures preserve falsy rejection values', async () => {

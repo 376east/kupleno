@@ -441,7 +441,8 @@ async function main() {
     cacheRefund = false;
     const afterClear = await cacheRun();
     assert.equal(afterClear.stats.receiptNetworkRequests, 1); assert.equal(afterClear.stats.cachedReceipts, 0, 'A new run after source-cache clear fetches fiscal HTML again');
-    assert.equal((await command({ action: 'clearReceiptCache', source: 'yandex' })).ok, true);
+    const clearAfterRefill = await command({ action: 'clearReceiptCache', source: 'yandex' });
+    assert.equal(clearAfterRefill.ok, true, JSON.stringify(clearAfterRefill));
     retainYandexCache = false;
     console.log('PASS: RAW fiscal cache cold/warm; fresh refund metadata; malformed body repair; forced reread; cache API fallback; trusted clear; cancelled late response; RAW excluded from jobs/backup.');
     if (process.env.KUPLENO_COLLECTION_CACHE_ONLY === '1') return;
@@ -885,15 +886,19 @@ async function main() {
     await new Promise(resolve => setTimeout(resolve, 1200));
     assert.equal(domClicks, 1, 'No growth does not trigger another click');
     assert.equal((await command({ action: 'cancel', id: stuck.job.id })).job.status, 'cancelled');
-    yandexMode = 'docs-concurrent'; yandexOrderIds = [123456, 234567];
+    yandexMode = 'docs-concurrent'; yandexOrderIds = [123456, 234567, 345678];
     const concurrentDocsWorker = context.serviceWorkers().find(worker => worker.url() === `chrome-extension://${id}/background.js`);
     await concurrentDocsWorker.evaluate(() => {
       const create = chrome.tabs.create.bind(chrome.tabs);
-      let first = true;
+      const allCreated = Promise.withResolvers();
+      let documentCreates = 0;
       globalThis.restoreConcurrentDocuments = () => { chrome.tabs.create = create; };
       chrome.tabs.create = async details => {
         const tab = await create(details);
-        if (String(details.url).startsWith('https://market.yandex.ru/my/order/') && first) { first = false; await new Promise(resolve => setTimeout(resolve, 500)); }
+        if (String(details.url).startsWith('https://market.yandex.ru/my/order/')) {
+          if (++documentCreates === 3) allCreated.resolve();
+          await allCreated.promise;
+        }
         return tab;
       };
     });
@@ -905,11 +910,12 @@ async function main() {
       await new Promise(resolve => setTimeout(resolve, 100));
     }
     assert.equal(concurrentDocs.job.status, 'completed', JSON.stringify(concurrentDocs));
-    assert.equal(concurrentDocs.job.result.stats.domReceiptOrdersAttempted, 2);
-    assert.equal(concurrentDocs.job.result.stats.domReceiptCompleteDialogs, 2, 'The same operation is not counted twice while create is pending');
+    assert.equal(concurrentDocs.job.result.stats.domReceiptOrdersAttempted, 3);
+    assert.equal(concurrentDocs.job.result.stats.domReceiptCompleteDialogs, 3, 'Three tabs coexist while their creation replies are pending');
     assert.equal(concurrentDocs.job.result.stats.domReceiptBlocked, 0);
     assert.equal(concurrentDocs.job.result.stats.domReceiptUrlsAdded, 2, 'Identical actual dialog hrefs are deduplicated');
     assert.equal(concurrentDocs.job.result.rows.length, 2);
+    assert.deepEqual((await page.evaluate(() => chrome.storage.local.get('kupleno-next-yandex-document-tabs')))['kupleno-next-yandex-document-tabs'], []);
     await command({ action: 'ack', id: concurrentDocs.job.id });
     await concurrentDocsWorker.evaluate(() => globalThis.restoreConcurrentDocuments());
     // A delayed create may resolve after the completed job was acknowledged.

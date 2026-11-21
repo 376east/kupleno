@@ -1,5 +1,5 @@
 import type { CollectionResult, YandexOrdersDomResult, YandexDocumentsResult } from '../collection.ts';
-import { readUnresolvedOrderIds, readYandexOrdersDomResult, readYandexDocumentsResult } from '../collection.ts';
+import { readUnresolvedOrderIds, readYandexOrdersDomResult, readYandexDocumentsResult, yandexDocumentConcurrency } from '../collection.ts';
 import type { Purchase } from '../model';
 import { parseYandexReceipt } from './yandex.ts';
 import { readYandexPayment } from './fiscal.ts';
@@ -520,7 +520,7 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
     const pending = candidates.filter(state => !cacheableDialogs.has(state.orderId));
     let stopped = false, fatal = false, failure: unknown, done = 0;
     try {
-      await mapConcurrent(pending, 2, async state => { try {
+      await mapConcurrent(pending, yandexDocumentConcurrency, async state => { try {
         options.signal?.throwIfAborted();
         if (stopped) throw Object.assign(new Error('Чтение документов остановлено.'), { code: 'YANDEX_DOCUMENTS_STOPPED' });
         diagnostics.domReceiptOrdersAttempted++;

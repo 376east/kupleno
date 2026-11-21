@@ -10,7 +10,7 @@ import { ozonRequest } from './ozon-request';
 import { withDeadline } from '../deadline';
 import { yandexOrdersDomStep } from '../collectors/yandex-orders-dom';
 import { readUnresolvedOrderIds, readYandexOrdersDomResult } from '../collection';
-import { readDocumentTabs, readYandexDocumentsResult, type DocumentTab } from '../collection';
+import { readDocumentTabs, readYandexDocumentsResult, yandexDocumentConcurrency, type DocumentTab } from '../collection';
 import { closeYandexOrderTab, readYandexOrderDocuments } from './yandex-order-documents';
 
 const key = 'kupleno-next-jobs';
@@ -347,7 +347,7 @@ export function registerCollection() {
       void init.then(async () => {
         const current = jobById(message.id);
         if (!current || current.source !== 'yandex' || current.status !== 'running' || !documentStoreValid) throw new Error('Сбор документов недоступен.');
-        if (new Set([...documentRequests.values()].flatMap(values => [...values]).concat([...documentReservations])).size >= 2 || documentTabs.length + documentReservations.size >= 64) throw new Error('Достигнут лимит вкладок документов.');
+        if (new Set([...documentRequests.values()].flatMap(values => [...values]).concat([...documentReservations])).size >= yandexDocumentConcurrency || documentTabs.length + documentReservations.size >= 64) throw new Error('Достигнут лимит вкладок документов.');
         const controller = new AbortController(), active = documentRequests.get(current.id) || new Set<AbortController>();
         active.add(controller); documentRequests.set(current.id, active); documentReservations.add(controller);
         let registered: number | undefined;

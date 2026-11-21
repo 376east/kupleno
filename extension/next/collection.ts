@@ -7,6 +7,7 @@ export const storeOrigins: Record<Source, string[]> = {
 };
 export interface CollectionResult { rows: Purchase[]; stats: Record<string, number | boolean>; warnings: string[]; fiscalPayments?: FiscalPayment[]; processedReceipts?: string[]; unresolvedOrderIds?: string[]; failedDocumentOrderIds?: string[]; failedReceiptOrderIds?: string[] }
 export interface YandexOrdersDomResult { orderIds: string[]; clicked: boolean; hasMore: boolean; blocked: boolean; ambiguous: boolean; limit: boolean; fatal: boolean }
+export const yandexDocumentConcurrency = 3;
 export type YandexDocumentsFailureReason = 'navigation' | 'button' | 'dialog' | 'loading' | 'error' | 'unrecognized' | 'request';
 export interface YandexDocumentsResult { urls: string[]; complete: boolean; blocked: boolean; failureReason?: YandexDocumentsFailureReason }
 export interface DocumentTab { tabId: number; orderId: string; ownerJobId: string }
