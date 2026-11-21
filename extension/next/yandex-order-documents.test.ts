@@ -123,7 +123,7 @@ test('order documents helper uses only its own offline fixture tab', async t => 
       let noTabs = 0;
       await readYandexOrderDocuments(123456, {
         browser: { tabs: { create: () => creation } } as unknown as Api,
-        isCurrent: () => true, timeoutMs: 1, onNoTab: () => { noTabs++; },
+        isCurrent: () => true, timeoutMs: 100, onNoTab: () => { noTabs++; },
         onOpened: async () => { assert.fail('Rejected creation cannot open a tab'); },
         onReleased: async () => { assert.fail('Rejected creation cannot release a tab'); }
       });
@@ -151,7 +151,7 @@ test('order documents helper uses only its own offline fixture tab', async t => 
         scripting: { executeScript: async () => { throw new Error('No UI action expected'); } }
       } as unknown as Api;
       const result = await readYandexOrderDocuments(123456, {
-        browser: api, isCurrent: () => true, timeoutMs: 1, onNoTab: () => { noTabs++; },
+        browser: api, isCurrent: () => true, timeoutMs: 100, onNoTab: () => { noTabs++; },
         onOpened: async (tabId, orderId) => { assert.equal(tabId, 7); assert.equal(orderId, '123456'); registered = true; },
         onReleased: async () => { released = true; registered = false; }
       });
@@ -180,7 +180,7 @@ test('order documents helper uses only its own offline fixture tab', async t => 
         scripting: { executeScript: async () => { throw new Error('No DOM action during initial blank cleanup'); } }
       } as unknown as Api;
       await readYandexOrderDocuments(123456, {
-        browser: api, isCurrent: () => true, timeoutMs: 1,
+        browser: api, isCurrent: () => true, timeoutMs: 100,
         onOpened: async (id, orderId) => { assert.equal(id, 7); assert.equal(orderId, '123456'); order.push('registered'); },
         onReleased: async () => { order.push('released'); released(); }
       });
