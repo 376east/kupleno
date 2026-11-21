@@ -181,6 +181,21 @@ test('previously seen orders recover receipts only when the current listing shar
   }
 });
 
+test('document fallback checks orders without saved fiscal data first on the next refresh', async () => {
+  const queried: string[] = [];
+  await collectYandex({ knownOrderIds: ['123456', '234567'], readOrderDocuments: async orderId => {
+    queried.push(orderId);
+    return { urls: [`https://check.yandex.ru/dialog-${orderId}`], complete: true, blocked: false };
+  }, fetch: async input => {
+    const url = new URL(String(input));
+    if (url.pathname === '/my/orders') return new Response('');
+    if (url.hostname === 'check.yandex.ru') return new Response(`<p>01.01.2026 10:00</p>${receipt}`);
+    if (url.searchParams.get('r')?.includes('resolveConsolidationOrders')) return orderList([123456, 234567, 345678]);
+    return envelope({ result: ['r'], collections: { orderReceipt: { r: {} } } });
+  } });
+  assert.deepEqual(queried, ['345678', '123456', '234567']);
+});
+
 test('blocked document UI stops queued order pages with at most two reads in flight', async () => {
   let calls = 0, active = 0, peak = 0;
   const result = await collectYandex({ readOrderDocuments: async orderId => {

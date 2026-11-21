@@ -152,7 +152,7 @@ const money = text => text.replace(/\s/g, '');
     await reopened.getByRole('link', { name: 'Магазины', exact: true }).click();
     const yandexPanel = reopened.locator('.store-panel').filter({ has: reopened.getByRole('heading', { name: 'Яндекс Маркет', exact: true }) });
     const wbPanel = reopened.locator('.store-panel').filter({ has: reopened.getByRole('heading', { name: 'Wildberries', exact: true }) });
-    await yandexPanel.getByRole('button', { name: 'Перечитать чеки', exact: true }).waitFor();
+    assert.equal(await yandexPanel.getByRole('button', { name: 'Перечитать чеки', exact: true }).count(), 0);
     await context.route('https://market.yandex.ru/**', route => route.abort('blockedbyclient'));
     await reopened.evaluate(() => {
       window.__cacheOriginalMessage = chrome.runtime.sendMessage.bind(chrome.runtime);
@@ -167,13 +167,13 @@ const money = text => text.replace(/\s/g, '');
       };
     });
     try {
-      await yandexPanel.getByRole('button', { name: 'Перечитать чеки', exact: true }).click();
+      await yandexPanel.getByRole('button', { name: 'Обновить покупки', exact: true }).click();
       await reopened.waitForFunction(() => typeof window.__cacheReleaseForce === 'function');
-      assert.equal((await reopened.evaluate(() => window.__cacheForceCommand)).refreshReceipts, true);
-      assert.equal(await yandexPanel.getByRole('button', { name: 'Перечитать чеки', exact: true }).isDisabled(), true);
-      assert.equal(await wbPanel.getByRole('button', { name: 'Обновить покупки', exact: true }).isEnabled(), true, 'Force reread blocks only its own store');
+      assert.equal((await reopened.evaluate(() => window.__cacheForceCommand)).refreshReceipts, undefined);
+      assert.equal(await yandexPanel.getByRole('button', { name: 'Обновить покупки', exact: true }).isDisabled(), true);
+      assert.equal(await wbPanel.getByRole('button', { name: 'Обновить покупки', exact: true }).isEnabled(), true, 'Updating Yandex blocks only its own store');
       await reopened.evaluate(() => window.__cacheReleaseForce());
-      await reopened.waitForFunction(() => ![...document.querySelectorAll('button')].find(button => button.textContent === 'Перечитать чеки')?.disabled);
+      await reopened.waitForFunction(() => [...document.querySelectorAll('.store-panel')].some(panel => panel.querySelector('h2')?.textContent === 'Яндекс Маркет' && [...panel.querySelectorAll('button')].some(button => button.textContent === 'Обновить покупки' && !button.disabled)));
     } finally { await reopened.evaluate(() => {
       chrome.runtime.sendMessage = window.__cacheOriginalMessage; chrome.permissions.request = window.__cacheOriginalPermissionRequest;
       delete window.__cacheOriginalMessage; delete window.__cacheOriginalPermissionRequest;
@@ -199,7 +199,7 @@ const money = text => text.replace(/\s/g, '');
     const afterClear = (await saved())[0][0].state;
     assert.deepEqual(afterClear.rows, mixed.rows.filter(row => row.source !== 'yandex'), 'Deleting Yandex preserves all other store rows and fields');
     assert.equal(afterClear.rows.some(row => row.source === 'yandex'), false);
-    console.log('PASS: Yandex force-reread UI is per-store; failed cache clear preserves DB; retry clears RAW before source history and preserves other stores.');
+    console.log('PASS: Yandex standard refresh is the only collection action and is per-store; failed cache clear preserves DB; retry clears RAW before source history and preserves other stores.');
     assert.deepEqual(errors, []);
     if (output) await fs.writeFile(path.join(output, 'scenario.json'), JSON.stringify({ synthetic: true, expectedKopecks: { all: 1900, work: 1698, day: 2002, item: 1001 }, atomicFailure: 'QuotaExceededError after current.put', backupVersions: [1, 2], newTabReopen: true, browserZoom: 2, mobile: 390, reducedMotion: true }, null, 2));
     await reopened.close();

@@ -434,8 +434,10 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
   }
   finishStage(options.readOrderDocuments && !metadataStopped ? 'documentFallbackElapsedMs' : undefined);
   if (options.readOrderDocuments && !metadataStopped) {
+    const savedOrders = new Set(knownOrderIds);
     const pending = states.filter(state => state.unresolved.size > 0
-      || (!state.found && state.errors.length > 0 && state.errors.every(error => object(error).documentsFallback === true)));
+      || (!state.found && state.errors.length > 0 && state.errors.every(error => object(error).documentsFallback === true)))
+      .sort((a, b) => Number(savedOrders.has(a.orderId)) - Number(savedOrders.has(b.orderId)));
     const started = Date.now();
     let stopped = false, fatal = false, failure: unknown, done = 0;
     try {

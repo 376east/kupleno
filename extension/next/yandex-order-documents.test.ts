@@ -20,7 +20,7 @@ const dialog = `<section role="dialog"><h2>Документы по заказу<
 </section>`;
 
 type Api = Parameters<typeof readYandexOrderDocuments>[1]['browser'];
-async function fixture(context: BrowserContext, markup = button, clickMarkup = dialog) {
+async function fixture(context: BrowserContext, markup = button, clickMarkup = dialog, holdImage = false) {
   let page: Page | undefined, creates = 0, removes = 0, clicks = 0, reads = 0;
   let pending = '', overrideUrl = '', status = 'complete', beforeGet: (() => void) | undefined;
   let registered = false, releases = 0;
@@ -35,7 +35,8 @@ async function fixture(context: BrowserContext, markup = button, clickMarkup = d
           <a href="https://check.yandex.ru/outside">Вне диалога</a>
           <script>window.clicks=0;document.querySelectorAll('button,[role="button"]').forEach(b=>b.addEventListener('click',()=>{window.clicks++;setTimeout(()=>document.body.insertAdjacentHTML('beforeend',${JSON.stringify(clickMarkup)}),10)}));</script>
         </body></html>` }));
-        await page.goto(properties.url);
+        if (holdImage) await page.route('**/held-image.png', () => {});
+        await page.goto(properties.url, { waitUntil: holdImage ? 'domcontentloaded' : 'load' });
         return { id: 7 };
       },
       async get(id: number) {
@@ -403,6 +404,18 @@ test('order documents helper uses only its own offline fixture tab', async t => 
       const result = await readYandexOrderDocuments(123456, { browser: f.api, onOpened: f.onOpened, onReleased: f.onReleased, isCurrent: () => true, timeoutMs: 1500 });
       assert.equal(result.complete, true);
       assert.equal(f.clicks, 1);
+    });
+    await t.test('reads and closes an owned order while a subresource is still loading', async () => {
+      const f = await fixture(context, button + '<img src="/held-image.png">', dialog, true);
+      f.loading();
+      const result = await readYandexOrderDocuments(123456, {
+        browser: f.api, onOpened: f.onOpened, onReleased: f.onReleased, isCurrent: () => true, timeoutMs: 2000,
+      });
+      assert.equal(result.complete, true);
+      assert.equal(result.urls.length, 2);
+      assert.equal(f.clicks, 1);
+      assert.equal(f.removes, 1);
+      assert.equal(f.releases, 1);
     });
     for (const mode of ['cancel', 'timeout']) await t.test(`closes its initial blank loading tab on ${mode} before releasing ownership`, async () => {
       const controller = new AbortController();

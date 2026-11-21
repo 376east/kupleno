@@ -9,9 +9,10 @@ type Step = { state: 'waiting' | 'clicked' | 'read' | 'safe' | 'blocked' | 'unsa
 export function yandexOrderDocumentsStep(expectedUrl: string, action: 'click' | 'retry' | 'read' | 'inspect'): Step {
   const result = (state: Step['state'], urls: string[] = [], failureReason?: YandexDocumentsFailureReason): Step => ({ state, urls, ...(failureReason ? { failureReason } : {}) });
   const navigating = () => !!(window as Window & { navigation?: { transition?: unknown } }).navigation?.transition;
+  const documentLoading = () => document.readyState === 'loading';
   if (location.href !== expectedUrl || location.origin !== 'https://market.yandex.ru') return result('unsafe');
   if (navigating()) return result('unsafe');
-  if (document.readyState !== 'complete') return result('waiting', [], 'navigation');
+  if (documentLoading()) return result('waiting', [], 'navigation');
   const visible = (element: Element) => !element.closest('[hidden],[aria-hidden="true"]') && element.getClientRects().length > 0
     && getComputedStyle(element).visibility !== 'hidden' && getComputedStyle(element).display !== 'none';
   const text = (element: Element) => (element.textContent || '').replace(/\s+/g, ' ').trim();
@@ -34,7 +35,7 @@ export function yandexOrderDocumentsStep(expectedUrl: string, action: 'click' | 
     const button = buttons[0];
     if (!button || button.hasAttribute('disabled') || button.getAttribute('aria-disabled') === 'true') return result('waiting', [], 'button');
     if (!(button instanceof HTMLElement) || button.closest('form,a[href]') || button.getAttribute('type') === 'submit') return result('blocked');
-    if (location.href !== expectedUrl || document.readyState !== 'complete' || navigating()) return result('unsafe');
+    if (location.href !== expectedUrl || documentLoading() || navigating()) return result('unsafe');
     button.click();
     return result('clicked');
   }
@@ -74,6 +75,26 @@ export function yandexOrderDocumentsStep(expectedUrl: string, action: 'click' | 
     ? { ...result('read'), readKey: JSON.stringify(inert.map(text)) } : result('waiting', [], 'unrecognized');
 }
 
+const committedOrder = (tab: { url?: string; pendingUrl?: string }, expectedUrl: string) => !tab.pendingUrl && tab.url === expectedUrl;
+
+export async function closeYandexOrderTab(api: Pick<typeof browser, 'tabs' | 'scripting'>, id: number, expectedUrl: string) {
+  const message = 'Вкладка не ответила.';
+  const tab = await withDeadline(api.tabs.get(id), message, 1000);
+  if (tab.url === 'about:blank' && tab.pendingUrl === expectedUrl && tab.status === 'loading') {
+    await withDeadline(api.tabs.remove(id), message, 1000);
+    return true;
+  }
+  if (!committedOrder(tab, expectedUrl)) return (tab.pendingUrl || tab.url) !== expectedUrl;
+  const checks = await withDeadline(api.scripting.executeScript({ target: { tabId: id }, world: 'ISOLATED', injectImmediately: true, func: yandexOrderDocumentsStep, args: [expectedUrl, 'inspect'] }), message, 1000);
+  const state = checks[0]?.result?.state;
+  if (state === 'blocked' || state === 'unsafe') return true;
+  if (state !== 'safe') return false;
+  const fresh = await withDeadline(api.tabs.get(id), message, 1000);
+  if (!committedOrder(fresh, expectedUrl)) return (fresh.pendingUrl || fresh.url) !== expectedUrl;
+  await withDeadline(api.tabs.remove(id), message, 1000);
+  return true;
+}
+
 /** Complete means this order's explicit dialog was read, not full account coverage. */
 export async function readYandexOrderDocuments(orderId: unknown, options: {
   browser: Pick<typeof browser, 'tabs' | 'scripting'>;
@@ -93,7 +114,6 @@ export async function readYandexOrderDocuments(orderId: unknown, options: {
   let latestReason: YandexDocumentsFailureReason = 'navigation';
   const incomplete = () => empty(false, stopped() ? undefined : latestReason);
   const current = () => !options.signal?.aborted && options.isCurrent() && Date.now() < deadline;
-  const exact = (tab: { url?: string; pendingUrl?: string; status?: string } | null) => !!tab && !tab.pendingUrl && tab.url === expectedUrl && tab.status === 'complete';
   const timeoutMessage = 'Время чтения документов истекло.';
   const bounded = <T>(task: Promise<T>) => withDeadline(task, timeoutMessage, Math.max(1, deadline - Date.now()));
   const api = options.browser;
@@ -101,18 +121,8 @@ export async function readYandexOrderDocuments(orderId: unknown, options: {
   const validTabId = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
   const noTab = () => { if (!noTabReported) { noTabReported = true; options.onNoTab?.(); } };
   const closeOwn = async (id: number) => {
-    try {
-      const tab = await withDeadline(api.tabs.get(id), 'Вкладка не ответила.', 1000);
-      if (tab.url === 'about:blank' && tab.pendingUrl === expectedUrl && tab.status === 'loading') {
-        await withDeadline(api.tabs.remove(id), 'Вкладка не ответила.', 1000);
-        return true;
-      }
-      if (!exact(tab)) return true;
-      const checks = await withDeadline(api.scripting.executeScript({ target: { tabId: id }, world: 'ISOLATED', func: yandexOrderDocumentsStep, args: [expectedUrl, 'inspect'] }), 'Вкладка не ответила.', 1000);
-      if (checks[0]?.result?.state !== 'safe') return true;
-      if (exact(await withDeadline(api.tabs.get(id), 'Вкладка не ответила.', 1000))) await withDeadline(api.tabs.remove(id), 'Вкладка не ответила.', 1000);
-      return true;
-    } catch { return false; /* Keep durable ownership when cleanup could not inspect the tab. */ }
+    try { return await closeYandexOrderTab(api, id, expectedUrl); }
+    catch { return false; /* Keep durable ownership when cleanup could not inspect the tab. */ }
   };
   try {
     if (!current()) { noTab(); return empty(); }
@@ -134,13 +144,13 @@ export async function readYandexOrderDocuments(orderId: unknown, options: {
       const tab = await bounded(api.tabs.get(tabId));
       const initialNavigation = !loaded && tab.pendingUrl === expectedUrl && (!tab.url || tab.url === 'about:blank');
       if (!initialNavigation && ((tab.pendingUrl && (loaded || tab.pendingUrl !== expectedUrl)) || (tab.url && tab.url !== expectedUrl))) { preserve = true; return empty(true); }
-      if (exact(tab)) {
+      if (committedOrder(tab, expectedUrl)) {
         loaded = true;
         if (!current()) return incomplete();
         const retry: boolean = clicked && missingDialog && !retried && Date.now() - clickedAt >= 3000;
         const action: 'click' | 'retry' | 'read' = !clicked ? 'click' : retry ? 'retry' : 'read';
         if (retry) retried = true;
-        const executions: { result?: Step }[] = await bounded(api.scripting.executeScript({ target: { tabId }, world: 'ISOLATED', func: yandexOrderDocumentsStep, args: [expectedUrl, action] }));
+        const executions: { result?: Step }[] = await bounded(api.scripting.executeScript({ target: { tabId }, world: 'ISOLATED', injectImmediately: tab.status !== 'complete', func: yandexOrderDocumentsStep, args: [expectedUrl, action] }));
         const step = executions[0]?.result;
         if (step?.state === 'waiting') latestReason = step.failureReason || 'unrecognized';
         if (!current()) return incomplete();

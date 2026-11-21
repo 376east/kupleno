@@ -11,7 +11,7 @@ import { withDeadline } from '../deadline';
 import { yandexOrdersDomStep } from '../collectors/yandex-orders-dom';
 import { readUnresolvedOrderIds, readYandexOrdersDomResult } from '../collection';
 import { readDocumentTabs, readYandexDocumentsResult, type DocumentTab } from '../collection';
-import { readYandexOrderDocuments, yandexOrderDocumentsStep } from './yandex-order-documents';
+import { closeYandexOrderTab, readYandexOrderDocuments } from './yandex-order-documents';
 
 const key = 'kupleno-next-jobs';
 const legacyKey = 'kupleno-next-job';
@@ -156,26 +156,12 @@ async function writeDocumentTabs(change: (value: DocumentTab[]) => DocumentTab[]
   await task;
 }
 
-async function cleanupDocumentTabs(ownerJobId?: string) {
+async function cleanupDocumentTabs(ownerJobId?: string, tabId?: number) {
   if (ownerJobId) for (const controller of documentRequests.get(ownerJobId) || []) controller.abort();
-  for (const record of documentTabs.filter(item => !ownerJobId || item.ownerJobId === ownerJobId)) {
+  for (const record of documentTabs.filter(item => (!ownerJobId || item.ownerJobId === ownerJobId) && (tabId === undefined || item.tabId === tabId))) {
     let released = false;
     try {
-      const tab = await browser.tabs.get(record.tabId);
-      const expected = `https://market.yandex.ru/my/order/${record.orderId}`, address = tab.pendingUrl || tab.url;
-      const initial = tab.url === 'about:blank' && tab.pendingUrl === expected && tab.status === 'loading';
-      if (initial) { await browser.tabs.remove(record.tabId); released = true; }
-      else if (address !== expected) released = true; // The human owns a changed location.
-      else if (!tab.pendingUrl && tab.status === 'complete') {
-        const checked = await withDeadline(browser.scripting.executeScript({ target: { tabId: record.tabId }, world: 'ISOLATED', func: yandexOrderDocumentsStep, args: [expected, 'inspect'] }), 'Не удалось проверить вкладку документов.', 1500);
-        const state = checked[0]?.result?.state;
-        if (state === 'blocked' || state === 'unsafe') released = true;
-        else if (state === 'safe') {
-          const fresh = await browser.tabs.get(record.tabId);
-          if (!fresh.pendingUrl && fresh.url === expected) await browser.tabs.remove(record.tabId);
-          released = true;
-        }
-      }
+      released = await closeYandexOrderTab(browser, record.tabId, `https://market.yandex.ru/my/order/${record.orderId}`);
     } catch {
       try { released = !(await browser.tabs.query({})).some(tab => tab.id === record.tabId); } catch { /* Retain ownership while tab APIs are unavailable. */ }
     }
@@ -340,6 +326,13 @@ async function handle(command: Command): Promise<JobResponse> {
 }
 
 export function registerCollection() {
+  browser.tabs.onUpdated.addListener((tabId, change) => {
+    if (change.status !== 'complete') return;
+    void init.then(async () => {
+      const owner = documentTabs.find(item => item.tabId === tabId);
+      if (owner && jobById(owner.ownerJobId)?.status !== 'running') await cleanupDocumentTabs(undefined, tabId);
+    }).catch(() => { /* Keep ownership for a later cleanup. */ });
+  });
   browser.runtime.onMessage.addListener((message: unknown, sender, reply) => {
     if (message && typeof message === 'object' && 'type' in message && message.type === 'KUPLENO_YANDEX_DOCUMENTS') {
       if (sender.id !== browser.runtime.id || sender.url !== browser.runtime.getURL('/offscreen.html') || !('id' in message) || !('orderId' in message) || !readUnresolvedOrderIds([message.orderId])) { reply({ ok: false }); return; }
