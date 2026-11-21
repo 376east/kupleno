@@ -312,6 +312,38 @@ test('continues reading responsive order dialogs after five minutes', async t =>
   assert.equal(result.rows.length, orderIds.length);
 });
 
+test('retries an empty stalled document dialog once after reading the remaining orders', async () => {
+  const ids = ['123456', '234567', '345678', '456789', '567890'];
+  const calls: string[] = [];
+  const link = (id: string) => `https://check.yandex.ru/dialog-${id}`;
+  const result = await collectYandex({
+    readOrderDocuments: async id => {
+      const firstRead = !calls.includes(id);
+      calls.push(id);
+      if (id === '234567' && firstRead) return { urls: [], complete: false, blocked: false, failureReason: 'dialog' };
+      if (id === '234567') return { urls: [link('purchase'), link('delivery'), link('refund')], complete: true, blocked: false };
+      if (id === '345678') return { urls: [], complete: false, blocked: false, failureReason: 'loading' };
+      if (id === '456789') return { urls: [], complete: false, blocked: false, failureReason: 'unrecognized' };
+      if (id === '567890') return { urls: [link(id)], complete: false, blocked: false, failureReason: 'dialog' };
+      return { urls: [link(id)], complete: true, blocked: false };
+    },
+    fetch: async input => {
+      const url = new URL(String(input));
+      if (url.pathname === '/my/orders') return new Response('');
+      if (url.hostname === 'check.yandex.ru') return new Response(`<p>01.01.2026 10:00</p>${receipt}`);
+      if (url.searchParams.get('r')?.includes('resolveConsolidationOrders')) return orderList(ids.map(Number));
+      return Response.json({ results: [{ error: { code: 'UPSTREAM_ERROR' } }] });
+    },
+  });
+  assert.deepEqual(calls, [...ids, '234567', '345678']);
+  assert.equal(result.stats.domReceiptOrdersAttempted, 5);
+  assert.equal(result.stats.domReceiptOrderRetries, 2);
+  assert.equal(result.stats.domReceiptOrderRetryRecovered, 1);
+  assert.deepEqual(result.failedDocumentOrderIds, ['345678', '456789', '567890']);
+  assert.equal(result.stats.failedOrders, 3);
+  assert.equal(result.rows.length, 5);
+});
+
 test('blocked document UI stops queued order pages with at most three reads in flight', async () => {
   const orderIds = [123456, 234567, 345678, 456789];
   let calls = 0, active = 0, peak = 0;

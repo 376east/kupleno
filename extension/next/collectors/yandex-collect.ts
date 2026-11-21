@@ -145,6 +145,7 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
     domReceiptOrdersAttempted: 0, domReceiptUrlsAdded: 0, domReceiptBlocked: 0, domReceiptCompleteDialogs: 0, domReceiptLimits: 0, cachedReceipts: 0, receiptNetworkRequests: 0, cacheReadErrors: 0, cacheWriteErrors: 0,
     receiptForbiddenErrors: 0, receiptRateLimitErrors: 0, receiptHttpErrors: 0, receiptTimeoutErrors: 0, receiptNetworkErrors: 0, receiptParseErrors: 0, receiptOversizeErrors: 0, receiptRedirectErrors: 0,
     domReceiptNavigationWaits: 0, domReceiptButtonWaits: 0, domReceiptDialogWaits: 0, domReceiptLoadingWaits: 0, domReceiptErrorWaits: 0, domReceiptUnrecognizedWaits: 0, domReceiptRequestErrors: 0,
+    domReceiptOrderRetries: 0, domReceiptOrderRetryRecovered: 0,
     cachedOrderDialogs: 0, orderDocumentCacheReadErrors: 0, orderDocumentCacheWriteErrors: 0, earlyReceiptDownloads: 0,
     listedOrders: 0, knownOrdersAdded: 0 };
   const pagination = { lastPageItems: 0, lastPageIds: 0, lastPageNewIds: 0, lastPageHasNextKnown: false, lastPageHasNext: false, lastPageCursorPresent: false, lastPageCursorMatchesRequest: false, repeatedCursor: false };
@@ -518,23 +519,29 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
       }, options.signal);
     }
     const pending = candidates.filter(state => !cacheableDialogs.has(state.orderId));
+    const retryOrders: typeof pending = [];
     let stopped = false, fatal = false, failure: unknown, done = 0;
-    try {
-      await mapConcurrent(pending, yandexDocumentConcurrency, async state => { try {
+    const readDocuments = async (state: typeof pending[number], retry: boolean) => {
+      try {
         options.signal?.throwIfAborted();
         if (stopped) throw Object.assign(new Error('Чтение документов остановлено.'), { code: 'YANDEX_DOCUMENTS_STOPPED' });
-        diagnostics.domReceiptOrdersAttempted++;
+        if (retry) diagnostics.domReceiptOrderRetries++;
+        else diagnostics.domReceiptOrdersAttempted++;
         const result = readYandexDocumentsResult(await options.readOrderDocuments!(state.orderId));
         options.signal?.throwIfAborted();
         if (!result?.complete) failedDocumentOrderIds.add(state.orderId);
         if (!result || result.blocked) { diagnostics.domReceiptBlocked++; stopped = true; throw Object.assign(new Error('Документы заказа недоступны.'), { code: 'YANDEX_DOCUMENTS_STOPPED' }); }
-        if (result.complete) diagnostics.domReceiptCompleteDialogs++;
-        else {
+        if (result.complete) {
+          diagnostics.domReceiptCompleteDialogs++;
+          if (retry) { failedDocumentOrderIds.delete(state.orderId); diagnostics.domReceiptOrderRetryRecovered++; }
+        } else {
           diagnostics.domReceiptLimits++;
           if (result.failureReason) {
             const counter = { navigation: 'domReceiptNavigationWaits', button: 'domReceiptButtonWaits', dialog: 'domReceiptDialogWaits', loading: 'domReceiptLoadingWaits', error: 'domReceiptErrorWaits', unrecognized: 'domReceiptUnrecognizedWaits', request: 'domReceiptRequestErrors' } as const;
             diagnostics[counter[result.failureReason]]++;
           }
+          if (!retry && !result.urls.length && retryOrders.length < 2 * yandexDocumentConcurrency
+            && (result.failureReason === 'dialog' || result.failureReason === 'loading')) retryOrders.push(state);
         }
         if (result.complete && result.urls.length && listedOrderIds?.has(state.orderId)) cacheableDialogs.set(state.orderId, { urls: result.urls, cached: false });
         for (const value of result.urls) {
@@ -544,12 +551,19 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
             startReceiptDownload(url);
           }
         }
-        await options.onProgress?.({ done: ++done, total: pending.length, message: `Яндекс Маркет: проверены документы ${done} из ${pending.length} заказов.` });
+        if (!retry) await options.onProgress?.({ done: ++done, total: pending.length, message: `Яндекс Маркет: проверены документы ${done} из ${pending.length} заказов.` });
       } catch (error) {
         if (object(error).code === 'YANDEX_DOCUMENTS_BLOCKED') { diagnostics.domReceiptBlocked++; stopped = true; throw Object.assign(new Error('Документы заказа недоступны.'), { code: 'YANDEX_DOCUMENTS_STOPPED' }); }
         if (object(error).code !== 'YANDEX_DOCUMENTS_STOPPED') { fatal = true; failure = error; }
         throw error;
-      } }, options.signal);
+      }
+    };
+    try {
+      await mapConcurrent(pending, yandexDocumentConcurrency, state => readDocuments(state, false), options.signal);
+      if (retryOrders.length && diagnostics.domReceiptCompleteDialogs + diagnostics.cachedOrderDialogs > 0) {
+        await options.onProgress?.({ done, total: pending.length, message: `Яндекс Маркет: повторяем чтение документов для ${retryOrders.length} заказов.` });
+        await mapConcurrent(retryOrders, yandexDocumentConcurrency, state => readDocuments(state, true), options.signal);
+      }
     } catch (error) { options.signal?.throwIfAborted(); if (fatal) throw failure; if (object(error).code !== 'YANDEX_DOCUMENTS_STOPPED') throw error; }
     if (useDocuments) {
       failedOrders = candidates.length - diagnostics.cachedOrderDialogs - diagnostics.domReceiptCompleteDialogs;
