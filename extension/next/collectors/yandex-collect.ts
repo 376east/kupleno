@@ -67,10 +67,13 @@ function resultData(payload: unknown, diagnostics: Record<string, number>, index
   if (entry.error) diagnostics.responseEntryErrors!++;
   const codes = { NOT_FOUND: 'resolverNotFoundErrors', FORBIDDEN: 'resolverForbiddenErrors', UNAUTHORIZED: 'resolverUnauthorizedErrors', TOO_MANY_REQUESTS: 'resolverRateLimitErrors' } as const;
   let resolverCode = 0, resolverHttpStatus = 0;
+  let restricted = false;
   for (const error of errors) {
     const code = typeof error === 'string' ? error : object(error).code;
     const counter = typeof code === 'string' && Object.hasOwn(codes, code) ? codes[code as keyof typeof codes] : 'resolverOtherErrors';
     diagnostics[counter]!++;
+    if (counter === 'resolverForbiddenErrors' || counter === 'resolverUnauthorizedErrors' || counter === 'resolverRateLimitErrors'
+      || [object(error).status, object(error).statusCode, code].some(value => (typeof value === 'number' || typeof value === 'string') && ['401', '403', '429'].includes(String(value)))) restricted = true;
     if (typeof code === 'string' && knownResolverCodes.includes(code)) resolverCode = knownResolverCodes.indexOf(code) + 1;
     const status = [object(error).status, object(error).statusCode, code].find(value => typeof value === 'number' && [502, 503, 504].includes(value));
     if (typeof status === 'number') resolverHttpStatus = status;
@@ -93,7 +96,7 @@ function resultData(payload: unknown, diagnostics: Record<string, number>, index
       else if (!Array.isArray(root.results)) diagnostics.responseResultsMalformed!++;
     }
   }
-  if (!Object.keys(data).length || errors.length) throw Object.assign(new Error('Яндекс Маркет вернул неизвестный формат ответа.'), { resolverCode, resolverHttpStatus });
+  if (!Object.keys(data).length || errors.length) throw Object.assign(new Error('Яндекс Маркет вернул неизвестный формат ответа.'), { resolverCode, resolverHttpStatus, documentsFallback: errors.length > 0 && !restricted });
   return data;
 }
 function safeReceipt(value: string) {
@@ -431,7 +434,8 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
   }
   finishStage(options.readOrderDocuments && !metadataStopped ? 'documentFallbackElapsedMs' : undefined);
   if (options.readOrderDocuments && !metadataStopped) {
-    const pending = states.filter(state => state.unresolved.size > 0);
+    const pending = states.filter(state => state.unresolved.size > 0
+      || (!state.found && state.errors.length > 0 && state.errors.every(error => object(error).documentsFallback === true)));
     const started = Date.now();
     let stopped = false, fatal = false, failure: unknown, done = 0;
     try {

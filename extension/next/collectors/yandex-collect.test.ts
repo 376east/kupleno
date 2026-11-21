@@ -92,6 +92,27 @@ test('actual dialog URLs add readable receipts without claiming coverage of unre
   assert.ok(!JSON.stringify(result.stats).includes('dialog-sale'));
 });
 
+test('receipt resolver errors in both passes fall back to the order dialog unless access is restricted', async () => {
+  const queried: string[] = [];
+  const result = await collectYandex({ readOrderDocuments: async orderId => {
+    queried.push(orderId);
+    return { urls: ['https://check.yandex.ru/dialog-sale'], complete: true, blocked: false };
+  }, fetch: async (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname === '/my/orders') return new Response('');
+    if (url.hostname === 'check.yandex.ru') return new Response(`<p>01.01.2026 10:00</p>${receipt}`);
+    if (url.searchParams.get('r')?.includes('resolveConsolidationOrders')) return orderList([123456, 234567]);
+    const { params } = JSON.parse(String(init?.body)) as { params: Array<{ orderId: number }> };
+    return Response.json({ results: params.map(({ orderId }) => ({ error: { code: orderId === 123456 ? 'UPSTREAM_ERROR' : 'FORBIDDEN' } })) });
+  } });
+  assert.deepEqual(queried, ['123456']);
+  assert.equal(result.rows.length, 1);
+  assert.equal(result.stats.domReceiptOrdersAttempted, 1);
+  assert.equal(result.stats.resolverOtherErrors, 2);
+  assert.equal(result.stats.resolverForbiddenErrors, 2);
+  assert.equal(result.stats.incomplete, true);
+});
+
 test('dialog duplicate of an API fiscal URL is fetched once while a distinct actual URL is parsed', async () => {
   const fetched: string[] = [];
   const result = await collectYandex({ readOrderDocuments: async () => ({ urls: ['https://check.yandex.ru/same?key=one', 'https://check.yandex.ru/distinct?key=two'], complete: true, blocked: false }), fetch: async input => {
