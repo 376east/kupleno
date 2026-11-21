@@ -173,7 +173,10 @@ async function main() {
       if ((await cacheFlags())['synthetic-fiscal-fetch-forbidden']) throw new Error('Warm cache unexpectedly fetched fiscal HTML');
       const refund = url.pathname.includes('refund-'), amount = refund ? '25,00' : '100,00';
       if ((await cacheFlags())['synthetic-fiscal-fetch-malformed']) return new Response('<div>01.01.2026 12:00</div><table><tr><td>ИТОГ</td><td>999,00</td></tr></table>');
-      return new Response('<div data-synthetic-fiscal-raw="cache-only">01.01.2026 12:00'+(refund?' Возврат прихода':'')+'</div><table><tr><td>1.</td><td>Книга</td><td>1</td><td>'+amount+'</td></tr><tr><td>ИТОГ</td><td>'+amount+'</td></tr></table>');
+      const fiscal = url.searchParams.has('fn');
+      const tender = fiscal ? '<tr><td>Электронными</td><td>'+amount+'</td></tr>' : '';
+      const fields = fiscal ? '<div>Кассовый чек. Приход</div><div>ФН: '+url.searchParams.get('fn')+' ФД: '+url.searchParams.get('n')+' ФП: '+url.searchParams.get('fpd')+'</div>' : '';
+      return new Response('<div data-synthetic-fiscal-raw="cache-only">01.01.2026 12:00'+(refund?' Возврат прихода':'')+'</div><table><tr><td>1.</td><td>Книга</td><td>1</td><td>'+amount+'</td></tr><tr><td>ИТОГ</td><td>'+amount+'</td></tr>'+tender+'</table>'+fields);
     }
     throw new Error('Unexpected fixture request: ' + url.origin + url.pathname);
   };`);
@@ -240,7 +243,11 @@ async function main() {
         return route.abort().catch(() => {});
       }
       if (url.pathname === '/synthetic-document-click') { documentClicks++; return route.fulfill({ json: { ok: true } }); }
-      if (url.pathname.startsWith('/my/order/')) return route.fulfill({ contentType: 'text/html; charset=utf-8', body: `<html><button id=docs>Чеки и другие документы</button><script>document.getElementById('docs').onclick=()=>{fetch('/synthetic-document-click');const dialog=document.createElement('div');dialog.setAttribute('role','dialog');dialog.innerHTML='<h2>Документы по заказу</h2><a href="https://check.yandex.ru/doc/purchase">Чек</a><a href="https://check.yandex.ru/doc/delivery">Чек доставки</a><a href="https://market.yandex.ru/document">Подтверждение покупки</a>';document.body.append(dialog);};</script></html>` });
+      if (url.pathname.startsWith('/my/order/')) {
+        const purchase = yandexMode === 'dom-fallback' ? '?fn=101&amp;n=202&amp;fpd=303' : '';
+        const delivery = yandexMode === 'dom-fallback' ? '?fn=101&amp;n=203&amp;fpd=304' : '';
+        return route.fulfill({ contentType: 'text/html; charset=utf-8', body: `<html><button id=docs>Чеки и другие документы</button><script>document.getElementById('docs').onclick=()=>{fetch('/synthetic-document-click');const dialog=document.createElement('div');dialog.setAttribute('role','dialog');dialog.innerHTML='<h2>Документы по заказу</h2><a href="https://check.yandex.ru/doc/purchase${purchase}">Чек</a><a href="https://check.yandex.ru/doc/delivery${delivery}">Чек доставки</a><a href="https://market.yandex.ru/document">Подтверждение покупки</a>';document.body.append(dialog);};</script></html>` });
+      }
       if (url.pathname === '/synthetic-dom-click') { domClicks++; return route.fulfill({ json: { ok: true } }); }
       if (url.pathname === '/showcaptcha' || url.pathname === '/captcha') {
         if (holdHumanNavigation && route.request().isNavigationRequest()) await new Promise(resolve => { releaseHumanNavigation = resolve; });
@@ -856,6 +863,14 @@ async function main() {
     assert.equal(domDone.job.result.stats.missingFiscalUrlFields, 1);
     assert.ok(!JSON.stringify(domDone.job.result.stats).includes('345678'));
     await command({ action: 'ack', id: domDone.job.id });
+    retainYandexCache = true;
+    const warmDialogs = await cacheRun();
+    retainYandexCache = false;
+    assert.equal(warmDialogs.stats.cachedOrderDialogs, 1);
+    assert.equal(warmDialogs.stats.domReceiptOrdersAttempted, 0);
+    assert.equal(documentClicks, 1, 'The verified order dialog is not opened again');
+    assert.deepEqual(financial(warmDialogs), financial(domDone.job.result));
+    assert.deepEqual(warmDialogs.fiscalPayments, domDone.job.result.fiscalPayments);
     yandexMode = 'dom-fatal'; domClicks = 0;
     const domFatal = await failedYandex(await command({ action: 'start', source: 'yandex', profile: 'personal' }));
     assert.equal(domFatal.failureStats.domFallbackSteps, 1);

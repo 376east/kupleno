@@ -5,7 +5,7 @@ import { parseYandexReceipt } from './yandex.ts';
 import { readYandexPayment } from './fiscal.ts';
 import { readYandexFiscalId } from '../domain.mjs';
 import { mapConcurrent } from './pool.ts';
-import type { YandexReceiptCacheSession } from './yandex-receipt-cache.ts';
+import type { YandexOrderDocumentsCacheSession, YandexReceiptCacheSession } from './yandex-receipt-cache.ts';
 
 export interface YandexContext { sk?: string; version?: string; marketFrontGlue?: string; pageId?: string; retpath?: string; initialOrders?: { orderIds: string[]; pageToken: string } }
 const origin = 'https://market.yandex.ru';
@@ -111,7 +111,7 @@ function safeReceipt(value: string) {
   if (url.protocol !== 'https:' || url.hostname !== 'check.yandex.ru' || url.username || url.password) throw new Error('Неподдерживаемая ссылка на чек Яндекс Маркета.');
   return url.href;
 }
-export async function collectYandex(options: { fetch: typeof fetch; signal?: AbortSignal; onProgress?: (p: { done: number; total: number; message: string }) => void | Promise<void>; context?: YandexContext; knownOrderIds?: string[]; onDiagnostics?: (stats: Record<string, number | boolean>) => void; readOrdersDom?: () => Promise<YandexOrdersDomResult>; readOrderDocuments?: (orderId: string) => Promise<YandexDocumentsResult>; receiptCache?: YandexReceiptCacheSession }): Promise<CollectionResult> {
+export async function collectYandex(options: { fetch: typeof fetch; signal?: AbortSignal; onProgress?: (p: { done: number; total: number; message: string }) => void | Promise<void>; context?: YandexContext; knownOrderIds?: string[]; onDiagnostics?: (stats: Record<string, number | boolean>) => void; readOrdersDom?: () => Promise<YandexOrdersDomResult>; readOrderDocuments?: (orderId: string) => Promise<YandexDocumentsResult>; receiptCache?: YandexReceiptCacheSession; orderDocumentsCache?: YandexOrderDocumentsCacheSession }): Promise<CollectionResult> {
   const startedAt = Date.now();
   const timings = { listingElapsedMs: 0, metadataElapsedMs: 0, documentFallbackElapsedMs: 0, receiptFetchElapsedMs: 0, elapsedMs: 0 };
   type Stage = Exclude<keyof typeof timings, 'elapsedMs'>;
@@ -142,6 +142,7 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
     domReceiptOrdersAttempted: 0, domReceiptUrlsAdded: 0, domReceiptBlocked: 0, domReceiptCompleteDialogs: 0, domReceiptLimits: 0, cachedReceipts: 0, receiptNetworkRequests: 0, cacheReadErrors: 0, cacheWriteErrors: 0,
     receiptForbiddenErrors: 0, receiptRateLimitErrors: 0, receiptHttpErrors: 0, receiptTimeoutErrors: 0, receiptNetworkErrors: 0, receiptParseErrors: 0, receiptOversizeErrors: 0, receiptRedirectErrors: 0,
     domReceiptNavigationWaits: 0, domReceiptButtonWaits: 0, domReceiptDialogWaits: 0, domReceiptLoadingWaits: 0, domReceiptErrorWaits: 0, domReceiptUnrecognizedWaits: 0, domReceiptRequestErrors: 0,
+    cachedOrderDialogs: 0, orderDocumentCacheReadErrors: 0, orderDocumentCacheWriteErrors: 0,
     listedOrders: 0, knownOrdersAdded: 0 };
   const pagination = { lastPageItems: 0, lastPageIds: 0, lastPageNewIds: 0, lastPageHasNextKnown: false, lastPageHasNext: false, lastPageCursorPresent: false, lastPageCursorMatchesRequest: false, repeatedCursor: false };
   const receipts = new Map<string, Receipt & { orderIds: Set<string> }>();
@@ -335,6 +336,8 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
   }
   if (listingFailed && !orderIds.size) throw new Error('Яндекс Маркет: список заказов не прочитан.');
   diagnostics.listedOrders = orderIds.size;
+  const listedOrderIds = options.orderDocumentsCache ? new Set(orderIds) : undefined;
+  const cacheableDialogs = new Map<string, { urls: string[]; cached: boolean }>();
   const knownOrderIds = readUnresolvedOrderIds(options.knownOrderIds) || [];
   // A current match is required before checking old orders through the same receipt resolver.
   if (!diagnostics.domFallbackBlocked && knownOrderIds.some(id => orderIds.has(id))) {
@@ -458,9 +461,22 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
   finishStage(options.readOrderDocuments && !metadataStopped ? 'documentFallbackElapsedMs' : undefined);
   if (options.readOrderDocuments && !metadataStopped) {
     const savedOrders = new Set(knownOrderIds);
-    const pending = states.filter(state => useDocuments || state.unresolved.size > 0
+    const candidates = states.filter(state => useDocuments || state.unresolved.size > 0
       || (!state.found && state.errors.length > 0 && state.errors.every(error => object(error).documentsFallback === true)))
       .sort((a, b) => Number(savedOrders.has(a.orderId)) - Number(savedOrders.has(b.orderId)));
+    if (options.orderDocumentsCache) {
+      await mapConcurrent(candidates.filter(state => listedOrderIds?.has(state.orderId)).slice(0, 1000), 4, async ({ orderId }) => {
+        let urls: string[] | undefined;
+        try { urls = await options.orderDocumentsCache!.read(orderId); }
+        catch { options.signal?.throwIfAborted(); diagnostics.orderDocumentCacheReadErrors++; }
+        options.signal?.throwIfAborted();
+        if (!urls?.length) return;
+        cacheableDialogs.set(orderId, { urls, cached: true });
+        diagnostics.cachedOrderDialogs++;
+        for (const url of urls) addReceipt({ id: '', url: safeReceipt(url), orderId, type: '' });
+      }, options.signal);
+    }
+    const pending = candidates.filter(state => !cacheableDialogs.has(state.orderId));
     const started = Date.now();
     let stopped = false, fatal = false, failure: unknown, done = 0;
     try {
@@ -481,6 +497,7 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
             diagnostics[counter[result.failureReason]]++;
           }
         }
+        if (result.complete && result.urls.length && listedOrderIds?.has(state.orderId)) cacheableDialogs.set(state.orderId, { urls: result.urls, cached: false });
         for (const value of result.urls) {
           const url = safeReceipt(value);
           if (addReceipt({ id: '', url, orderId: state.orderId, type: '' })) diagnostics.domReceiptUrlsAdded++;
@@ -492,7 +509,7 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
         throw error;
       } }, options.signal);
     } catch (error) { options.signal?.throwIfAborted(); if (fatal) throw failure; if (object(error).code !== 'YANDEX_DOCUMENTS_STOPPED') throw error; }
-    if (pending.length) { incomplete = true; warnings.push('Яндекс Маркет: покрытие отсутствующих в API чеков не подтверждено.'); }
+    if (candidates.length) { incomplete = true; warnings.push('Яндекс Маркет: покрытие отсутствующих в API чеков не подтверждено.'); }
   }
   finishStage('receiptFetchElapsedMs');
   let rowCount = 0;
@@ -568,6 +585,19 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
   const rows = chunks.map(({ rows }, index) => ({ rows, url: pendingReceipts[index]!.url }))
     .sort((a,b) => a.url.localeCompare(b.url)).flatMap(chunk => chunk.rows);
   const fiscalPayments = chunks.flatMap(({ payment }) => payment ? [payment] : []);
+  if (options.orderDocumentsCache && cacheableDialogs.size) {
+    const verified = new Set(pendingReceipts.flatMap((receipt, index) => {
+      const { rows, payment } = chunks[index]!;
+      return payment && rows.length && rows.every(row => row.parse_quality === 'complete') ? [readYandexFiscalId(receipt.url) || receipt.url] : [];
+    }));
+    await mapConcurrent([...cacheableDialogs], 4, async ([orderId, { urls, cached }]) => {
+      const verifiedDialog = urls.every(url => verified.has(readYandexFiscalId(url) || url));
+      try {
+        if (verifiedDialog && !cached) await options.orderDocumentsCache!.write(orderId, urls);
+        else if (!verifiedDialog && cached) await options.orderDocumentsCache!.remove(orderId);
+      } catch { options.signal?.throwIfAborted(); diagnostics.orderDocumentCacheWriteErrors++; }
+    }, options.signal);
+  }
   if (!rows.length && metadataStopped) throw metadataStopError;
   if (failedOrders || failedReceipts) incomplete = true;
   if (failedOrders || failedReceipts) warnings.push(`Яндекс Маркет: ошибки у ${failedOrders} заказов и ${failedReceipts} чеков. Ранее сохранённая история остаётся.`);

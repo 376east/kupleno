@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { YandexReceiptCache, YANDEX_RECEIPT_CACHE_NAME } from './yandex-receipt-cache.ts';
+import { orderDocumentsSession, YandexReceiptCache, YANDEX_RECEIPT_CACHE_NAME, YANDEX_ORDER_DOCUMENTS_CACHE_NAME } from './yandex-receipt-cache.ts';
 
 type Stored = { html: string; headers: Headers };
 function fixture() {
@@ -30,6 +30,28 @@ function fixture() {
   return { storage, stores, state };
 }
 const url = (n: number) => `https://check.yandex.ru/receipt?synthetic=${n}`;
+
+test('order documents expire after fifteen minutes and are isolated by profile and cache namespace', async () => {
+  const original = Date.now;
+  let now = 1000000;
+  Date.now = () => now;
+  try {
+    const f = fixture(), raw = new YandexReceiptCache(f.storage).begin();
+    const documents = new YandexReceiptCache(f.storage, 'orderDocuments');
+    const personal = orderDocumentsSession(documents.begin(), 'personal'), work = orderDocumentsSession(documents.begin(), 'work');
+    await raw.write(url(1), 'raw');
+    await personal.write('123456', [url(1)]);
+    assert.deepEqual(await personal.read('123456'), [url(1)]);
+    assert.equal(await work.read('123456'), undefined);
+    assert.ok([...f.stores.get(YANDEX_ORDER_DOCUMENTS_CACHE_NAME)!.keys()].every(key => !key.includes('123456') && !key.includes('personal')));
+    now += 15 * 60 * 1000;
+    assert.equal(await personal.read('123456'), undefined);
+    await documents.clear();
+    await personal.write('123456', [url(1)]);
+    assert.equal(await orderDocumentsSession(documents.begin(), 'personal').read('123456'), undefined);
+    assert.equal(await raw.read(url(1)), 'raw');
+  } finally { Date.now = original; }
+});
 
 test('RAW cache roundtrip hashes literal URLs and preserves other cache namespaces', async () => {
   const f = fixture(), manager = new YandexReceiptCache(f.storage), session = manager.begin();

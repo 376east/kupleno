@@ -2,13 +2,14 @@ import { browser } from 'wxt/browser';
 import { readPdf } from '../../collectors/pdf';
 import { collectOzon } from '../../collectors/ozon-collect';
 import { collectYandex } from '../../collectors/yandex-collect';
-import { YandexReceiptCache } from '../../collectors/yandex-receipt-cache';
+import { orderDocumentsSession, YandexReceiptCache } from '../../collectors/yandex-receipt-cache';
 import type { Job, CollectionResult } from '../../collection';
 import { withDeadline } from '../../deadline';
 import { readUnresolvedOrderIds, readYandexOrdersDomResult, readYandexDocumentsResult } from '../../collection';
 
 const tasks = new Map<string, { source: Job['source']; controller: AbortController; delivery?: ReturnType<typeof setTimeout> }>();
 const yandexReceiptCache = new YandexReceiptCache(globalThis.caches);
+const yandexOrderDocuments = new YandexReceiptCache(globalThis.caches, 'orderDocuments');
 
 async function finish(id: string, result?: CollectionResult, error?: string, failureStats?: CollectionResult['stats']) {
   const task = tasks.get(id);
@@ -29,7 +30,8 @@ browser.runtime.onMessage.addListener((message, sender, reply) => {
   if (sender.url && sender.url !== browser.runtime.getURL('/background.js')) { reply({ ok: false }); return; }
   if (message.action === 'status') { reply({ ok: true, ids: [...tasks.keys()] }); return; }
   if (message.action === 'clearReceiptCache') {
-    void yandexReceiptCache.clear().then(() => reply({ ok: true }), () => reply({ ok: false }));
+    void Promise.allSettled([yandexReceiptCache.clear(), yandexOrderDocuments.clear()])
+      .then(results => reply({ ok: results.every(result => result.status === 'fulfilled') }));
     return true;
   }
   if (message.action === 'cancel') {
@@ -49,9 +51,11 @@ browser.runtime.onMessage.addListener((message, sender, reply) => {
   const signal = controller.signal;
   let domStep = 0;
   reply({ ok: true });
+  const cacheOptions = { signal, bypass: job.refreshReceipts === true };
   const options = {
     signal,
-    receiptCache: job.source === 'yandex' ? yandexReceiptCache.begin({ signal, bypass: job.refreshReceipts === true }) : undefined,
+    receiptCache: job.source === 'yandex' ? yandexReceiptCache.begin(cacheOptions) : undefined,
+    orderDocumentsCache: job.source === 'yandex' ? orderDocumentsSession(yandexOrderDocuments.begin(cacheOptions), job.profile) : undefined,
     readOrderDocuments: job.source === 'yandex' ? async (orderId: string) => {
       signal.throwIfAborted();
       const response = await withDeadline(browser.runtime.sendMessage({ type: 'KUPLENO_YANDEX_DOCUMENTS', id: job.id, orderId }), 'Документы заказа не ответили.', 35000);

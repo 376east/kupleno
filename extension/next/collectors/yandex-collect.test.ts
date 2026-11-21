@@ -135,6 +135,39 @@ test('four matching errors in both metadata passes move the whole queue to order
   }
 });
 
+test('verified order dialogs are reused while incomplete and invalidated dialogs are reopened', async () => {
+  const entries = new Map<string, string[]>();
+  const opened: string[] = [];
+  const fiscalUrl = 'https://check.yandex.ru/doc?fn=101&n=202&fpd=303';
+  const fiscalHtml = '<div>Кассовый чек. Приход</div><div>01.01.2026 10:00</div>'
+    + receipt.replace('<td>1</td>', '<td>1.</td>').replace('</table>', '<tr><td>Аванс</td><td>100,00</td></tr></table>') + '<div>ФН: 101 ФД: 202 ФП: 303</div>';
+  let receiptUnavailable = false;
+  const run = () => collectYandex({ orderDocumentsCache: {
+    read: async id => entries.get(id), write: async (id, urls) => { entries.set(id, urls); }, remove: async id => { entries.delete(id); },
+  }, readOrderDocuments: async orderId => {
+    opened.push(orderId);
+    return orderId === '123456' ? { urls: [fiscalUrl], complete: true, blocked: false } : { urls: [], complete: false, blocked: false };
+  }, fetch: async input => {
+    const url = new URL(String(input));
+    if (url.pathname === '/my/orders') return new Response('');
+    if (url.hostname === 'check.yandex.ru') return new Response(fiscalHtml, { status: receiptUnavailable ? 503 : 200 });
+    if (url.searchParams.get('r')?.includes('resolveConsolidationOrders')) return orderList([123456, 234567]);
+    return envelope({ result: ['r'], collections: { orderReceipt: { r: {} } } });
+  } });
+  const cold = await run();
+  assert.deepEqual([...entries.keys()], ['123456']);
+  assert.equal(cold.fiscalPayments?.[0]?.paid, 0);
+  opened.length = 0;
+  const warm = await run();
+  assert.deepEqual(opened, ['234567']);
+  assert.equal(warm.stats.cachedOrderDialogs, 1);
+  assert.equal(warm.stats.domReceiptOrdersAttempted, 1);
+  assert.deepEqual(warm.fiscalPayments, cold.fiscalPayments);
+  receiptUnavailable = true;
+  await assert.rejects(run());
+  assert.equal(entries.has('123456'), false);
+});
+
 test('dialog duplicate of an API fiscal URL is fetched once while a distinct actual URL is parsed', async () => {
   const fetched: string[] = [];
   const result = await collectYandex({ readOrderDocuments: async () => ({ urls: ['https://check.yandex.ru/same?key=one', 'https://check.yandex.ru/distinct?key=two'], complete: true, blocked: false }), fetch: async input => {
