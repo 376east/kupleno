@@ -537,7 +537,7 @@ async function main() {
     await command({ action: 'ack', id: legacy.id });
 
     // All three sources remain active together; a slow Ozon request does not own the other buttons.
-    stallOzon = true; holdYandex = true;
+    stallOzon = true; holdYandex = true; releaseYandex = undefined;
     const parallelWorker = context.serviceWorkers()[0];
     await parallelWorker.evaluate(() => {
       const original = globalThis.fetch;
@@ -618,6 +618,8 @@ async function main() {
     assert.deepEqual(wbDone.job.result.fiscalPayments, [fiscalPayment]);
     for (let attempt = 0; attempt < 100 && !releaseYandex; attempt++) await new Promise(resolve => setTimeout(resolve, 100));
     assert.equal(typeof releaseYandex, 'function', 'Yandex must reach offscreen before restarting the worker');
+    const activeOffscreen = await parallelWorker.evaluate(() => chrome.runtime.sendMessage({ type: 'KUPLENO_OFFSCREEN', action: 'status' }));
+    assert.ok(activeOffscreen.ids.includes(parallelYandex.job.id), 'The current Yandex job is active before restart');
     const restarted = await restartWorker();
     assert.equal(restarted.status.jobs.find(job => job.source === 'wildberries').status, 'completed', 'Completed results survive restart');
     assert.equal(restarted.status.jobs.find(job => job.source === 'yandex').status, 'running', 'Offscreen source survives worker restart');
