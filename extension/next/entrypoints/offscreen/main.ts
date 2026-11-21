@@ -101,7 +101,7 @@ browser.runtime.onMessage.addListener((message, sender, reply) => {
         if (response.error && !['html', 'challenge', 'login', 'redirected', 'challengeOpened'].some(field => response[field] === true)) throw new Error(response.error);
         return new Response(response.text, { status: response.status, headers });
       }
-      return fetch(input, { ...options, signal: AbortSignal.any([signal, AbortSignal.timeout(25000)]) });
+      return fetch(input, { ...options, signal: AbortSignal.any([signal, options?.signal ?? signal, AbortSignal.timeout(25000)]) });
     },
     onProgress: async (progress: { done: number; total: number; message: string }) => {
       await withDeadline(browser.runtime.sendMessage({ type: 'KUPLENO_OFFSCREEN_EVENT', action: 'progress', id: job.id, progress }), 'Не удалось подтвердить ход сбора.', 10000);

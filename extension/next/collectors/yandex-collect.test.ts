@@ -219,6 +219,35 @@ test('a fiscal receipt shared by API and another order dialog is read once witho
   assert.equal(result.rows[0]?.parse_quality, 'complete');
 });
 
+test('downloads a receipt while another dialog is still open and binds it only after both dialogs', { timeout: 5000 }, async () => {
+  const firstUrl = 'https://check.yandex.ru/?fn=101&n=202&fpd=303';
+  const alias = 'https://check.yandex.ru/?fpd=303&n=0202&fn=101';
+  const fetched: string[] = [];
+  const downloaded = Promise.withResolvers<void>();
+  const result = await collectYandex({
+    readOrderDocuments: async orderId => {
+      if (orderId === '234567') await downloaded.promise;
+      return { urls: [orderId === '123456' ? firstUrl : alias], complete: true, blocked: false };
+    },
+    fetch: async input => {
+      const url = new URL(String(input));
+      if (url.pathname === '/my/orders') return new Response('');
+      if (url.hostname === 'check.yandex.ru') {
+        fetched.push(url.href);
+        downloaded.resolve();
+        return new Response(`<p>01.01.2026 10:00</p>${receipt}`);
+      }
+      if (url.searchParams.get('r')?.includes('resolveConsolidationOrders')) return orderList([123456, 234567]);
+      return envelope({ result: ['r'], collections: { orderReceipt: { r: {} } } });
+    },
+  });
+  assert.deepEqual(fetched, [firstUrl]);
+  assert.equal(result.stats.earlyReceiptDownloads, 1);
+  assert.equal(result.stats.receiptNetworkRequests, 1);
+  assert.equal(result.rows.length, 1);
+  assert.equal(result.rows[0]?.yandex_order_id, '');
+});
+
 test('previously seen orders recover receipts only when the current listing shares a known order', async () => {
   for (const overlap of [true, false]) {
     const fetched: number[] = [];

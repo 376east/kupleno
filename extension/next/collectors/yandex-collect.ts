@@ -15,6 +15,9 @@ const receiptResolver = 'src/resolvers/orderDocuments/resolveOrderReceiptsByOrde
 const object = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const array = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
 type Receipt = { id: string; url: string; orderId: string; type: string; date?: string };
+type ReceiptDownload = { html: string } | { error: unknown; counter: 'receiptForbiddenErrors' | 'receiptRateLimitErrors' | 'receiptHttpErrors' | 'receiptNetworkErrors' | 'receiptOversizeErrors' | 'receiptRedirectErrors' };
+const receiptSizeLimit = 8 * 1024 * 1024;
+const receiptConcurrency = 4;
 const cap = (size: number) => { if (size > 100000) throw Object.assign(new Error('В сборе больше 100 000 операций.'), { code: 'ROW_LIMIT_EXCEEDED' }); };
 // listErrorCode is the one-based position here; zero means unrecognised or absent.
 const knownResolverCodes = ['RESOLVER_NOT_FOUND', 'NOT_FOUND', 'FORBIDDEN', 'UNAUTHORIZED', 'TOO_MANY_REQUESTS', 'INTERNAL_SERVER_ERROR', 'TIMEOUT'];
@@ -142,7 +145,7 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
     domReceiptOrdersAttempted: 0, domReceiptUrlsAdded: 0, domReceiptBlocked: 0, domReceiptCompleteDialogs: 0, domReceiptLimits: 0, cachedReceipts: 0, receiptNetworkRequests: 0, cacheReadErrors: 0, cacheWriteErrors: 0,
     receiptForbiddenErrors: 0, receiptRateLimitErrors: 0, receiptHttpErrors: 0, receiptTimeoutErrors: 0, receiptNetworkErrors: 0, receiptParseErrors: 0, receiptOversizeErrors: 0, receiptRedirectErrors: 0,
     domReceiptNavigationWaits: 0, domReceiptButtonWaits: 0, domReceiptDialogWaits: 0, domReceiptLoadingWaits: 0, domReceiptErrorWaits: 0, domReceiptUnrecognizedWaits: 0, domReceiptRequestErrors: 0,
-    cachedOrderDialogs: 0, orderDocumentCacheReadErrors: 0, orderDocumentCacheWriteErrors: 0,
+    cachedOrderDialogs: 0, orderDocumentCacheReadErrors: 0, orderDocumentCacheWriteErrors: 0, earlyReceiptDownloads: 0,
     listedOrders: 0, knownOrdersAdded: 0 };
   const pagination = { lastPageItems: 0, lastPageIds: 0, lastPageNewIds: 0, lastPageHasNextKnown: false, lastPageHasNext: false, lastPageCursorPresent: false, lastPageCursorMatchesRequest: false, repeatedCursor: false };
   const receipts = new Map<string, Receipt & { orderIds: Set<string> }>();
@@ -163,6 +166,41 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
   let metadataFatal: unknown, metadataStopError: unknown;
   const snapshot = (): Record<string, number | boolean> => ({ orders: orderIds.size, receipts: receipts.size, pages, failedOrders, failedReceipts, removed: 0, incomplete, ...diagnostics, ...pagination, ...timings });
   let completedStats: Record<string, number | boolean> | undefined;
+  const earlyDownloads = new Map<string, Promise<ReceiptDownload | undefined>>();
+  const earlyController = new AbortController();
+  const earlySignal = options.signal ? AbortSignal.any([options.signal, earlyController.signal]) : earlyController.signal;
+  let earlyActive = 0, earlyChars = 0, earlyStopped = false;
+  async function downloadReceipt(url: string, signal?: AbortSignal): Promise<ReceiptDownload> {
+    let counter: Extract<ReceiptDownload, { error: unknown }>['counter'] = 'receiptNetworkErrors';
+    try {
+      diagnostics.receiptNetworkRequests++;
+      const response = await options.fetch(url, { credentials: 'include', signal });
+      if (!response.ok) {
+        counter = response.status === 403 ? 'receiptForbiddenErrors' : response.status === 429 ? 'receiptRateLimitErrors' : 'receiptHttpErrors';
+        throw new Error(`HTTP ${response.status}`);
+      }
+      if (response.url) { counter = 'receiptRedirectErrors'; safeReceipt(response.url); }
+      counter = 'receiptNetworkErrors';
+      const html = await response.text();
+      if (html.length > receiptSizeLimit) { counter = 'receiptOversizeErrors'; throw new Error('Слишком большой чек.'); }
+      return { html };
+    } catch (error) { return { error, counter }; }
+  }
+  function startReceiptDownload(url: string) {
+    if (earlySignal.aborted || earlyStopped || earlyActive >= receiptConcurrency || earlyDownloads.size >= 512 || earlyChars >= receiptSizeLimit) return;
+    earlyActive++;
+    const task = (async () => {
+      // Leave existing cache entries to the normal cache-first reader.
+      if (options.receiptCache && await options.receiptCache.has(url).catch(() => true)) return;
+      if (earlySignal.aborted || earlyStopped) return;
+      diagnostics.earlyReceiptDownloads++;
+      const result = await downloadReceipt(url, earlySignal);
+      if ('html' in result) earlyChars += result.html.length;
+      else if (result.counter === 'receiptRateLimitErrors' || result.counter === 'receiptForbiddenErrors') earlyStopped = true;
+      return result;
+    })().finally(() => { earlyActive--; });
+    earlyDownloads.set(url, task);
+  }
   async function run(): Promise<CollectionResult> {
   const headers: Record<string, string> = { accept: '*/*', 'content-type': 'application/json', 'x-market-apphost-target': 'WEB', 'x-market-core-service': '<UNKNOWN>', 'x-market-page-id': options.context?.pageId || 'market:orders', 'x-requested-with': 'XMLHttpRequest', 'x-retpath-y': origin + ordersPath };
   if (options.context?.sk) headers.sk = options.context.sk;
@@ -503,7 +541,10 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
         if (result.complete && result.urls.length && listedOrderIds?.has(state.orderId)) cacheableDialogs.set(state.orderId, { urls: result.urls, cached: false });
         for (const value of result.urls) {
           const url = safeReceipt(value);
-          if (addReceipt({ id: '', url, orderId: state.orderId, type: '' })) diagnostics.domReceiptUrlsAdded++;
+          if (addReceipt({ id: '', url, orderId: state.orderId, type: '' })) {
+            diagnostics.domReceiptUrlsAdded++;
+            startReceiptDownload(url);
+          }
         }
         await options.onProgress?.({ done: ++done, total: pending.length, message: `Яндекс Маркет: проверены документы ${done} из ${pending.length} заказов.` });
       } catch (error) {
@@ -520,6 +561,10 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
     if (candidates.length) { incomplete = true; warnings.push('Яндекс Маркет: покрытие отсутствующих в API чеков не подтверждено.'); }
   }
   finishStage('receiptFetchElapsedMs');
+  // Finish admitted downloads before the normal pool starts. Parse only after all
+  // dialogs have contributed their order associations for shared fiscal receipts.
+  await Promise.all(earlyDownloads.values());
+  options.signal?.throwIfAborted();
   let rowCount = 0;
   let done = 0;
   const pendingReceipts = [...receipts.values()].sort((a,b) => a.url.localeCompare(b.url));
@@ -549,7 +594,7 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
         catch (error) { cacheFailure(error, 'cacheReadErrors'); }
         options.signal?.throwIfAborted();
         if (html !== undefined) {
-          try { if (html.length <= 8 * 1024 * 1024) parsed = parseYandexReceipt(html, receipt); }
+          try { if (html.length <= receiptSizeLimit) parsed = parseYandexReceipt(html, receipt); }
           catch (error) { cacheFailure(error, 'cacheReadErrors'); }
           fromCache = !!parsed?.length && parsed.every(row => row.parse_quality === 'complete' && !!row.date);
           if (!fromCache) {
@@ -559,15 +604,9 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
         }
       }
       if (!fromCache) {
-        diagnostics.receiptNetworkRequests++;
-        const response = await options.fetch(receipt.url, { credentials: 'include', signal: options.signal });
-        if (!response.ok) {
-          failureCounter = response.status === 403 ? 'receiptForbiddenErrors' : response.status === 429 ? 'receiptRateLimitErrors' : 'receiptHttpErrors';
-          throw new Error(`HTTP ${response.status}`);
-        }
-        if (response.url) { failureCounter = 'receiptRedirectErrors'; safeReceipt(response.url); }
-        failureCounter = 'receiptNetworkErrors'; html = await response.text();
-        if (html.length > 8 * 1024 * 1024) { failureCounter = 'receiptOversizeErrors'; throw new Error('Слишком большой чек.'); }
+        const download = await earlyDownloads.get(receipt.url) ?? await downloadReceipt(receipt.url, options.signal);
+        if ('error' in download) { failureCounter = download.counter; throw download.error; }
+        html = download.html;
         failureCounter = 'receiptParseErrors';
         parsed = parseYandexReceipt(html, receipt);
       }
@@ -624,6 +663,7 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
   try { const result = await run(); finishStage(); result.stats = { ...result.stats, ...timings }; completedStats = result.stats; return result; }
   catch (error) { incomplete = true; throw error; }
   finally {
+    earlyController.abort();
     if (!completedStats) finishStage();
     diagnostics.uncheckedOrders = Math.max(diagnostics.uncheckedOrders, orderIds.size - checked);
     try { options.onDiagnostics?.({ ...snapshot(), ...completedStats }); } catch { /* Diagnostics cannot replace the collection result or its original failure. */ }
