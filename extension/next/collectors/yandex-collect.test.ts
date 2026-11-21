@@ -286,6 +286,32 @@ test('document fallback checks orders without saved fiscal data first on the nex
   assert.deepEqual(queried, ['345678', '123456', '234567']);
 });
 
+test('continues reading responsive order dialogs after five minutes', async t => {
+  const now = Date.now.bind(Date);
+  let elapsed = 0;
+  t.mock.method(Date, 'now', () => now() + elapsed);
+  const orderIds = [123456, 234567, 345678];
+  const result = await collectYandex({
+    readOrderDocuments: async orderId => ({
+      urls: [`https://check.yandex.ru/dialog-${orderId}`], complete: true, blocked: false,
+    }),
+    onProgress: progress => {
+      if (progress.message.includes('проверены документы')) elapsed = 301000;
+    },
+    fetch: async input => {
+      const url = new URL(String(input));
+      if (url.pathname === '/my/orders') return new Response('');
+      if (url.hostname === 'check.yandex.ru') return new Response(`<p>01.01.2026 10:00</p>${receipt}`);
+      if (url.searchParams.get('r')?.includes('resolveConsolidationOrders')) return orderList(orderIds);
+      return envelope({ result: ['r'], collections: { orderReceipt: { r: {} } } });
+    },
+  });
+  assert.equal(result.stats.domReceiptOrdersAttempted, orderIds.length);
+  assert.equal(result.stats.domReceiptCompleteDialogs, orderIds.length);
+  assert.equal(result.stats.domReceiptLimits, 0);
+  assert.equal(result.rows.length, orderIds.length);
+});
+
 test('blocked document UI stops queued order pages with at most two reads in flight', async () => {
   let calls = 0, active = 0, peak = 0;
   const result = await collectYandex({ readOrderDocuments: async orderId => {

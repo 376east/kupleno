@@ -518,13 +518,11 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
       }, options.signal);
     }
     const pending = candidates.filter(state => !cacheableDialogs.has(state.orderId));
-    const started = Date.now();
     let stopped = false, fatal = false, failure: unknown, done = 0;
     try {
       await mapConcurrent(pending, 2, async state => { try {
         options.signal?.throwIfAborted();
         if (stopped) throw Object.assign(new Error('Чтение документов остановлено.'), { code: 'YANDEX_DOCUMENTS_STOPPED' });
-        if (Date.now() - started >= 300000) { diagnostics.domReceiptLimits++; stopped = true; throw Object.assign(new Error('Достигнут лимит чтения документов.'), { code: 'YANDEX_DOCUMENTS_STOPPED' }); }
         diagnostics.domReceiptOrdersAttempted++;
         const result = readYandexDocumentsResult(await options.readOrderDocuments!(state.orderId));
         options.signal?.throwIfAborted();
