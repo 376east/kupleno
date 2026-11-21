@@ -606,6 +606,7 @@ async function main() {
       await new Promise(resolve => setTimeout(resolve, 100));
     }
     assert.equal(wbDone.job.status, 'completed', JSON.stringify(wbDone));
+    assert.equal(wbDone.job.marketTabId, undefined, 'An existing WB session starts collection without opening a store tab');
     const fiscalPayment = { id: '101:202:303', date: '2026-01-01 10:00', paid: 2500, advance: 7500 };
     assert.deepEqual(wbDone.job.result.fiscalPayments, [fiscalPayment]);
     const restarted = await restartWorker();
@@ -680,9 +681,11 @@ async function main() {
     assert.equal(cancelled.job.status,'cancelled');
     assert.equal(await page.evaluate(id => chrome.tabs.get(id).then(() => true, () => false), cancelled.job.marketTabId), false, 'Cancellation closes tab');
     assert.ok(Date.now()-cancelledAt<7000,'Cancellation must not wait for network');
+    await context.clearCookies({ name: 'wbid-sdk-id-token', domain: 'www.wildberries.ru' });
     const wbUser = await context.newPage(); await wbUser.goto('https://www.wildberries.ru/lk/receipts/get');
     const wbStart = await command({action:'start',source:'wildberries',profile:'personal'});
     assert.equal(wbStart.ok,true);
+    assert.ok(Number.isInteger(wbStart.job.marketTabId), 'Without a session cookie WB opens its own tab to try page storage');
     let wbResult;
     for(let i=0;i<100;i++) { wbResult=await command({action:'status'}); if(wbResult.job.status==='failed') break; await new Promise(r=>setTimeout(r,100)); }
     assert.equal(wbResult.job.status,'failed');

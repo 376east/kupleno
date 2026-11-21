@@ -169,7 +169,7 @@ async function cleanupDocumentTabs(ownerJobId?: string, tabId?: number) {
   }
 }
 
-async function wbToken(tabId?: number): Promise<string> {
+async function wbSessionCookie(): Promise<string> {
   // Only this named authentication cookie is accessed; never saved in job state.
   for (const url of ['https://www.wildberries.ru/', 'https://wildberries.ru/', 'https://astro.wildberries.ru/']) {
     const cookie = await browser.cookies.get({ url, name: 'wbid-sdk-id-token' });
@@ -179,6 +179,12 @@ async function wbToken(tabId?: number): Promise<string> {
       try { const body = JSON.parse(atob(value.split('.')[1]!.replace(/-/g, '+').replace(/_/g, '/'))); if (!body.exp || body.exp * 1000 > Date.now()) return value; } catch { /* Continue with page storage. */ }
     }
   }
+  return '';
+}
+
+async function wbToken(tabId?: number): Promise<string> {
+  const cookie = await wbSessionCookie();
+  if (cookie) return cookie;
   const tab = tabId === undefined ? null : await browser.tabs.get(tabId).catch(() => null);
   if (tab?.url && !['https://www.wildberries.ru','https://wildberries.ru'].includes(new URL(tab.url).origin)) throw new Error('WB_SESSION_NOT_FOUND');
   if (tab?.id !== undefined) {
@@ -210,9 +216,9 @@ async function wbToken(tabId?: number): Promise<string> {
   throw new Error('WB_SESSION_NOT_FOUND');
 }
 
-async function execute(job: Job, controller: AbortController) {
+async function execute(job: Job, controller: AbortController, sessionCookie: string) {
   try {
-    const token = await wbToken(job.marketTabId);
+    const token = sessionCookie || await wbToken(job.marketTabId);
     const result = await collectWildberries({
       token, signal: controller.signal,
       fetch: (url, options) => fetch(url, { ...options, signal: AbortSignal.any([controller.signal, AbortSignal.timeout(25000)]) }),
@@ -303,12 +309,14 @@ async function handle(command: Command): Promise<JobResponse> {
   });
   const controller = new AbortController(); running.set(job.id, controller);
   try {
-    const context = await marketContext(job, controller);
+    const sessionCookie = job.source === 'wildberries' ? await wbSessionCookie() : '';
+    controller.signal.throwIfAborted();
+    const context = sessionCookie ? {} : await marketContext(job, controller);
     controller.signal.throwIfAborted();
     const active = jobById(job.id);
     if (!active || active.status !== 'running') { await closeCollectionTab(active || null); running.delete(job.id); return response(active || null); }
     if (job.source === 'wildberries') {
-      void execute(active, controller).catch(error => console.error('Не удалось сохранить состояние сбора', error instanceof Error ? error.name : 'Error'));
+      void execute(active, controller, sessionCookie).catch(error => console.error('Не удалось сохранить состояние сбора', error instanceof Error ? error.name : 'Error'));
     } else {
       await ensureOffscreen();
       controller.signal.throwIfAborted();
