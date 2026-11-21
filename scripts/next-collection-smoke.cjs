@@ -609,11 +609,11 @@ async function main() {
     assert.equal(wbDone.job.marketTabId, undefined, 'An existing WB session starts collection without opening a store tab');
     const fiscalPayment = { id: '101:202:303', date: '2026-01-01 10:00', paid: 2500, advance: 7500 };
     assert.deepEqual(wbDone.job.result.fiscalPayments, [fiscalPayment]);
+    for (let attempt = 0; attempt < 100 && !releaseYandex; attempt++) await new Promise(resolve => setTimeout(resolve, 100));
+    assert.equal(typeof releaseYandex, 'function', 'Yandex must reach offscreen before restarting the worker');
     const restarted = await restartWorker();
     assert.equal(restarted.status.jobs.find(job => job.source === 'wildberries').status, 'completed', 'Completed results survive restart');
     assert.equal(restarted.status.jobs.find(job => job.source === 'yandex').status, 'running', 'Offscreen source survives worker restart');
-    for (let attempt = 0; attempt < 100 && !releaseYandex; attempt++) await new Promise(resolve => setTimeout(resolve, 100));
-    assert.equal(typeof releaseYandex, 'function');
     holdYandex = false; releaseYandex();
     let yandexDone;
     for (let attempt = 0; attempt < 100; attempt++) {
