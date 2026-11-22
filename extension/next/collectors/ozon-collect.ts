@@ -154,10 +154,15 @@ export async function collectOzon(options: { fetch: typeof fetch; readPdf: (byte
   const collected: Array<{ rows: Purchase[]; payment?: FiscalPayment } | undefined> = [];
   let failed = 0, done = 0, rowCount = 0, stopped = false;
   let lastProgressAt = pdfStarted, receiptProgressUpdates = 0;
+  let pdfDownloadAttempts = 0, pdfProcessingAttempts = 0;
+  let pdfDownloadTotalMs = 0, pdfProcessingTotalMs = 0, receiptProgressTotalMs = 0;
   const failures = new Map<string, number>();
   const readReceipt = async (receipt: Receipt, index: number) => {
     if (stopped) return;
     options.signal?.throwIfAborted();
+    const downloadStarted = performance.now();
+    let processingStarted: number | undefined;
+    pdfDownloadAttempts++;
     try {
       const response = await options.fetch(safeUrl(receipt.url, true), { signal: options.signal, credentials: 'include' });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -165,6 +170,8 @@ export async function collectOzon(options: { fetch: typeof fetch; readPdf: (byte
       if (Number(response.headers.get('content-length')) > 20 * 1024 * 1024) throw new Error('PDF слишком большой.');
       const bytes = new Uint8Array(await response.arrayBuffer());
       if (bytes.byteLength > 20 * 1024 * 1024) throw new Error('PDF слишком большой.');
+      processingStarted = performance.now();
+      pdfProcessingAttempts++;
       const text = await options.readPdf(bytes, options.signal);
       const parsed = parseOzonReceipt(text, receipt);
       if (!parsed.length) throw new Error('Сумма и товары в PDF не распознаны');
@@ -188,6 +195,10 @@ export async function collectOzon(options: { fetch: typeof fetch; readPdf: (byte
         return;
       }
       if (!rowCount && reason.startsWith('Ozon: ошибка получения PDF') && failures.get(reason)! >= 3) throw new Error(`Ozon: три запроса PDF завершились одной ошибкой. Сбор остановлен. ${reason}`);
+    } finally {
+      const finished = performance.now();
+      pdfDownloadTotalMs += (processingStarted ?? finished) - downloadStarted;
+      if (processingStarted !== undefined) pdfProcessingTotalMs += finished - processingStarted;
     }
     done++;
     const now = performance.now();
@@ -195,6 +206,7 @@ export async function collectOzon(options: { fetch: typeof fetch; readPdf: (byte
       lastProgressAt = now;
       receiptProgressUpdates++;
       await options.onProgress({ done, total: pending.length, message: `Ozon: обработано ${done} из ${pending.length} чеков.` });
+      receiptProgressTotalMs += performance.now() - now;
     }
   };
   // Verify access and the PDF transport before starting more than one receipt request.
@@ -216,5 +228,12 @@ export async function collectOzon(options: { fetch: typeof fetch; readPdf: (byte
     warnings.push(`Ozon: у ${unverifiedReceipts} чеков не распознан итог. Суммы товаров требуют проверки.`);
   }
   const finished = performance.now();
-  return { rows, fiscalPayments, processedReceipts: [...new Set(rows.map(row => row.receipt_url || row.marketplace_id || '').filter(Boolean))], warnings, stats: { receipts: receipts.size, pages, failedReceipts: failed, incomplete, removed: 0, fallbackReceipts: new Set(rows.filter(row => row.parse_quality === 'fallback').map(row => row.marketplace_id)).size, unverifiedReceipts, listingElapsedMs: Math.round(pdfStarted - started), receiptFetchElapsedMs: Math.round(finished - pdfStarted), elapsedMs: Math.round(finished - started), receiptProgressUpdates, ...diagnostics } };
+  return { rows, fiscalPayments, processedReceipts: [...new Set(rows.map(row => row.receipt_url || row.marketplace_id || '').filter(Boolean))], warnings, stats: {
+    receipts: receipts.size, pages, failedReceipts: failed, incomplete, removed: 0,
+    fallbackReceipts: new Set(rows.filter(row => row.parse_quality === 'fallback').map(row => row.marketplace_id)).size, unverifiedReceipts,
+    listingElapsedMs: Math.round(pdfStarted - started), receiptFetchElapsedMs: Math.round(finished - pdfStarted), elapsedMs: Math.round(finished - started),
+    pdfDownloadAttempts, pdfProcessingAttempts, pdfDownloadTotalMs: Math.round(pdfDownloadTotalMs),
+    pdfProcessingTotalMs: Math.round(pdfProcessingTotalMs), receiptProgressUpdates, receiptProgressTotalMs: Math.round(receiptProgressTotalMs),
+    ...diagnostics,
+  } };
 }

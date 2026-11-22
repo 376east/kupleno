@@ -947,6 +947,12 @@ async function main() {
         assert.ok(Number.isSafeInteger(wbStats[field]) && wbStats[field] >= 0);
       }
       assert.equal(wbStats.receiptProgressUpdates, 1);
+      const ozonStats = repeat.metadata.collection.stats.ozon;
+      assert.equal(ozonStats.pdfDownloadAttempts, ozonStats.receipts);
+      assert.equal(ozonStats.pdfProcessingAttempts, ozonStats.receipts);
+      for (const field of ['pdfDownloadTotalMs', 'pdfProcessingTotalMs', 'receiptProgressTotalMs']) {
+        assert.ok(Number.isSafeInteger(ozonStats[field]) && ozonStats[field] >= 0);
+      }
       const stableRows = rows => rows.map(row => JSON.stringify(row)).sort();
       assert.deepEqual(stableRows(repeat.rows), stableRows(first.rows), 'Repeated update preserves rows without duplicates');
       assert.deepEqual(stableRows(repeat.fiscalPayments), stableRows(first.fiscalPayments), 'Repeated update preserves payments and advances');

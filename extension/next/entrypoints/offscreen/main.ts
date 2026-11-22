@@ -82,7 +82,10 @@ browser.runtime.onMessage.addListener((message, sender, reply) => {
         const response = await withDeadline(browser.runtime.sendMessage({ type: 'KUPLENO_OZON_REQUEST', id: job.id, url: url.href }), 'Ozon: обработчик запроса не ответил за 35 секунд.', 35000);
         signal.throwIfAborted();
         if (!response?.ok || response.error) throw new Error(response?.error || 'Ozon не ответил.');
-        const bytes = response.binary ? Uint8Array.from(atob(response.text), c => c.charCodeAt(0)) : response.text;
+        if (!response.binary) return new Response(response.text, { status: response.status });
+        const decoded = atob(response.text);
+        const bytes = new Uint8Array(decoded.length);
+        for (let index = 0; index < decoded.length; index++) bytes[index] = decoded.charCodeAt(index);
         return new Response(bytes, { status: response.status });
       }
       if (job.source === 'yandex' && url.origin === 'https://market.yandex.ru' && url.pathname === '/api/resolve/') {

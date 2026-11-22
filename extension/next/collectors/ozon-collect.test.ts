@@ -78,10 +78,25 @@ test('Ozon paginates embedded widgets and deduplicates current/archive receipts'
   assert.equal(result.rows.length, 3); assert.equal(result.stats.receipts, 3); assert.equal(result.stats.pages, 3);
   assert.equal(requests.filter(url => url.includes('downloadCheque')).length, 3); assert.deepEqual(result.warnings, []);
 });
-test('Ozon retains parsed receipts and reports partial PDF failure', async () => {
-  const fetch: typeof globalThis.fetch = async input => String(input).includes('downloadCheque') ? new Response(new Uint8Array([1]), { status: String(input).endsWith('b') ? 500 : 200 }) : new Response(page(['a', 'b']));
-  const result = await collectOzon({ fetch, readPdf });
+test('Ozon retains parsed receipts and measures download, processing and progress with a partial PDF failure', async t => {
+  let now = 0;
+  t.mock.method(performance, 'now', () => now);
+  const result = await collectOzon({
+    fetch: async input => {
+      if (!String(input).includes('downloadCheque')) return new Response(page(['a', 'b']));
+      now += 20;
+      return new Response('PDF fixture', { status: String(input).endsWith('b') ? 500 : 200 });
+    },
+    readPdf: async () => { now += 30; return readPdf(); },
+    onProgress: update => { if (update.total) now += 10; },
+  });
   assert.equal(result.rows.length, 1); assert.equal(result.stats.failedReceipts, 1); assert.ok(result.warnings.some(text => text.includes('HTTP 500: 1')));
+  assert.equal(result.stats.pdfDownloadAttempts, 2);
+  assert.equal(result.stats.pdfProcessingAttempts, 1);
+  assert.equal(result.stats.pdfDownloadTotalMs, 40);
+  assert.equal(result.stats.pdfProcessingTotalMs, 30);
+  assert.equal(result.stats.receiptProgressTotalMs, 20);
+  assert.equal(result.stats.receiptFetchElapsedMs, 90);
 });
 
 test('Ozon reads two PDFs concurrently after the first success and preserves receipt order', async () => {
