@@ -93,6 +93,7 @@ npm run preview:browser
 
 - `npm run preview:check`: типы, unit-тесты, production build и ссылки документов. [Команды](../package.json).
 - `npm run preview:browser`: настоящий unpacked MV3 в отдельном Chromium, импорт, поиск, редактирование, PDF worker, повторное открытие, backup/restore, возврат, гарантия, бюджет; отдельный проход worker/offscreen с искусственными ответами магазинов. Это не авторизованные аккаунты. [UI test](../scripts/next-browser-smoke.cjs), [collection test](../scripts/next-collection-smoke.cjs).
+- `node scripts/next-collection-smoke.cjs --one-click` после сборки отдельно проверяет два нажатия «Обновить все магазины», сохранность операций и авансов при повторе и совпадение скачанной копии с базой. Тот же сценарий входит в `preview:browser` и CI. [Проверка сбора](../scripts/next-collection-smoke.cjs).
 - `KUPLENO_DESIGN_OUTPUT` + `npm run preview:design`: synthetic history, светлая/тёмная темы, поиск, карточка, пять разделов на 390 px, Control на 320 px. Полного аудита скринридером нет. [Сценарий](../scripts/next-design-demo.cjs).
 
 Импорт отклоняет повреждённые поля правил категорий и месячных бюджетов до записи; допустимые неизвестные JSON-поля сохраняются. У бюджета разрешён отсутствующий или `null` общий лимит; старые плоские лимиты не преобразуются. Проверка отказа записи и импорта без изменения базы: [storage tests](../extension/next/storage.test.mjs), [UI scenario](../scripts/next-browser-smoke.cjs).

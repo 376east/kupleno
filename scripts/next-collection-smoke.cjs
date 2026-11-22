@@ -227,13 +227,16 @@ async function main() {
     const worker = context.serviceWorkers()[0] || await context.waitForEvent('serviceworker', { timeout: 10000 });
     fixtureWorkerUrl = worker.url();
     const id = new URL(worker.url()).host;
-    await worker.evaluate(base64 => {
-      const original = globalThis.fetch; globalThis.testPdfRequests = 0;
-      globalThis.fetch = async (input, init) => {
-        if (String(input).includes('/downloadCheque')) { globalThis.testPdfRequests++; return new Response(Uint8Array.from(atob(base64), c => c.charCodeAt(0))); }
-        return original(input, init);
-      };
-    }, pdf.toString('base64'));
+    await configureOzonPdfFixture(worker);
+    async function configureOzonPdfFixture(worker) {
+      await worker.evaluate(base64 => {
+        const original = globalThis.fetch; globalThis.testPdfRequests = 0;
+        globalThis.fetch = async (input, init) => {
+          if (String(input).includes('/downloadCheque')) { globalThis.testPdfRequests++; return new Response(Uint8Array.from(atob(base64), c => c.charCodeAt(0))); }
+          return original(input, init);
+        };
+      }, pdf.toString('base64'));
+    }
     const requests = [];
     let stallOzon = false, ozonGate;
     let holdYandex = false, releaseYandex;
@@ -345,6 +348,7 @@ async function main() {
       }
       return sendCommand(message);
     };
+    if (process.argv.includes('--one-click')) return await checkOneClick();
     async function checkWbReadiness() {
       await context.clearCookies({ name: 'wbid-sdk-id-token', domain: 'www.wildberries.ru' });
       const wbUser = await context.newPage(); await wbUser.goto('https://www.wildberries.ru/lk/receipts/get');
@@ -613,27 +617,29 @@ async function main() {
     // All three sources remain active together; a slow Ozon request does not own the other buttons.
     stallOzon = true; holdYandex = true; releaseYandex = undefined;
     const parallelWorker = context.serviceWorkers()[0];
-    await parallelWorker.evaluate(() => {
-      const original = globalThis.fetch;
-      globalThis.parallelWb = true;
-      globalThis.fetch = async (input, init) => {
-        if (globalThis.parallelWb && String(input).startsWith('https://astro.wildberries.ru/')) {
-          await new Promise((resolve, reject) => {
-            globalThis.releaseParallelWb = resolve;
-            init?.signal?.addEventListener('abort', () => reject(init.signal.reason), { once: true });
-          });
-          return new Response(JSON.stringify({ receipts: [{ receiptUid: 'parallel-wb', link: 'https://receipt.wb.ru/parallel-wb', operationSum: 100, operationDateTime: '2026-01-01T10:00:00Z' }] }));
-        }
-        if (String(input) === 'https://receipt.wb.ru/parallel-wb') {
-          const property = (label, value) => '<div class="property-name">' + label + '</div><div class="property-value">' + value + '</div>';
-          return new Response('<div class="check-header-column first">Приход<br></div><div class="products-item"><div class="products-cell products-cell_name"><div class="products-prop-value">Наименование Книга</div></div><div class="products-cell products-cell_price"></div><div class="products-cell products-cell_cost"><div class="products-prop-value">100,00 ₽</div></div></div><div class="total">'
-            + property('Итого', '100.00') + property('Электронными', '25.00') + property('Аванс', '75.00')
-            + property('№ ФН', '101') + property('№ ФД', '202') + property('ФПД', '303') + '</div>');
-        }
-        return original(input, init);
-      };
-    });
-    await context.addCookies([{ url: 'https://www.wildberries.ru/', name: 'wbid-sdk-id-token', value: 'synthetic.' + Buffer.from(JSON.stringify({ exp: Math.floor(Date.now()/1000)+3600 })).toString('base64url') + '.signature' }]);
+    await configureWbFixture(parallelWorker, true);
+    async function configureWbFixture(worker, hold) {
+      await worker.evaluate(hold => {
+        const original = globalThis.fetch;
+        globalThis.fetch = async (input, init) => {
+          if (String(input).startsWith('https://astro.wildberries.ru/')) {
+            if (hold) await new Promise((resolve, reject) => {
+              globalThis.releaseParallelWb = resolve;
+              init?.signal?.addEventListener('abort', () => reject(init.signal.reason), { once: true });
+            });
+            return new Response(JSON.stringify({ receipts: [{ receiptUid: 'parallel-wb', link: 'https://receipt.wb.ru/parallel-wb', operationSum: 100, operationDateTime: '2026-01-01T10:00:00Z' }] }));
+          }
+          if (String(input) === 'https://receipt.wb.ru/parallel-wb') {
+            const property = (label, value) => '<div class="property-name">' + label + '</div><div class="property-value">' + value + '</div>';
+            return new Response('<div class="check-header-column first">Приход<br></div><div class="products-item"><div class="products-cell products-cell_name"><div class="products-prop-value">Наименование Книга</div></div><div class="products-cell products-cell_price"></div><div class="products-cell products-cell_cost"><div class="products-prop-value">100,00 ₽</div></div></div><div class="total">'
+              + property('Итого', '100.00') + property('Электронными', '25.00') + property('Аванс', '75.00')
+              + property('№ ФН', '101') + property('№ ФД', '202') + property('ФПД', '303') + '</div>');
+          }
+          return original(input, init);
+        };
+      }, hold);
+      await context.addCookies([{ url: 'https://www.wildberries.ru/', name: 'wbid-sdk-id-token', value: 'synthetic.' + Buffer.from(JSON.stringify({ exp: Math.floor(Date.now()/1000)+3600 })).toString('base64url') + '.signature' }]);
+    }
     await page.goto(`chrome-extension://${id}/app.html#stores`);
     const stores = page.locator('.store-panel');
     await stores.filter({ has: page.getByRole('heading', { name: 'Ozon', exact: true }) }).waitFor();
@@ -720,11 +726,7 @@ async function main() {
       await new Promise(resolve => setTimeout(resolve, 100));
     }
     assert.equal((await command({ action: 'status' })).jobs.length, 0, 'Only saved results are acknowledged');
-    const persisted = await page.evaluate(async () => {
-      const database = await new Promise((resolve, reject) => { const request = indexedDB.open('kupleno-storage-v2'); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
-      try { return await new Promise((resolve, reject) => { const request = database.transaction('current').objectStore('current').get('state'); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); }); }
-      finally { database.close(); }
-    });
+    const persisted = await saved();
     assert.deepEqual(persisted.state.rows.map(row => row.source).sort(), ['ozon', 'wildberries', 'yandex']);
     assert.deepEqual(persisted.state.fiscalPayments, [{ ...fiscalPayment, source: 'wildberries' }]);
     assert.equal(Object.keys(persisted.state.metadata.appliedCollections).length, 3);
@@ -775,11 +777,54 @@ async function main() {
     await page.getByRole('dialog').waitFor({ state: 'hidden' });
     await page.goto(`chrome-extension://${id}/app.html#stores`);
     await page.getByText(oldWarning, { exact: true }).waitFor();
-    const saved = () => page.evaluate(async () => {
-      const database = await new Promise((resolve, reject) => { const request = indexedDB.open('kupleno-storage-v2'); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
-      try { return await new Promise((resolve, reject) => { const request = database.transaction('current').objectStore('current').get('state'); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); }); }
-      finally { database.close(); }
-    });
+    function saved() {
+      return page.evaluate(async () => {
+        const database = await new Promise((resolve, reject) => { const request = indexedDB.open('kupleno-storage-v2'); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
+        try { return await new Promise((resolve, reject) => { const request = database.transaction('current').objectStore('current').get('state'); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); }); }
+        finally { database.close(); }
+      });
+    }
+    async function checkOneClick() {
+      stallOzon = false;
+      const currentWorker = context.serviceWorkers().find(worker => worker.url() === fixtureWorkerUrl);
+      assert.ok(currentWorker, 'The fixture must use the installed extension worker');
+      await configureOzonPdfFixture(currentWorker);
+      await configureWbFixture(currentWorker, false);
+      await page.goto(`chrome-extension://${id}/app.html#stores`);
+      const updateAll = page.getByRole('button', { name: 'Обновить все магазины', exact: true });
+      await updateAll.waitFor();
+      const sources = ['ozon', 'wildberries', 'yandex'];
+      async function refresh(previous) {
+        const previousJobs = new Set((await command({ action: 'status' })).jobs.map(job => job.id));
+        await updateAll.click();
+        let state, jobs;
+        const deadline = Date.now() + 18000;
+        do {
+          state = (await saved())?.state;
+          jobs = (await command({ action: 'status' })).jobs;
+          assert.ok(!jobs.some(job => !previousJobs.has(job.id) && job.status === 'failed'), JSON.stringify(jobs.map(({ source, status, error }) => ({ source, status, error }))));
+          if (!jobs.length && sources.every(source => {
+            const applied = state?.metadata.appliedCollections?.[source];
+            return applied && applied !== previous?.metadata.appliedCollections?.[source];
+          })) return state;
+          await new Promise(resolve => setTimeout(resolve, 100));
+        } while (Date.now() < deadline);
+        assert.fail('One click must apply three new results: ' + JSON.stringify({ applied: state?.metadata.appliedCollections, pending: jobs?.map(({ source, status }) => ({ source, status })) }));
+      }
+      const first = await refresh((await saved())?.state);
+      const repeat = await refresh(first);
+      for (const source of sources) assert.ok(repeat.metadata.collection.stats[source].appliedRowsReceived > 0, source);
+      const stableRows = rows => rows.map(row => JSON.stringify(row)).sort();
+      assert.deepEqual(stableRows(repeat.rows), stableRows(first.rows), 'Repeated update preserves rows without duplicates');
+      assert.deepEqual(stableRows(repeat.fiscalPayments), stableRows(first.fiscalPayments), 'Repeated update preserves payments and advances');
+      assert.ok(repeat.fiscalPayments.some(payment => payment.source === 'wildberries' && payment.paid === 2500 && payment.advance === 7500));
+      await page.getByRole('link', { name: 'Настройки', exact: true }).click();
+      const [download] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Скачать копию', exact: true }).click()]);
+      const exported = JSON.parse(await fs.readFile(await download.path(), 'utf8'));
+      assert.deepEqual(stableRows(exported.state.rows), stableRows(repeat.rows));
+      assert.deepEqual(stableRows(exported.state.fiscalPayments), stableRows(repeat.fiscalPayments));
+      console.log('PASS: two real UI clicks in the isolated extension apply all three stores, preserve history and advances, and export the same data.');
+    }
     const failureBaseline = await saved();
     async function failedYandex(started) {
       const deadline = Date.now() + 15000;
@@ -1141,6 +1186,7 @@ async function main() {
     const durableAfterHeaders = JSON.stringify(await page.evaluate(() => chrome.storage.local.get('kupleno-next-jobs')));
     assert.ok(!/cached-sk-secret|fresh-sk-secret|cached-glue|fresh-glue|owned-tab-cursor/.test(durableAfterHeaders));
     assert.deepEqual((await saved()).state, failureBaseline.state);
+    await checkOneClick();
     assert.deepEqual(fixtureNavigationErrors, []);
     console.log('PASS: captured header context survives DOM removal; fresh DOM wins; missing context stays absent; invalid headers rejected; tokens never persisted.');
     console.log('PASS: failed-run diagnostics survive restart/export without history writes; old warnings hidden; HTML stops the queue; login distinguished; human check URL guarded and kept without focus or token persistence.');
