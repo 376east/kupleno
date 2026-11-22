@@ -24,10 +24,13 @@ async function finish(id: string, result?: CollectionResult, error?: string, fai
   }
 }
 
+const workerPath = import.meta.env.MODE === 'local-audit' ? 'local-audit-background.js' : 'background.js';
+const workerUrl = new URL(workerPath, browser.runtime.getURL('/offscreen.html')).href;
+
 browser.runtime.onMessage.addListener((message, sender, reply) => {
   if (sender.id !== browser.runtime.id || message?.type !== 'KUPLENO_OFFSCREEN') return;
   // A website and the report page cannot supply executable jobs or authenticated request headers.
-  if (sender.url && sender.url !== browser.runtime.getURL('/background.js')) { reply({ ok: false }); return; }
+  if (sender.url && sender.url !== workerUrl) { reply({ ok: false }); return; }
   if (message.action === 'status') { reply({ ok: true, ids: [...tasks.keys()] }); return; }
   if (message.action === 'clearReceiptCache') {
     void Promise.allSettled([yandexReceiptCache.clear(), yandexOrderDocuments.clear()])

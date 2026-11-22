@@ -401,11 +401,14 @@ async function main() {
       assert.ok(!auditIds.some(id => JSON.stringify(report).includes(id)));
       assert.deepEqual(await page.evaluate(() => chrome.tabs.query({ url: 'https://market.yandex.ru/my/order/*' })), []);
       assert.deepEqual((await sendCommand({ action: 'status' })).jobs, [], 'Audit never starts a history collection');
-      await checkOneClick();
+      await configureWbFixture(worker, false);
       for (const [source, itemCountField] of [['ozon', 'receipts'], ['wildberries', 'receipts'], ['yandex', 'orders']]) {
-        const collection = await readReport(source, report => report.source === source && report.status === 'completed');
+        const started = await sendCommand({ action: 'start', source, profile: 'personal' });
+        assert.equal(started.ok, true, JSON.stringify(started));
+        const collection = await readReport(source, report => report.source === source);
         assert.equal(collection.source, source);
-        assert.equal(collection.status, 'completed');
+        assert.equal(collection.status, 'completed', collection.status === 'completed' ? undefined
+          : (await sendCommand({ action: 'status', source })).job?.error);
         assert.ok(collection.stats[itemCountField] > 0);
         assert.ok(!JSON.stringify(collection).includes('https://'));
       }

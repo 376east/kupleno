@@ -72,4 +72,5 @@ export function registerLocalAudit(jobsKey: string, verify: typeof verifyYandexO
   };
   browser.runtime.onStartup.addListener(start);
   browser.runtime.onInstalled.addListener(start);
+  start();
 }

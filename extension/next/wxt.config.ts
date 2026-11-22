@@ -1,3 +1,5 @@
+import { rename } from 'node:fs/promises';
+import { join } from 'node:path';
 import { defineConfig } from 'wxt';
 import { storeOrigins } from './collection';
 import { version } from './package.json';
@@ -5,10 +7,21 @@ import { version } from './package.json';
 export default defineConfig({
   modules: ['@wxt-dev/module-react'],
   imports: false,
+  hooks: {
+    'build:manifestGenerated': async ({ config }, manifest) => {
+      if (config.mode !== 'local-audit') return;
+      const { background } = manifest;
+      if (!background || !('service_worker' in background) || !background.service_worker) throw new Error('Не найден фоновый обработчик локальной сборки.');
+      // Use a new worker URL so Chromium cannot reuse its previously registered script.
+      const worker = 'local-audit-background.js';
+      await rename(join(config.outDir, background.service_worker), join(config.outDir, worker));
+      background.service_worker = worker;
+    },
+  },
   manifest: ({ mode }) => ({
     name: 'Куплено — новая версия',
-    version,
-    version_name: `${version} preview`,
+    version: mode === 'local-audit' ? `${version}.1` : version,
+    version_name: mode === 'local-audit' ? `${version}.1 local audit` : `${version} preview`,
     description: 'Покупки и возвраты в одном месте. Локальная проверка новой версии.',
     minimum_chrome_version: '116',
     icons: { 16: 'icons/icon-16.png', 32: 'icons/icon-32.png', 48: 'icons/icon-48.png', 128: 'icons/icon-128.png' },
