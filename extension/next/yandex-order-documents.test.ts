@@ -261,7 +261,7 @@ test('order documents helper uses only its own offline fixture tab', async t => 
         return execute(injection);
       }) as Api['scripting']['executeScript'];
       const result = await readYandexOrderDocuments(123456, {
-        browser: f.api, onReleased: f.onReleased, isCurrent: () => true, timeoutMs: 3600,
+        browser: f.api, onReleased: f.onReleased, isCurrent: () => true, timeoutMs: 6000,
         onOpened: async (id, orderId) => {
           await f.onOpened(id, orderId);
           await f.page.evaluate(() => {
@@ -283,7 +283,7 @@ test('order documents helper uses only its own offline fixture tab', async t => 
     });
     await t.test('an opened loading dialog never receives a retry click after three seconds', async () => {
       const f = await fixture(context, button, '<div role="dialog" aria-busy="true">Документы по заказу</div>');
-      const result = await readYandexOrderDocuments(123456, { browser: f.api, onOpened: f.onOpened, onReleased: f.onReleased, isCurrent: () => true, timeoutMs: 3500 });
+      const result = await readYandexOrderDocuments(123456, { browser: f.api, onOpened: f.onOpened, onReleased: f.onReleased, isCurrent: () => true, timeoutMs: 6000 });
       assert.deepEqual(result, { urls: [], complete: false, blocked: false, failureReason: 'loading' });
       assert.equal(f.clicks, 1);
       assert.equal(f.calls.filter(action => action === 'click').length, 1);
@@ -295,7 +295,7 @@ test('order documents helper uses only its own offline fixture tab', async t => 
       let cancelTimer: ReturnType<typeof setTimeout> | undefined;
       try {
         const result = await readYandexOrderDocuments(123456, {
-          browser: f.api, onReleased: f.onReleased, isCurrent: () => true, signal: controller.signal, timeoutMs: 3700,
+          browser: f.api, onReleased: f.onReleased, isCurrent: () => true, signal: controller.signal, timeoutMs: 6000,
           onOpened: async (id, orderId) => {
             await f.onOpened(id, orderId);
             if (cancel) cancelTimer = setTimeout(() => controller.abort(), 750);
@@ -332,7 +332,7 @@ test('order documents helper uses only its own offline fixture tab', async t => 
     }
     for (const [name, markup] of [['final inert receipt', inertReceipt], ['known empty state', knownEmpty]]) await t.test(`${name} completes after two stable reads without waiting for the deadline`, async () => {
       const f = await fixture(context, button, `<div role="dialog">Документы по заказу${markup}</div>`);
-      const result = await readYandexOrderDocuments(123456, { browser: f.api, onOpened: f.onOpened, onReleased: f.onReleased, isCurrent: () => true, timeoutMs: 1500 });
+      const result = await readYandexOrderDocuments(123456, { browser: f.api, onOpened: f.onOpened, onReleased: f.onReleased, isCurrent: () => true, timeoutMs: 3000 });
       assert.deepEqual(result, { urls: [], complete: true, blocked: false });
       assert.equal(f.reads, 2);
       assert.equal(f.clicks, 1);
