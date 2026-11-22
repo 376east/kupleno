@@ -149,7 +149,7 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
     cachedOrderDialogs: 0, orderDocumentCacheLookups: 0, orderDocumentCacheMisses: 0,
     orderDocumentCacheWrites: 0, orderDocumentCacheUnverified: 0,
     orderDocumentCacheReadErrors: 0, orderDocumentCacheWriteErrors: 0, earlyReceiptDownloads: 0,
-    listedOrders: 0, knownOrdersAdded: 0 };
+    listedOrders: 0, knownOrdersAdded: 0, orderListResolverRequests: 0, orderListResolverElapsedMs: 0, orderListDomElapsedMs: 0 };
   const pagination = { lastPageItems: 0, lastPageIds: 0, lastPageNewIds: 0, lastPageHasNextKnown: false, lastPageHasNext: false, lastPageCursorPresent: false, lastPageCursorMatchesRequest: false, repeatedCursor: false };
   const receipts = new Map<string, Receipt & { orderIds: Set<string> }>();
   const addReceipt = (receipt: Receipt): boolean => {
@@ -221,6 +221,7 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
     if (metadataStopped) throw metadataStopError;
     if (attempt) diagnostics.transientRetries++;
     if (receiptRequest) { diagnostics.receiptMetadataRequests++; diagnostics.receiptMetadataOrdersRequested += params.length; }
+      else diagnostics.orderListResolverRequests++;
     let response: Response;
     try { response = await options.fetch(url.href, { method: 'POST', credentials: 'include', referrer: retpath, signal: options.signal, headers: requestHeaders, body: JSON.stringify({ params, path }) }); }
     catch (error) {
@@ -299,6 +300,7 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
   const visited = new Set<string>();
   // Rendered orders are only a seed: missing HTML pagination metadata is not the end of history.
   let requestPage = true, listingFailed = false;
+  const listingResolvers = [...orderResolvers];
   while (requestPage && pages < 2000) {
     if (visited.has(token)) { listingFailed = true; pagination.repeatedCursor = true; incomplete = true; warnings.push('Яндекс Маркет: повторилась страница заказов.'); break; }
     visited.add(token); pages++;
@@ -306,13 +308,16 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
     options.signal?.throwIfAborted();
     let page: Record<string, unknown> | null = null;
     let listReason = '';
-    for (const resolver of orderResolvers) {
+    for (const resolver of listingResolvers) {
+      const resolverStarted = Date.now();
       try {
         const data = resultData(await resolve(resolver, [{ ...(token ? { pageToken: token } : {}), filter: 'COMPLETED', size: 18 }]), diagnostics, 0, true);
         const collection = object(object(data.collections).orderConsolidationResult);
         const id = Array.isArray(data.result) ? data.result[0] : data.result;
         const candidate = object(collection[String(id)] || Object.values(collection)[0]);
         if (!Array.isArray(candidate.ordersGroupsIds) && !Array.isArray(candidate.orderGroupIds)) { diagnostics.responseMalformedResult++; throw new Error('Список заказов не распознан.'); }
+        // Keep the cursor on the resolver that produced it; the other remains a fallback.
+        if (resolver !== listingResolvers[0]) listingResolvers.reverse();
         page = candidate; break;
       } catch (e) {
         if (options.signal?.aborted || globalApiFailure(e)) throw e;
@@ -321,7 +326,7 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
         if (typeof status === 'number' && [502, 503, 504].includes(status)) diagnostics.listErrorHttpStatus = status;
         listReason = known || (typeof status === 'number' && [502, 503, 504].includes(status) ? `HTTP ${status}` : listReason || 'неизвестный формат ответа');
         if (error.code === 'YANDEX_TRANSIENT_EXHAUSTED') break;
-      }
+      } finally { diagnostics.orderListResolverElapsedMs += duration(Date.now() - resolverStarted); }
     }
     if (!page) { listingFailed = true; if (!orderIds.size && !options.readOrdersDom) throw new Error(`Яндекс Маркет: формат списка заказов не распознан (${listReason}).`); incomplete = true; warnings.push(`Яндекс Маркет: следующие страницы заказов не прочитаны (${listReason}).`); break; }
     const items = Array.isArray(page.ordersGroupsIds) ? page.ordersGroupsIds : array(page.orderGroupIds);
@@ -376,6 +381,7 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
       if (step === 299) { diagnostics.domFallbackLimits++; break; }
       await new Promise(resolve => setTimeout(resolve, 500));
     }
+    diagnostics.orderListDomElapsedMs = duration(Date.now() - started);
     warnings.push('Яндекс Маркет: полнота списка в магазине не подтверждена.');
   }
   if (listingFailed && !orderIds.size) throw new Error('Яндекс Маркет: список заказов не прочитан.');

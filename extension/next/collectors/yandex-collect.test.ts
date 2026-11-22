@@ -631,6 +631,35 @@ test('Yandex rejects unknown payload instead of reporting successful empty colle
   await assert.rejects(collectYandex({ fetch: async () => new Response(JSON.stringify({ error: 'expired' })) }), /формат списка заказов/);
 });
 
+test('pagination starts with the last successful resolver and falls back on the same cursor', async () => {
+  const trace: string[] = [];
+  const result = await collectYandex({ fetch: async (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname === '/my/orders') return new Response('');
+    if (url.hostname === 'check.yandex.ru') return new Response(receipt);
+    const resolver = url.searchParams.get('r') || '';
+    const params = JSON.parse(String(init?.body)).params[0];
+    if (resolver.includes('resolveConsolidationOrders')) {
+      const page = Number(params.pageToken || '1');
+      const legacy = resolver.includes('/index:');
+      trace.push(`${page}:${legacy ? 'legacy' : 'current'}`);
+      if (legacy !== (page >= 4)) return Response.json({ results: [{ error: { code: 'NOT_FOUND' } }] });
+      return envelope({ result: 'list', collections: { orderConsolidationResult: { list: {
+        ordersGroupsIds: [123450 + page], hasNext: page < 5, ...(page < 5 ? { pageToken: String(page + 1) } : {}),
+      } } } });
+    }
+    return envelope({ result: ['r'], collections: { orderReceipt: { r: { fiscalUrl: `https://check.yandex.ru/${params.orderId}`, createdAt: 1767225600 } } } });
+  } });
+  assert.deepEqual(trace, ['1:legacy', '1:current', '2:current', '3:current', '4:current', '4:legacy', '5:legacy']);
+  assert.equal(result.stats.orders, 5);
+  assert.equal(result.stats.receipts, 5);
+  assert.equal(result.stats.orderListResolverRequests, trace.length);
+  assert.ok(Number(result.stats.orderListResolverElapsedMs) >= 0);
+  assert.equal(result.stats.orderListDomElapsedMs, 0);
+  assert.equal(result.stats.incomplete, false);
+  assert.deepEqual(result.warnings, []);
+});
+
 test('failed API pagination keeps HTML orders but cannot claim complete history', async () => {
   const result = await collectYandex({ fetch: async input => {
     const url = new URL(String(input));
