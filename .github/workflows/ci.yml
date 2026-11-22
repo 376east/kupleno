@@ -74,6 +74,7 @@ jobs:
           npm --prefix extension/next run build -- --mode local-audit
           node scripts/next-collection-smoke.cjs --local-audit
           node scripts/next-collection-smoke.cjs --local-full
+          node scripts/next-collection-smoke.cjs --local-all
           node scripts/local-audit-restart-smoke.cjs
       - run: npm run preview:design
         env:

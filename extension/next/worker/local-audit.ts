@@ -2,7 +2,7 @@ import { browser } from 'wxt/browser';
 import { collectionAttemptDiagnostics, localAuditConfig, readFailureStats, readUnresolvedOrderIds, storeOrigins } from '../collection';
 import { handleCollectionCommand, type verifyYandexOrders } from './collection';
 import type { Job } from '../collection';
-import type { Source } from '../model';
+import type { Envelope, Source } from '../model';
 import { knownYandexOrderIds } from '../collection-state';
 import { settingsWithDefaults } from '../preferences.mjs';
 import { createStore } from '../storage.mjs';
@@ -10,6 +10,7 @@ import { applyPendingMarketJob } from './local-apply';
 
 const auditKey = 'kupleno-local-audit-result';
 const fullKey = 'kupleno-local-collection-request';
+const fullKeyFor = (source: Source) => source === 'yandex' ? fullKey : `${fullKey}-${source}`;
 const applyKey = 'kupleno-local-apply-result';
 const folder = 'Kupleno-diagnostics';
 type FullRun = { run: string; version: string; id: string; report?: object; downloadId?: number };
@@ -29,23 +30,27 @@ export function registerLocalAudit(jobsKey: string, verify: typeof verifyYandexO
   let reports = Promise.resolve();
   const logSaveFailure = () => console.error('Куплено: не удалось записать локальный отчёт.');
   const version = browser.runtime.getManifest().version;
-  const readFull = async () => (await browser.storage.local.get(fullKey))[fullKey] as FullRun | undefined;
+  const readFull = async (source: Source) => {
+    const key = fullKeyFor(source);
+    return (await browser.storage.local.get(key))[key] as FullRun | undefined;
+  };
 
-  async function finishFull(request: FullRun, outcome: object) {
-    const report = request.report ?? { schema: 1, version, run: request.run, source: 'yandex', checkedAt: new Date().toISOString(), ...outcome };
-    if (!request.report) await browser.storage.local.set({ [fullKey]: { ...request, report } });
+  async function finishFull(source: Source, request: FullRun, outcome: object) {
+    const key = fullKeyFor(source);
+    const report = request.report ?? { schema: 1, version, run: request.run, source, checkedAt: new Date().toISOString(), ...outcome };
+    if (!request.report) await browser.storage.local.set({ [key]: { ...request, report } });
     if (typeof request.downloadId === 'number') {
       const [file] = await browser.downloads.search({ id: request.downloadId });
       if (file?.state === 'in_progress' || (file?.state === 'complete' && file.exists)) return;
     }
-    const downloadId = await saveReport(`collection-yandex-${request.run}`, report);
-    await browser.storage.local.set({ [fullKey]: { ...request, report, downloadId } });
+    const downloadId = await saveReport(`collection-${source}-${request.run}`, report);
+    await browser.storage.local.set({ [key]: { ...request, report, downloadId } });
   }
 
-  function reportFull(request: FullRun, outcome: object) {
+  function reportFull(source: Source, request: FullRun, outcome: object) {
     const task = reports.then(async () => {
-      const current = await readFull();
-      if (current?.id === request.id && current.version === version) await finishFull(current, outcome);
+      const current = await readFull(source);
+      if (current?.id === request.id && current.version === version) await finishFull(source, current, outcome);
     });
     reports = task.catch(logSaveFailure);
     return task;
@@ -65,8 +70,8 @@ export function registerLocalAudit(jobsKey: string, verify: typeof verifyYandexO
       if (job.status === 'running' || (previous?.[job.source]?.id === job.id && previous[job.source]?.status === job.status)) continue;
       reports = reports.then(async () => {
         const outcome = jobOutcome(job);
-        const request = job.source === 'yandex' ? await readFull() : undefined;
-        if (request?.id === job.id && request.version === version) await finishFull(request, outcome);
+        const request = await readFull(job.source);
+        if (request?.id === job.id && request.version === version) await finishFull(job.source, request, outcome);
         await saveReport(`collection-${job.source}`, {
           schema: 1, version, ...outcome,
         });
@@ -74,32 +79,32 @@ export function registerLocalAudit(jobsKey: string, verify: typeof verifyYandexO
     }
   });
 
-  async function runFull(run: string) {
-    const previous = await readFull();
-    const command = { type: 'KUPLENO_JOB', action: 'status', source: 'yandex' } as const;
+  async function runFull(run: string, source: Source, readSaved: () => Promise<Envelope | null>) {
+    const previous = await readFull(source);
+    const command = { type: 'KUPLENO_JOB', action: 'status', source } as const;
     if (previous?.run === run && previous.version === version) {
-      if (previous.report) return reportFull(previous, {});
+      if (previous.report) return reportFull(source, previous, {});
       const result = await handleCollectionCommand({ ...command, id: previous.id });
       if (result.ok && result.job?.status === 'running') return;
-      return reportFull(previous, result.ok && result.job ? jobOutcome(result.job) : { status: 'interrupted' });
+      return reportFull(source, previous, result.ok && result.job ? jobOutcome(result.job) : { status: 'interrupted' });
     }
     const request = { run, version, id: crypto.randomUUID() };
-    await browser.storage.local.set({ [fullKey]: request });
-    if (!await browser.permissions.contains({ origins: storeOrigins.yandex })) return reportFull(request, { status: 'permission_required' });
-    const current = await handleCollectionCommand(command);
-    if (current.ok && (current.job?.status === 'running' || current.job?.status === 'completed')) {
-      return reportFull(request, { status: 'busy' });
-    }
+    await browser.storage.local.set({ [fullKeyFor(source)]: request });
     try {
-      const saved = await createStore().read();
+      if (!await browser.permissions.contains({ origins: storeOrigins[source] })) return reportFull(source, request, { status: 'permission_required' });
+      const current = await handleCollectionCommand(command);
+      if (current.ok && (current.job?.status === 'running' || current.job?.status === 'completed')) {
+        return reportFull(source, request, { status: 'busy' });
+      }
+      const saved = await readSaved();
       const profile = settingsWithDefaults(saved?.state.settings).dataProfile;
-      const knownOrderIds = saved ? knownYandexOrderIds(saved.state, profile) : [];
       const result = await handleCollectionCommand({
-        type: 'KUPLENO_JOB', action: 'start', source: 'yandex', profile, knownOrderIds,
+        type: 'KUPLENO_JOB', action: 'start', source, profile,
+        ...(source === 'yandex' ? { knownOrderIds: saved ? knownYandexOrderIds(saved.state, profile) : [] } : {}),
       }, request.id);
-      if (!result.ok || !result.job) return reportFull(request, { status: 'start_failed' });
-      if (result.job.status !== 'running') return reportFull(request, jobOutcome(result.job));
-    } catch { return reportFull(request, { status: 'start_failed' }); }
+      if (!result.ok || !result.job) return reportFull(source, request, { status: 'start_failed' });
+      if (result.job.status !== 'running') return reportFull(source, request, jobOutcome(result.job));
+    } catch { return reportFull(source, request, { status: 'start_failed' }); }
   }
 
   async function runApply(run: string, sourceRun: string, orders: number) {
@@ -111,7 +116,7 @@ export function registerLocalAudit(jobsKey: string, verify: typeof verifyYandexO
     }
     let report = previousApply?.report;
     if (!report) {
-      const full = await readFull();
+      const full = await readFull('yandex');
       const previousReport = full?.report as { status?: string; stats?: { orders?: number } } | undefined;
       const matches = full?.run === sourceRun && previousReport?.status === 'completed' && previousReport.stats?.orders === orders;
       const result = matches
@@ -137,7 +142,16 @@ export function registerLocalAudit(jobsKey: string, verify: typeof verifyYandexO
       && 'orders' in config && typeof config.orders === 'number' && Number.isSafeInteger(config.orders) && config.orders > 0) {
       return runApply(run, config.apply, config.orders);
     }
-    if ('collection' in config && config.collection === 'yandex' && !('orderIds' in config)) return runFull(run);
+    if ('collection' in config && !('orderIds' in config) && !('apply' in config)) {
+      let saved: Promise<Envelope | null> | undefined;
+      const readSaved = () => saved ??= createStore().read();
+      if (config.collection === 'yandex') return runFull(run, 'yandex', readSaved);
+      if (config.collection === 'all') {
+        const results = await Promise.allSettled((['ozon', 'wildberries', 'yandex'] as const).map(source => runFull(run, source, readSaved)));
+        if (results.some(result => result.status === 'rejected')) logSaveFailure();
+        return;
+      }
+    }
     if (!('orderIds' in config) || 'collection' in config) return;
     const ids = readUnresolvedOrderIds(config.orderIds);
     if (!ids?.length || ids.length > 4) return;

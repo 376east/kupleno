@@ -61,15 +61,17 @@ async function main() {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'kupleno-collect-test-'));
   const build = path.join(root, 'extension');
   const fullAudit = process.argv.includes('--local-full');
-  const localAudit = fullAudit || process.argv.includes('--local-audit');
+  const allAudit = process.argv.includes('--local-all');
+  const localAudit = fullAudit || allAudit || process.argv.includes('--local-audit');
   const auditIds = ['710001', '710002', '710003', '710004'];
   await fs.cp(path.resolve(__dirname, '../extension/next/.output', localAudit ? 'chrome-mv3-local-audit' : 'chrome-mv3'), build, { recursive: true });
   // Pregrant hosts only in the disposable synthetic test extension. Shipping manifest remains optional.
   const manifest = JSON.parse(await fs.readFile(path.join(build, 'manifest.json'), 'utf8'));
   assert.equal(manifest.permissions.includes('downloads'), localAudit);
   const auditConfig = 'local-audit-v' + manifest.version.split('.').at(-1) + '.json';
-  if (localAudit) await fs.writeFile(path.join(build, auditConfig), JSON.stringify(fullAudit
-    ? { run: 'synthetic-full', collection: 'yandex' } : { run: 'synthetic', orderIds: auditIds }));
+  if (localAudit) await fs.writeFile(path.join(build, auditConfig), JSON.stringify(allAudit
+    ? { run: 'synthetic-all', collection: 'all' }
+    : fullAudit ? { run: 'synthetic-full', collection: 'yandex' } : { run: 'synthetic', orderIds: auditIds }));
   manifest.host_permissions = manifest.optional_host_permissions;
   manifest.permissions.push('cookies');
   await fs.writeFile(path.join(build, 'manifest.json'), JSON.stringify(manifest));
@@ -416,6 +418,30 @@ async function main() {
         await page.locator('input[type=file]').setInputFiles({ name: 'synthetic-existing.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify({ format: 'kupleno-backup', version: 2, state })) });
         await page.getByRole('dialog').getByRole('button', { name: 'Загрузить историю', exact: true }).click();
         await page.getByRole('dialog').waitFor({ state: 'hidden' });
+      }
+      if (allAudit) {
+        await configureWbFixture(worker, false);
+        let releaseOzon;
+        ozonGate = new Promise(resolve => { releaseOzon = resolve; });
+        const forSource = source => readReport(source, report => report.run === 'synthetic-all' && report.source === source);
+        await worker.evaluate(() => chrome.storage.local.set({ 'synthetic-audit-ready': true }));
+        const reports = [];
+        try {
+          reports.push(...await Promise.all([forSource('wildberries'), forSource('yandex')]));
+          assert.equal((await sendCommand({ action: 'status', source: 'ozon' })).job.status, 'running');
+        } finally { releaseOzon(); }
+        reports.push(await forSource('ozon'));
+        for (const report of reports) {
+          assert.equal(report.version, manifest.version);
+          assert.equal(report.status, 'completed', JSON.stringify(report));
+          assert.equal(report.stats.receipts, 1);
+          assert.ok(!JSON.stringify(report).includes('https://'));
+        }
+        const { jobs } = await sendCommand({ action: 'status' });
+        assert.equal(jobs.filter(job => job.status === 'completed').length, 3, 'Local report must leave results for their normal save');
+        assert.deepEqual(fixtureNavigationErrors, []);
+        console.log('PASS: startup runs all three collectors without UI commands, saves independent reports and leaves history application to the app.');
+        return;
       }
       await worker.evaluate(() => chrome.storage.local.set({ 'synthetic-audit-ready': true }));
       if (fullAudit) {
