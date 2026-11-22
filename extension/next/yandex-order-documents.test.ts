@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { chromium, type BrowserContext, type Page } from 'playwright';
 import { readYandexOrderDocuments } from './worker/yandex-order-documents.ts';
+import type { YandexDocumentTimings } from './collection.ts';
 
 const orderUrl = 'https://market.yandex.ru/my/order/123456';
 const button = '<button type="button">Чеки и другие документы</button>';
@@ -404,8 +405,10 @@ test('order documents helper uses only its own offline fixture tab', async t => 
     for (const mode of ['delayed', 'growing', 'busy']) await t.test(`waits for ${mode} dialog links and two stable reads`, async () => {
       const initial = `<div role="dialog" ${mode === 'busy' ? 'aria-busy="true"' : ''}>Документы по заказу${mode === 'delayed' ? '' : '<a href="https://check.yandex.ru/first">Чек покупки</a>'}</div>`;
       const f = await fixture(context, button, initial);
+      let timings: YandexDocumentTimings | undefined;
       const result = await readYandexOrderDocuments(123456, {
-        browser: f.api, onReleased: f.onReleased, isCurrent: () => true, timeoutMs: 1500,
+        browser: f.api, onReleased: f.onReleased, isCurrent: () => true, timeoutMs: 3000,
+        onTimings: value => { timings = value; },
         onOpened: async (id, orderId) => {
           await f.onOpened(id, orderId);
           await f.page.evaluate(mode => {
@@ -422,6 +425,7 @@ test('order documents helper uses only its own offline fixture tab', async t => 
       assert.ok(f.reads >= 3);
       assert.equal(f.clicks, 1);
       assert.equal(f.releases, 1);
+      assert.ok(timings && timings.Dialog >= 100);
     });
     await t.test('awaits persisted ownership and stops when the job becomes stale during it', async () => {
       const f = await fixture(context); let current = true;

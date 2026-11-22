@@ -1120,6 +1120,13 @@ async function main() {
     for (const field of ['listingElapsedMs', 'metadataElapsedMs', 'documentFallbackElapsedMs', 'receiptFetchElapsedMs', 'elapsedMs']) assert.ok(Number.isSafeInteger(domDone.job.result.stats[field]) && domDone.job.result.stats[field] >= 0);
     assert.equal(domDone.job.result.stats.domReceiptUrlsAdded, 2);
     assert.equal(domDone.job.result.stats.domReceiptCompleteDialogs, 1);
+    const cardStats = domDone.job.result.stats;
+    assert.equal(cardStats.domReceiptTimedAttempts, 1);
+    for (const phase of ['TabSetup', 'Navigation', 'Control', 'Dialog', 'Cleanup']) {
+      const duration = cardStats[`domReceipt${phase}Ms`];
+      assert.ok(Number.isSafeInteger(duration) && duration >= 0);
+    }
+    assert.ok(cardStats.domReceiptDialogMs > 0, 'Wait for stable dialog content reaches collector stats');
     assert.equal(documentClicks, 1);
     assert.deepEqual((await page.evaluate(() => chrome.storage.local.get('kupleno-next-yandex-document-tabs')))['kupleno-next-yandex-document-tabs'], []);
     assert.equal(domDone.job.result.stats.incomplete, true);
@@ -1134,6 +1141,7 @@ async function main() {
     retainYandexCache = false;
     assert.equal(warmDialogs.stats.cachedOrderDialogs, 1);
     assert.equal(warmDialogs.stats.domReceiptOrdersAttempted, 0);
+    assert.equal(warmDialogs.stats.domReceiptTimedAttempts, 0);
     assert.equal(documentClicks, 1, 'The verified order dialog is not opened again');
     assert.deepEqual(financial(warmDialogs), financial(domDone.job.result));
     assert.deepEqual(warmDialogs.fiscalPayments, domDone.job.result.fiscalPayments);

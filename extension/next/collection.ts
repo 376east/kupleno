@@ -13,7 +13,10 @@ export interface CollectionResult { rows: Purchase[]; stats: Record<string, numb
 export interface YandexOrdersDomResult { orderIds: string[]; clicked: boolean; hasMore: boolean; blocked: boolean; ambiguous: boolean; limit: boolean; fatal: boolean }
 export const yandexDocumentConcurrency = 3;
 export type YandexDocumentsFailureReason = 'navigation' | 'button' | 'dialog' | 'loading' | 'error' | 'unrecognized' | 'request';
-export interface YandexDocumentsResult { urls: string[]; complete: boolean; blocked: boolean; failureReason?: YandexDocumentsFailureReason }
+export const yandexDocumentStages = ['TabSetup', 'Navigation', 'Control', 'Dialog', 'Cleanup'] as const;
+export type YandexDocumentStage = typeof yandexDocumentStages[number];
+export type YandexDocumentTimings = Record<YandexDocumentStage, number>;
+export interface YandexDocumentsResult { urls: string[]; complete: boolean; blocked: boolean; failureReason?: YandexDocumentsFailureReason; timings?: YandexDocumentTimings }
 export interface DocumentTab { tabId: number; orderId: string; ownerJobId: string }
 export function readDocumentTabs(value: unknown): DocumentTab[] | undefined {
   if (!Array.isArray(value) || value.length > 64 || value.some(item => !item || typeof item !== 'object' || !Number.isSafeInteger(item.tabId) || item.tabId < 0 || typeof item.orderId !== 'string' || !/^[1-9]\d*$/.test(item.orderId) || !Number.isSafeInteger(Number(item.orderId)) || typeof item.ownerJobId !== 'string' || !/^[A-Za-z0-9-]{1,120}$/.test(item.ownerJobId))) return undefined;
@@ -30,7 +33,11 @@ export function readYandexDocumentsResult(value: unknown): YandexDocumentsResult
     if (typeof item !== 'string' || item.length > 16000 || (size += item.length) > 8 * 1024 * 1024) return undefined;
     try { const url = new URL(item); if (url.protocol !== 'https:' || url.hostname !== 'check.yandex.ru' || url.username || url.password) return undefined; } catch { return undefined; }
   }
-  return { urls: [...new Set(result.urls)], complete: result.complete, blocked: result.blocked, ...(result.failureReason ? { failureReason: result.failureReason } : {}) };
+  const timings = result.timings;
+  const safeTimings = timings && typeof timings === 'object' && !Array.isArray(timings)
+    && yandexDocumentStages.every(stage => Number.isSafeInteger(timings[stage]) && timings[stage] >= 0 && timings[stage] <= 300000)
+    ? Object.fromEntries(yandexDocumentStages.map(stage => [stage, timings[stage]])) as YandexDocumentTimings : undefined;
+  return { urls: [...new Set(result.urls)], complete: result.complete, blocked: result.blocked, ...(result.failureReason ? { failureReason: result.failureReason } : {}), ...(safeTimings ? { timings: safeTimings } : {}) };
 }
 export function readUnresolvedOrderIds(value: unknown): string[] | undefined {
   if (!Array.isArray(value) || value.length > 1000 || value.some(id => typeof id !== 'string' || !/^[1-9]\d*$/.test(id) || !Number.isSafeInteger(Number(id)))) return undefined;

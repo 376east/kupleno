@@ -225,6 +225,12 @@ test('document registry and fixed result validators reject foreign identities an
   assert.deepEqual(readDocumentTabs([{ ...record, secret: 'discard' }]), [record]);
   for (const value of [[{ ...record, orderId: '0' }], [{ ...record, orderId: 'https://market.yandex.ru' }], [record, record], Array(65).fill(record), [{ ...record, ownerJobId: '../foreign' }]]) assert.equal(readDocumentTabs(value), undefined);
   assert.deepEqual(readYandexDocumentsResult({ urls: ['https://check.yandex.ru/doc'], complete: true, blocked: false, secret: 'discard' }), { urls: ['https://check.yandex.ru/doc'], complete: true, blocked: false });
+  const document = { urls: [], complete: true, blocked: false };
+  const timings = { TabSetup: 10, Navigation: 20, Control: 30, Dialog: 40, Cleanup: 50 };
+  assert.deepEqual(readYandexDocumentsResult({ ...document, timings: { ...timings, order: 'private' } }), { ...document, timings });
+  for (const Dialog of [-1, 0.5, 300001, '20', null, undefined]) {
+    assert.deepEqual(readYandexDocumentsResult({ ...document, timings: { ...timings, Dialog } }), document);
+  }
   for (const failureReason of ['navigation', 'button', 'dialog', 'loading', 'error', 'unrecognized', 'request']) {
     const expected = { urls: [], complete: false, blocked: false, failureReason };
     assert.deepEqual(readYandexDocumentsResult({ ...expected, url: 'https://private.test/secret', orderId: '123', html: '<p>secret</p>', error: 'secret' }), expected);

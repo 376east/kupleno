@@ -1,5 +1,5 @@
 import type { browser } from 'wxt/browser';
-import type { YandexDocumentsFailureReason, YandexDocumentsResult } from '../collection.ts';
+import type { YandexDocumentStage, YandexDocumentTimings, YandexDocumentsFailureReason, YandexDocumentsResult } from '../collection.ts';
 import { withDeadline } from '../deadline.ts';
 
 export type YandexOrderDocumentsResult = YandexDocumentsResult;
@@ -113,6 +113,7 @@ export async function readYandexOrderDocuments(orderId: unknown, options: {
   onOpened: (tabId: number, orderId: string) => Promise<void>;
   onReleased: (tabId: number, orderId: string) => Promise<void>;
   onNoTab?: () => void;
+  onTimings?: (timings: YandexDocumentTimings) => void;
 }): Promise<YandexOrderDocumentsResult> {
   const id = typeof orderId === 'number' ? String(orderId) : orderId;
   if (typeof id !== 'string' || !/^[1-9]\d{0,15}$/.test(id) || !Number.isSafeInteger(Number(id))) throw new Error('Некорректный номер заказа Яндекс Маркета.');
@@ -126,6 +127,15 @@ export async function readYandexOrderDocuments(orderId: unknown, options: {
   const timeoutMessage = 'Время чтения документов истекло.';
   const bounded = <T>(task: Promise<T>) => withDeadline(task, timeoutMessage, Math.max(1, deadline - Date.now()));
   const api = options.browser;
+  const timings = { TabSetup: 0, Navigation: 0, Control: 0, Dialog: 0, Cleanup: 0 };
+  let stage: YandexDocumentStage = 'TabSetup', stageStarted = performance.now();
+  const nextStage = (next: YandexDocumentStage) => {
+    if (stage === next) return;
+    const now = performance.now();
+    timings[stage] = Math.round(now - stageStarted);
+    stageStarted = now;
+    stage = next;
+  };
   let tabId: number | undefined, preserve = false, ended = false, creationStarted = false, noTabReported = false;
   const validTabId = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
   const noTab = () => { if (!noTabReported) { noTabReported = true; options.onNoTab?.(); } };
@@ -147,6 +157,7 @@ export async function readYandexOrderDocuments(orderId: unknown, options: {
     tabId = (await bounded(creation)).id;
     if (!validTabId(tabId)) { tabId = undefined; noTab(); return empty(); }
     await bounded(options.onOpened(tabId, id));
+    nextStage('Navigation');
     let clicked = false, loaded = false, previousUrls = '';
     let clickedAt = 0, retried = false, missingDialog = false;
     while (current()) {
@@ -154,6 +165,7 @@ export async function readYandexOrderDocuments(orderId: unknown, options: {
       const initialNavigation = !loaded && tab.pendingUrl === expectedUrl && (!tab.url || tab.url === 'about:blank');
       if (!initialNavigation && ((tab.pendingUrl && (loaded || tab.pendingUrl !== expectedUrl)) || (tab.url && tab.url !== expectedUrl))) { preserve = true; return empty(true); }
       if (committedOrder(tab, expectedUrl)) {
+        if (!loaded) nextStage('Control');
         loaded = true;
         if (!current()) return incomplete();
         const retry: boolean = clicked && missingDialog && !retried && Date.now() - clickedAt >= 3000;
@@ -167,9 +179,11 @@ export async function readYandexOrderDocuments(orderId: unknown, options: {
         if (!step || step.state === 'blocked' || step.state === 'unsafe') { preserve = true; return empty(true); }
         if (action === 'read') missingDialog = step.state === 'waiting' && step.failureReason === 'dialog';
         if (step.state === 'clicked') {
+          nextStage('Dialog');
           clicked = true; clickedAt ||= Date.now(); latestReason = 'dialog';
         }
         if (step.state === 'read') {
+          nextStage('Dialog');
           const identity = JSON.stringify([[...step.urls].sort(), step.readKey || '']);
           if (identity === previousUrls) return { urls: step.urls, complete: true, blocked: false };
           previousUrls = identity;
@@ -181,9 +195,15 @@ export async function readYandexOrderDocuments(orderId: unknown, options: {
   } catch (error) { if (!creationStarted) noTab(); return empty(false, stopped() ? undefined : error instanceof Error && error.message === timeoutMessage ? latestReason : 'request'); }
   finally {
     ended = true;
-    if (tabId !== undefined && (preserve || await closeOwn(tabId))) {
-      try { await withDeadline(options.onReleased(tabId, id), 'Не удалось освободить вкладку документов.', 1000); }
-      catch { return empty(false, stopped() ? undefined : 'request'); }
+    nextStage('Cleanup');
+    try {
+      if (tabId !== undefined && (preserve || await closeOwn(tabId))) {
+        try { await withDeadline(options.onReleased(tabId, id), 'Не удалось освободить вкладку документов.', 1000); }
+        catch { return empty(false, stopped() ? undefined : 'request'); }
+      }
+    } finally {
+      timings.Cleanup = Math.round(performance.now() - stageStarted);
+      options.onTimings?.(timings);
     }
   }
 }

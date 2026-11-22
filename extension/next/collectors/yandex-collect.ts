@@ -1,5 +1,5 @@
 import type { CollectionResult, YandexOrdersDomResult, YandexDocumentsResult } from '../collection.ts';
-import { readUnresolvedOrderIds, readYandexOrdersDomResult, readYandexDocumentsResult, yandexDocumentConcurrency } from '../collection.ts';
+import { readUnresolvedOrderIds, readYandexOrdersDomResult, readYandexDocumentsResult, yandexDocumentConcurrency, yandexDocumentStages } from '../collection.ts';
 import type { Purchase } from '../model';
 import { parseYandexReceipt } from './yandex.ts';
 import { readYandexPayment } from './fiscal.ts';
@@ -146,6 +146,7 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
     receiptForbiddenErrors: 0, receiptRateLimitErrors: 0, receiptHttpErrors: 0, receiptTimeoutErrors: 0, receiptNetworkErrors: 0, receiptParseErrors: 0, receiptOversizeErrors: 0, receiptRedirectErrors: 0,
     domReceiptNavigationWaits: 0, domReceiptButtonWaits: 0, domReceiptDialogWaits: 0, domReceiptLoadingWaits: 0, domReceiptErrorWaits: 0, domReceiptUnrecognizedWaits: 0, domReceiptRequestErrors: 0,
     domReceiptOrderRetries: 0, domReceiptOrderRetryRecovered: 0, domReceiptProgressUpdates: 0,
+    domReceiptTimedAttempts: 0, domReceiptTabSetupMs: 0, domReceiptNavigationMs: 0, domReceiptControlMs: 0, domReceiptDialogMs: 0, domReceiptCleanupMs: 0,
     cachedOrderDialogs: 0, orderDocumentCacheLookups: 0, orderDocumentCacheMisses: 0,
     orderDocumentCacheWrites: 0, orderDocumentCacheUnverified: 0,
     orderDocumentCacheReadErrors: 0, orderDocumentCacheWriteErrors: 0, earlyReceiptDownloads: 0,
@@ -538,6 +539,10 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
         else diagnostics.domReceiptOrdersAttempted++;
         const result = readYandexDocumentsResult(await options.readOrderDocuments!(state.orderId));
         options.signal?.throwIfAborted();
+        if (result?.timings) {
+          diagnostics.domReceiptTimedAttempts++;
+          for (const stage of yandexDocumentStages) diagnostics[`domReceipt${stage}Ms`] += result.timings[stage];
+        }
         if (!result?.complete) failedDocumentOrderIds.add(state.orderId);
         if (!result || result.blocked) { diagnostics.domReceiptBlocked++; stopped = true; throw Object.assign(new Error('Документы заказа недоступны.'), { code: 'YANDEX_DOCUMENTS_STOPPED' }); }
         if (result.complete) {

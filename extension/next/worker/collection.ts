@@ -10,7 +10,7 @@ import { ozonRequest } from './ozon-request';
 import { withDeadline } from '../deadline';
 import { yandexOrdersDomStep } from '../collectors/yandex-orders-dom';
 import { readUnresolvedOrderIds, readYandexOrdersDomResult } from '../collection';
-import { readDocumentTabs, readYandexDocumentsResult, yandexDocumentConcurrency, type DocumentTab } from '../collection';
+import { readDocumentTabs, readYandexDocumentsResult, yandexDocumentConcurrency, type DocumentTab, type YandexDocumentTimings } from '../collection';
 import { closeYandexOrderTab, readYandexOrderDocuments } from './yandex-order-documents';
 
 export const collectionJobsKey = 'kupleno-next-jobs';
@@ -383,9 +383,11 @@ async function readOwnedYandexDocuments(owner: string, orderId: string, isActive
   const controller = new AbortController(), active = documentRequests.get(owner) || new Set<AbortController>();
   active.add(controller); documentRequests.set(owner, active); documentReservations.add(controller);
   let registered: number | undefined;
+  let timings: YandexDocumentTimings | undefined;
   try {
     const result = await readYandexOrderDocuments(orderId, { browser, signal: controller.signal,
       onNoTab: () => { documentReservations.delete(controller); },
+      onTimings: value => { timings = value; },
       isCurrent: () => isActive() && (registered === undefined || documentTabs.some(item => item.tabId === registered && item.ownerJobId === owner)),
       onOpened: async (tabId, id) => {
         await writeDocumentTabs(value => {
@@ -400,7 +402,7 @@ async function readOwnedYandexDocuments(owner: string, orderId: string, isActive
         documentReservations.delete(controller);
       },
     });
-    const safe = readYandexDocumentsResult(result);
+    const safe = readYandexDocumentsResult({ ...result, timings });
     if (!safe) throw new Error('Документы заказа не распознаны.');
     return safe;
   } finally { active.delete(controller); if (!active.size) documentRequests.delete(owner); }
