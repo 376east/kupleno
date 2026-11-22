@@ -240,11 +240,11 @@ async function main() {
     await ozonPanel.getByRole('button',{name:'Удалить историю',exact:true}).click();
     await page.getByRole('dialog').getByRole('button',{name:'Удалить историю',exact:true}).click();
     await page.getByText('История магазина удалена',{exact:true}).waitFor();
-    await ozonPanel.getByText('История ещё не загружена',{exact:true}).waitFor();
+    await ozonPanel.getByText('В истории пока нет покупок',{exact:true}).waitFor();
     const wbPanel=page.locator('.store-panel').filter({has:page.getByRole('heading',{name:'Wildberries',exact:true})});
     assert.match(await wbPanel.innerText(),/1 операция/);
     await page.reload();
-    await ozonPanel.getByText('История ещё не загружена',{exact:true}).waitFor();
+    await ozonPanel.getByText('В истории пока нет покупок',{exact:true}).waitFor();
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'No horizontal page overflow on mobile');
     if (out) await page.screenshot({ path: path.join(out, 'next-mobile.png'), fullPage: true });
     const profileFixture = { ...backup, settings: {
