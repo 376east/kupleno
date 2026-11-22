@@ -60,14 +60,27 @@ async function main() {
   if (process.argv.includes('--yandex-document-reasons')) return yandexDocumentReasons();
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'kupleno-collect-test-'));
   const build = path.join(root, 'extension');
-  await fs.cp(path.resolve(__dirname, '../extension/next/.output/chrome-mv3'), build, { recursive: true });
+  const localAudit = process.argv.includes('--local-audit');
+  const auditIds = ['710001', '710002', '710003', '710004'];
+  await fs.cp(path.resolve(__dirname, '../extension/next/.output', localAudit ? 'chrome-mv3-local-audit' : 'chrome-mv3'), build, { recursive: true });
   // Pregrant hosts only in the disposable synthetic test extension. Shipping manifest remains optional.
   const manifest = JSON.parse(await fs.readFile(path.join(build, 'manifest.json'), 'utf8'));
+  assert.equal(manifest.permissions.includes('downloads'), localAudit);
+  if (localAudit) await fs.writeFile(path.join(build, 'local-audit.json'), JSON.stringify({ run: 'synthetic', orderIds: auditIds }));
   manifest.host_permissions = manifest.optional_host_permissions;
   manifest.permissions.push('cookies');
   await fs.writeFile(path.join(build, 'manifest.json'), JSON.stringify(manifest));
   // Attach Playwright's synthetic routes before a worker-created tab starts its store navigation.
   await fs.writeFile(path.join(build, 'test-tabs.js'), `
+  const nativeFetch = globalThis.fetch;
+  globalThis.fetch = async (input, ...args) => {
+    if (String(input) === chrome.runtime.getURL('/local-audit.json')) {
+      for (let i = 0; i < 300 && !(await chrome.storage.local.get('synthetic-audit-ready'))['synthetic-audit-ready']; i++) {
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+    }
+    return nativeFetch(input, ...args);
+  };
   chrome.runtime.onMessage.addListener((message, _sender, reply) => {
     if (message?.type !== 'KUPLENO_TEST_RECEIPT_CACHE') return;
     if (message.action === 'started') chrome.storage.local.set({ 'synthetic-fiscal-fetch-started': true }).then(() => reply({ ok: true }));
@@ -279,6 +292,13 @@ async function main() {
       }
       if (url.pathname === '/synthetic-document-click') { documentClicks++; return route.fulfill({ json: { ok: true } }); }
       if (url.pathname.startsWith('/my/order/')) {
+        const auditIndex = localAudit ? auditIds.indexOf(url.pathname.split('/').at(-1)) : -1;
+        if (auditIndex >= 0) {
+          const empty = '<h4>Документы пока не готовы</h4><span>Они появятся здесь чуть позже</span>';
+          const body = auditIndex === 3 ? '<div><h4>Отменён</h4><span>Не оплачен вовремя</span></div>'
+            : `<button id="docs">Чеки и другие документы</button><script>document.getElementById('docs').onclick=()=>document.body.insertAdjacentHTML('beforeend', ${JSON.stringify('<div role="dialog"><h2>Документы по заказу</h2>' + empty + '</div>')});</script>`;
+          return route.fulfill({ contentType: 'text/html; charset=utf-8', body: '<html>' + body + '</html>' });
+        }
         const purchase = yandexMode === 'dom-fallback' ? '?fn=101&amp;n=202&amp;fpd=303' : '';
         const delivery = yandexMode === 'dom-fallback' ? '?fn=101&amp;n=203&amp;fpd=304' : '';
         return route.fulfill({ contentType: 'text/html; charset=utf-8', body: `<html><button id=docs>Чеки и другие документы</button><script>document.getElementById('docs').onclick=()=>{fetch('/synthetic-document-click');const dialog=document.createElement('div');dialog.setAttribute('role','dialog');dialog.innerHTML='<h2>Документы по заказу</h2><a href="https://check.yandex.ru/doc/purchase${purchase}">Чек</a><a href="https://check.yandex.ru/doc/delivery${delivery}">Чек доставки</a><a href="https://market.yandex.ru/document">Подтверждение покупки</a>';document.body.append(dialog);};</script></html>` });
@@ -353,6 +373,46 @@ async function main() {
       }
       return sendCommand(message);
     };
+    if (localAudit) {
+      // Playwright stores downloads under generated names. Match by report type and read the actual bytes from disk.
+      const readReport = async (label, matches) => {
+        const deadline = Date.now() + 35000;
+        const checked = new Set();
+        do {
+          const items = await page.evaluate(() => chrome.downloads.search({ state: 'complete' }));
+          for (const { id, filename, url } of items) {
+            if (!filename || !url.startsWith('data:application/json;charset=utf-8,') || checked.has(id)) continue;
+            checked.add(id);
+            const report = JSON.parse(await fs.readFile(filename, 'utf8'));
+            if (matches(report)) return report;
+          }
+          await new Promise(resolve => setTimeout(resolve, 100));
+        } while (Date.now() < deadline);
+        const diagnostics = await page.evaluate(async () => ({
+          downloads: (await chrome.downloads.search({})).map(({ filename, state, error }) => ({ filename, state, error })),
+          audit: (await chrome.storage.local.get('kupleno-local-audit-result'))['kupleno-local-audit-result'],
+        }));
+        assert.fail('Missing automatic download: ' + label + ' ' + JSON.stringify(diagnostics));
+      };
+      await worker.evaluate(() => chrome.storage.local.set({ 'synthetic-audit-ready': true }));
+      const report = await readReport('startup audit', report => report.run === 'synthetic');
+      assert.equal(report.status, 'checked');
+      assert.deepEqual(report.orders, auditIds.map((_, index) => ({ order: index + 1, status: 'confirmed_empty', fiscalLinks: 0 })));
+      assert.ok(!auditIds.some(id => JSON.stringify(report).includes(id)));
+      assert.deepEqual(await page.evaluate(() => chrome.tabs.query({ url: 'https://market.yandex.ru/my/order/*' })), []);
+      assert.deepEqual((await sendCommand({ action: 'status' })).jobs, [], 'Audit never starts a history collection');
+      await checkOneClick();
+      for (const [source, itemCountField] of [['ozon', 'receipts'], ['wildberries', 'receipts'], ['yandex', 'orders']]) {
+        const collection = await readReport(source, report => report.source === source && report.status === 'completed');
+        assert.equal(collection.source, source);
+        assert.equal(collection.status, 'completed');
+        assert.ok(collection.stats[itemCountField] > 0);
+        assert.ok(!JSON.stringify(collection).includes('https://'));
+      }
+      assert.deepEqual(fixtureNavigationErrors, []);
+      console.log('PASS: startup audits four orders without a UI command; the extension writes private-data-free JSON for all three collectors to disk.');
+      return;
+    }
     if (process.argv.includes('--one-click')) return await checkOneClick();
     if (process.argv.includes('--yandex-start-timeout')) {
       await checkOneClick();

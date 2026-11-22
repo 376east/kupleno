@@ -13,13 +13,15 @@ import { readUnresolvedOrderIds, readYandexOrdersDomResult } from '../collection
 import { readDocumentTabs, readYandexDocumentsResult, yandexDocumentConcurrency, type DocumentTab } from '../collection';
 import { closeYandexOrderTab, readYandexOrderDocuments } from './yandex-order-documents';
 
-const key = 'kupleno-next-jobs';
+export const collectionJobsKey = 'kupleno-next-jobs';
+const key = collectionJobsKey;
 const legacyKey = 'kupleno-next-job';
 const documentTabsKey = 'kupleno-next-yandex-document-tabs';
 let documentTabs: DocumentTab[] = [], documentStoreValid = true;
 const documentReservations = new Set<AbortController>();
 const documentRequests = new Map<string, Set<AbortController>>();
 let jobs: Partial<Record<Source, Job>> = {};
+let auditOwner: string | undefined;
 const running = new Map<string, AbortController>();
 let writes = Promise.resolve();
 let offscreenCreation: Promise<void> | undefined;
@@ -341,6 +343,7 @@ async function handle(command: Command): Promise<JobResponse> {
   const job: Job = { id: crypto.randomUUID(), source: command.source, profile: command.profile, ...(command.refreshReceipts === true ? { refreshReceipts: true } : {}), status: 'running', startedAt: new Date().toISOString(), updatedAt: new Date().toISOString(), message: `Подключаем ${SOURCES[command.source].name}…`, progress: { done: 0, total: 0 } };
   // Reserve this source before opening a tab; other sources can start immediately.
   await persist(job.source, previous => {
+    if (job.source === 'yandex' && auditOwner) throw new Error('Выполняется локальная проверка документов Яндекс Маркета.');
     if (previous?.status === 'running' || previous?.status === 'completed') throw new Error('Сначала завершите сохранение предыдущего сбора этого магазина.');
     return job;
   });
@@ -374,45 +377,78 @@ async function handle(command: Command): Promise<JobResponse> {
   return response(jobById(job.id) || null);
 }
 
+async function readOwnedYandexDocuments(owner: string, orderId: string, isActive: () => boolean) {
+  if (!isActive() || !documentStoreValid) throw new Error('Сбор документов недоступен.');
+  if (new Set([...documentRequests.values()].flatMap(values => [...values]).concat([...documentReservations])).size >= yandexDocumentConcurrency || documentTabs.length + documentReservations.size >= 64) throw new Error('Достигнут лимит вкладок документов.');
+  const controller = new AbortController(), active = documentRequests.get(owner) || new Set<AbortController>();
+  active.add(controller); documentRequests.set(owner, active); documentReservations.add(controller);
+  let registered: number | undefined;
+  try {
+    const result = await readYandexOrderDocuments(orderId, { browser, signal: controller.signal,
+      onNoTab: () => { documentReservations.delete(controller); },
+      isCurrent: () => isActive() && (registered === undefined || documentTabs.some(item => item.tabId === registered && item.ownerJobId === owner)),
+      onOpened: async (tabId, id) => {
+        await writeDocumentTabs(value => {
+          if (value.some(item => item.tabId === tabId)) throw new Error('Вкладка документов уже зарегистрирована.');
+          return [...value, { tabId, orderId: id, ownerJobId: owner }];
+        });
+        registered = tabId;
+        documentReservations.delete(controller);
+      },
+      onReleased: async (tabId, id) => {
+        await writeDocumentTabs(value => value.filter(item => !(item.tabId === tabId && item.orderId === id && item.ownerJobId === owner)));
+        documentReservations.delete(controller);
+      },
+    });
+    const safe = readYandexDocumentsResult(result);
+    if (!safe) throw new Error('Документы заказа не распознаны.');
+    return safe;
+  } finally { active.delete(controller); if (!active.size) documentRequests.delete(owner); }
+}
+
+export async function verifyYandexOrders(orderIds: string[]) {
+  await init;
+  await writes;
+  if (auditOwner || jobs.yandex?.status === 'running') return { status: 'busy' } as const;
+  const owner = crypto.randomUUID();
+  auditOwner = owner;
+  try {
+    if (!await browser.permissions.contains({ origins: ['https://market.yandex.ru/*'] })) return { status: 'permission_required' } as const;
+    const orders = [];
+    for (let first = 0; first < orderIds.length; first += yandexDocumentConcurrency) {
+      const batch = orderIds.slice(first, first + yandexDocumentConcurrency);
+      orders.push(...await Promise.all(batch.map(async (orderId, index) => {
+        const result = await readOwnedYandexDocuments(owner, orderId, () => auditOwner === owner).catch(() => null);
+        return {
+          order: first + index + 1,
+          status: result?.complete ? result.urls.length ? 'documents_found' : 'confirmed_empty' : result?.blocked ? 'access_blocked' : 'unresolved',
+          ...(result?.complete ? { fiscalLinks: result.urls.length } : { reason: result?.failureReason || (result?.blocked ? 'access' : 'request') }),
+        };
+      })));
+    }
+    return { status: 'checked', orders } as const;
+  } finally {
+    auditOwner = undefined;
+    await cleanupDocumentTabs(owner).catch(() => { /* Keep unresolved ownership for the next worker startup. */ });
+  }
+}
+
 export function registerCollection() {
   browser.tabs.onUpdated.addListener((tabId, change) => {
     if (change.status !== 'complete') return;
     void init.then(async () => {
       const owner = documentTabs.find(item => item.tabId === tabId);
-      if (owner && jobById(owner.ownerJobId)?.status !== 'running') await cleanupDocumentTabs(undefined, tabId);
+      if (owner && auditOwner !== owner.ownerJobId && jobById(owner.ownerJobId)?.status !== 'running') await cleanupDocumentTabs(undefined, tabId);
     }).catch(() => { /* Keep ownership for a later cleanup. */ });
   });
   browser.runtime.onMessage.addListener((message: unknown, sender, reply) => {
     if (message && typeof message === 'object' && 'type' in message && message.type === 'KUPLENO_YANDEX_DOCUMENTS') {
-      if (sender.id !== browser.runtime.id || sender.url !== browser.runtime.getURL('/offscreen.html') || !('id' in message) || !('orderId' in message) || !readUnresolvedOrderIds([message.orderId])) { reply({ ok: false }); return; }
+      if (sender.id !== browser.runtime.id || sender.url !== browser.runtime.getURL('/offscreen.html') || !('id' in message) || !('orderId' in message) || typeof message.orderId !== 'string' || !readUnresolvedOrderIds([message.orderId])) { reply({ ok: false }); return; }
+      const orderId = message.orderId;
       void init.then(async () => {
         const current = jobById(message.id);
-        if (!current || current.source !== 'yandex' || current.status !== 'running' || !documentStoreValid) throw new Error('Сбор документов недоступен.');
-        if (new Set([...documentRequests.values()].flatMap(values => [...values]).concat([...documentReservations])).size >= yandexDocumentConcurrency || documentTabs.length + documentReservations.size >= 64) throw new Error('Достигнут лимит вкладок документов.');
-        const controller = new AbortController(), active = documentRequests.get(current.id) || new Set<AbortController>();
-        active.add(controller); documentRequests.set(current.id, active); documentReservations.add(controller);
-        let registered: number | undefined;
-        try {
-          const result = await readYandexOrderDocuments(message.orderId, { browser, signal: controller.signal,
-            onNoTab: () => { documentReservations.delete(controller); },
-            isCurrent: () => jobById(current.id)?.status === 'running' && (registered === undefined || documentTabs.some(item => item.tabId === registered && item.ownerJobId === current.id)),
-            onOpened: async (tabId, orderId) => {
-              await writeDocumentTabs(value => {
-                if (value.some(item => item.tabId === tabId)) throw new Error('Вкладка документов уже зарегистрирована.');
-                return [...value, { tabId, orderId, ownerJobId: current.id }];
-              });
-              registered = tabId;
-              documentReservations.delete(controller);
-            },
-            onReleased: async (tabId, orderId) => {
-              await writeDocumentTabs(value => value.filter(item => !(item.tabId === tabId && item.orderId === orderId && item.ownerJobId === current.id)));
-              documentReservations.delete(controller);
-            },
-          });
-          const safe = readYandexDocumentsResult(result);
-          if (!safe) throw new Error('Документы заказа не распознаны.');
-          return safe;
-        } finally { active.delete(controller); if (!active.size) documentRequests.delete(current.id); }
+        if (!current || current.source !== 'yandex') throw new Error('Сбор документов недоступен.');
+        return readOwnedYandexDocuments(current.id, orderId, () => jobById(current.id)?.status === 'running');
       }).then(result => reply({ ok: true, result })).catch(() => reply({ ok: false, error: 'Не удалось прочитать документы заказа Яндекс Маркета.' }));
       return true;
     }

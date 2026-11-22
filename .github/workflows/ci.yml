@@ -69,6 +69,10 @@ jobs:
       - run: npx playwright install --with-deps chromium
       - run: npm run preview:check
       - run: npm run preview:browser
+      - name: Verify unattended local reports
+        run: |
+          npm --prefix extension/next run build -- --mode local-audit
+          node scripts/next-collection-smoke.cjs --local-audit
       - run: npm run preview:design
         env:
           KUPLENO_DESIGN_OUTPUT: ${{ runner.temp }}/kupleno-design
