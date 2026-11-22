@@ -22,7 +22,7 @@ test('failed-attempt export keeps only typed diagnostics without messages, URLs 
 
 test('failure stats reject strings, unsafe counters, arrays and arbitrary URL-shaped keys', () => {
   for (const value of [null, [], { token: 'private-secret' }, { count: NaN }, { count: Infinity }, { count: -1 }, { count: 0.5 }, { count: Number.MAX_SAFE_INTEGER + 1 },
-    { constructor: 1 }, { prototype: 1 }, { 'https://private.test/token': 1 }, Object.fromEntries(Array.from({ length: 129 }, (_, index) => [`counter${index}`, 0]))]) {
+    { constructor: 1 }, { prototype: 1 }, { 'https://private.test/token': 1 }, Object.fromEntries(Array.from({ length: 161 }, (_, index) => [`counter${index}`, 0]))]) {
     assert.equal(readFailureStats(value), undefined);
   }
   assert.deepEqual(readFailureStats({ count: 0, stopped: false }), { count: 0, stopped: false });

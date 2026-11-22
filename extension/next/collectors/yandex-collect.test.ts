@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { collectYandex } from './yandex-collect.ts';
+import { readFailureStats } from '../collection.ts';
 import { mergeCollection, summarize } from '../domain.mjs';
 import type { YandexOrdersDomResult } from '../collection';
 import type { YandexReceiptCacheSession } from './yandex-receipt-cache.ts';
@@ -122,7 +123,10 @@ test('four matching errors in both metadata passes move the whole queue to order
   const ids = Array.from({ length: 10 }, (_, index) => 123456 + index);
   for (const archiveWorks of [false, true]) {
     const queried: string[] = [];
-    const result = await collectYandex({ readOrderDocuments: async orderId => {
+    const documentProgress: number[] = [];
+    const result = await collectYandex({ onProgress: ({ done, message }) => {
+      if (message.includes('проверены документы')) documentProgress.push(done);
+    }, readOrderDocuments: async orderId => {
       queried.push(orderId);
       return { urls: [`https://check.yandex.ru/dialog-${orderId}`], complete: true, blocked: false };
     }, fetch: async (input, init) => {
@@ -138,6 +142,13 @@ test('four matching errors in both metadata passes move the whole queue to order
     assert.deepEqual(queried, archiveWorks ? [] : ids.map(String));
     assert.equal(result.rows.length, ids.length);
     assert.equal(result.stats.failedOrders, 0);
+    assert.equal(result.stats.domReceiptProgressUpdates, documentProgress.length);
+    assert.deepEqual(readFailureStats(result.stats), result.stats);
+    if (archiveWorks) assert.deepEqual(documentProgress, []);
+    else {
+      assert.equal(documentProgress[0], 1);
+      assert.equal(documentProgress.at(-1), ids.length);
+    }
   }
 });
 

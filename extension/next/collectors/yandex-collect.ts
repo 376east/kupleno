@@ -145,7 +145,7 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
     domReceiptOrdersAttempted: 0, domReceiptUrlsAdded: 0, domReceiptBlocked: 0, domReceiptCompleteDialogs: 0, domReceiptLimits: 0, cachedReceipts: 0, receiptNetworkRequests: 0, cacheReadErrors: 0, cacheWriteErrors: 0,
     receiptForbiddenErrors: 0, receiptRateLimitErrors: 0, receiptHttpErrors: 0, receiptTimeoutErrors: 0, receiptNetworkErrors: 0, receiptParseErrors: 0, receiptOversizeErrors: 0, receiptRedirectErrors: 0,
     domReceiptNavigationWaits: 0, domReceiptButtonWaits: 0, domReceiptDialogWaits: 0, domReceiptLoadingWaits: 0, domReceiptErrorWaits: 0, domReceiptUnrecognizedWaits: 0, domReceiptRequestErrors: 0,
-    domReceiptOrderRetries: 0, domReceiptOrderRetryRecovered: 0,
+    domReceiptOrderRetries: 0, domReceiptOrderRetryRecovered: 0, domReceiptProgressUpdates: 0,
     cachedOrderDialogs: 0, orderDocumentCacheLookups: 0, orderDocumentCacheMisses: 0,
     orderDocumentCacheWrites: 0, orderDocumentCacheUnverified: 0,
     orderDocumentCacheReadErrors: 0, orderDocumentCacheWriteErrors: 0, earlyReceiptDownloads: 0,
@@ -524,6 +524,7 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
     const pending = candidates.filter(state => !cacheableDialogs.has(state.orderId));
     const retryOrders: typeof pending = [];
     let stopped = false, fatal = false, failure: unknown, done = 0;
+    let lastProgressAt = 0;
     const readDocuments = async (state: typeof pending[number], retry: boolean) => {
       try {
         options.signal?.throwIfAborted();
@@ -554,7 +555,16 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
             startReceiptDownload(url);
           }
         }
-        if (!retry) await options.onProgress?.({ done: ++done, total: pending.length, message: `Яндекс Маркет: проверены документы ${done} из ${pending.length} заказов.` });
+        if (!retry && options.onProgress) {
+          done++;
+          const now = performance.now();
+          // The UI polls every 1.5 s; an intermediate card needn't wait for its own storage write.
+          if (done === 1 || done === pending.length || now - lastProgressAt >= 1000) {
+            lastProgressAt = now;
+            diagnostics.domReceiptProgressUpdates++;
+            await options.onProgress({ done, total: pending.length, message: `Яндекс Маркет: проверены документы ${done} из ${pending.length} заказов.` });
+          }
+        }
       } catch (error) {
         if (object(error).code === 'YANDEX_DOCUMENTS_BLOCKED') { diagnostics.domReceiptBlocked++; stopped = true; throw Object.assign(new Error('Документы заказа недоступны.'), { code: 'YANDEX_DOCUMENTS_STOPPED' }); }
         if (object(error).code !== 'YANDEX_DOCUMENTS_STOPPED') { fatal = true; failure = error; }

@@ -53,7 +53,7 @@ export interface Job {
 export function readFailureStats(value: unknown): CollectionResult['stats'] | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
   const entries = Object.entries(value);
-  if (entries.length > 128 || entries.some(([key, item]) => ['constructor', 'prototype'].includes(key) || !/^[A-Za-z][A-Za-z0-9]{0,63}$/.test(key) ||
+  if (entries.length > 160 || entries.some(([key, item]) => ['constructor', 'prototype'].includes(key) || !/^[A-Za-z][A-Za-z0-9]{0,63}$/.test(key) ||
     !(typeof item === 'boolean' || (typeof item === 'number' && Number.isSafeInteger(item) && item >= 0)))) return undefined;
   return Object.fromEntries(entries) as CollectionResult['stats'];
 }
