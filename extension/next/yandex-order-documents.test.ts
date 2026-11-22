@@ -217,6 +217,39 @@ test('order documents helper uses only its own offline fixture tab', async t => 
       assert.equal(f.calls.filter(action => action === 'retry').length, 1);
       assert.equal(f.releases, 1);
     });
+    await t.test('a temporarily disabled documents button does not spend the retry', async () => {
+      const f = await fixture(context);
+      const execute = f.api.scripting.executeScript.bind(f.api.scripting);
+      let held = false;
+      f.api.scripting.executeScript = (async injection => {
+        if ('args' in injection && injection.args?.[1] === 'retry' && !held) {
+          held = true;
+          await f.page.evaluate(() => { document.querySelector('button')!.disabled = true; });
+          const result = await execute(injection);
+          await f.page.evaluate(() => { document.querySelector('button')!.disabled = false; });
+          return result;
+        }
+        return execute(injection);
+      }) as Api['scripting']['executeScript'];
+      const result = await readYandexOrderDocuments(123456, {
+        browser: f.api, onReleased: f.onReleased, isCurrent: () => true, timeoutMs: 4800,
+        onOpened: async (id, orderId) => {
+          await f.onOpened(id, orderId);
+          await f.page.evaluate(markup => {
+            const previous = document.querySelector('button')!;
+            const button = previous.cloneNode(true) as HTMLButtonElement;
+            previous.replaceWith(button);
+            button.addEventListener('click', () => {
+              const state = window as unknown as { clicks: number };
+              if (++state.clicks === 2) document.body.insertAdjacentHTML('beforeend', markup);
+            });
+          }, `<section role="dialog"><h3>Документы по заказу</h3>${knownEmpty}</section>`);
+        },
+      });
+      assert.deepEqual(result, { urls: [], complete: true, blocked: false });
+      assert.equal(f.clicks, 2);
+      assert.equal(f.releases, 1);
+    });
     for (const otherDialog of [false, true]) await t.test(`a ${otherDialog ? 'different' : 'documents'} dialog appearing just before retry prevents a toggle click`, async () => {
       const f = await fixture(context);
       const execute = f.api.scripting.executeScript.bind(f.api.scripting);

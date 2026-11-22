@@ -1,5 +1,8 @@
 import type { FiscalPayment, Purchase, Source } from './model';
 
+export const localAuditRevision = 2;
+export const localAuditWorker = `local-audit-background-v${localAuditRevision}.js`;
+
 export const storeOrigins: Record<Source, string[]> = {
   ozon: ['https://www.ozon.ru/*', 'https://ozon.ru/*'],
   wildberries: ['https://www.wildberries.ru/*', 'https://wildberries.ru/*', 'https://astro.wildberries.ru/*', 'https://receipt.wb.ru/*'],

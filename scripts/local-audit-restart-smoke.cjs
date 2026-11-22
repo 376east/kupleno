@@ -34,7 +34,7 @@ async function main() {
     const page = await context.newPage();
     await page.goto(`chrome-extension://${id}/app.html`);
     const restartedWorker = context.serviceWorkers()[0] || await context.waitForEvent('serviceworker', { timeout: 5000 });
-    assert.match(restartedWorker.url(), /\/local-audit-background[.]js$/);
+    assert.match(restartedWorker.url(), /\/local-audit-background-v[1-9][0-9]*[.]js$/);
     const deadline = Date.now() + 12000;
     let diagnostic;
     do {

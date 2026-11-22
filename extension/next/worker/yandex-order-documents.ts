@@ -158,9 +158,10 @@ export async function readYandexOrderDocuments(orderId: unknown, options: {
         if (!current()) return incomplete();
         const retry: boolean = clicked && missingDialog && !retried && Date.now() - clickedAt >= 3000;
         const action: 'click' | 'retry' | 'read' = !clicked ? 'click' : retry ? 'retry' : 'read';
-        if (retry) retried = true;
         const executions: { result?: Step }[] = await bounded(api.scripting.executeScript({ target: { tabId }, world: 'ISOLATED', injectImmediately: tab.status !== 'complete', func: yandexOrderDocumentsStep, args: [expectedUrl, action] }));
         const step = executions[0]?.result;
+        // A temporary button or navigation wait has not dispatched the retry click.
+        if (retry && step?.failureReason !== 'button' && step?.failureReason !== 'navigation') retried = true;
         if (step?.state === 'waiting') latestReason = step.failureReason || 'unrecognized';
         if (!current()) return incomplete();
         if (!step || step.state === 'blocked' || step.state === 'unsafe') { preserve = true; return empty(true); }

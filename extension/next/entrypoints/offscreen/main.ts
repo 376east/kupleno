@@ -5,7 +5,7 @@ import { collectYandex } from '../../collectors/yandex-collect';
 import { orderDocumentsSession, YandexReceiptCache } from '../../collectors/yandex-receipt-cache';
 import type { Job, CollectionResult } from '../../collection';
 import { withDeadline } from '../../deadline';
-import { readUnresolvedOrderIds, readYandexOrdersDomResult, readYandexDocumentsResult } from '../../collection';
+import { localAuditWorker, readUnresolvedOrderIds, readYandexOrdersDomResult, readYandexDocumentsResult } from '../../collection';
 
 const tasks = new Map<string, { source: Job['source']; controller: AbortController; delivery?: ReturnType<typeof setTimeout> }>();
 const yandexReceiptCache = new YandexReceiptCache(globalThis.caches);
@@ -24,7 +24,7 @@ async function finish(id: string, result?: CollectionResult, error?: string, fai
   }
 }
 
-const workerPath = import.meta.env.MODE === 'local-audit' ? 'local-audit-background.js' : 'background.js';
+const workerPath = import.meta.env.MODE === 'local-audit' ? localAuditWorker : 'background.js';
 const workerUrl = new URL(workerPath, browser.runtime.getURL('/offscreen.html')).href;
 
 browser.runtime.onMessage.addListener((message, sender, reply) => {
