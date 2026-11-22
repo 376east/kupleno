@@ -146,7 +146,9 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
     receiptForbiddenErrors: 0, receiptRateLimitErrors: 0, receiptHttpErrors: 0, receiptTimeoutErrors: 0, receiptNetworkErrors: 0, receiptParseErrors: 0, receiptOversizeErrors: 0, receiptRedirectErrors: 0,
     domReceiptNavigationWaits: 0, domReceiptButtonWaits: 0, domReceiptDialogWaits: 0, domReceiptLoadingWaits: 0, domReceiptErrorWaits: 0, domReceiptUnrecognizedWaits: 0, domReceiptRequestErrors: 0,
     domReceiptOrderRetries: 0, domReceiptOrderRetryRecovered: 0,
-    cachedOrderDialogs: 0, orderDocumentCacheReadErrors: 0, orderDocumentCacheWriteErrors: 0, earlyReceiptDownloads: 0,
+    cachedOrderDialogs: 0, orderDocumentCacheLookups: 0, orderDocumentCacheMisses: 0,
+    orderDocumentCacheWrites: 0, orderDocumentCacheUnverified: 0,
+    orderDocumentCacheReadErrors: 0, orderDocumentCacheWriteErrors: 0, earlyReceiptDownloads: 0,
     listedOrders: 0, knownOrdersAdded: 0 };
   const pagination = { lastPageItems: 0, lastPageIds: 0, lastPageNewIds: 0, lastPageHasNextKnown: false, lastPageHasNext: false, lastPageCursorPresent: false, lastPageCursorMatchesRequest: false, repeatedCursor: false };
   const receipts = new Map<string, Receipt & { orderIds: Set<string> }>();
@@ -509,10 +511,11 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
     if (options.orderDocumentsCache) {
       await mapConcurrent(candidates.filter(state => listedOrderIds?.has(state.orderId)).slice(0, 1000), 4, async ({ orderId }) => {
         let urls: string[] | undefined;
+        diagnostics.orderDocumentCacheLookups++;
         try { urls = await options.orderDocumentsCache!.read(orderId); }
-        catch { options.signal?.throwIfAborted(); diagnostics.orderDocumentCacheReadErrors++; }
+        catch { options.signal?.throwIfAborted(); diagnostics.orderDocumentCacheReadErrors++; return; }
         options.signal?.throwIfAborted();
-        if (!urls?.length) return;
+        if (!urls?.length) { diagnostics.orderDocumentCacheMisses++; return; }
         cacheableDialogs.set(orderId, { urls, cached: true });
         diagnostics.cachedOrderDialogs++;
         for (const url of urls) addReceipt({ id: '', url: safeReceipt(url), orderId, type: '' });
@@ -651,8 +654,12 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
     }));
     await mapConcurrent([...cacheableDialogs], 4, async ([orderId, { urls, cached }]) => {
       const verifiedDialog = urls.every(url => verified.has(readYandexFiscalId(url) || url));
+      if (!verifiedDialog) diagnostics.orderDocumentCacheUnverified++;
       try {
-        if (verifiedDialog && !cached) await options.orderDocumentsCache!.write(orderId, urls);
+        if (verifiedDialog && !cached) {
+          await options.orderDocumentsCache!.write(orderId, urls);
+          diagnostics.orderDocumentCacheWrites++;
+        }
         else if (!verifiedDialog && cached) await options.orderDocumentsCache!.remove(orderId);
       } catch { options.signal?.throwIfAborted(); diagnostics.orderDocumentCacheWriteErrors++; }
     }, options.signal);
