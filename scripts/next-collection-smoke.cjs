@@ -942,6 +942,11 @@ async function main() {
       const first = await refresh((await saved())?.state);
       const repeat = await refresh(first);
       for (const source of sources) assert.ok(repeat.metadata.collection.stats[source].appliedRowsReceived > 0, source);
+      const wbStats = repeat.metadata.collection.stats.wildberries;
+      for (const field of ['listingElapsedMs', 'receiptFetchElapsedMs', 'elapsedMs']) {
+        assert.ok(Number.isSafeInteger(wbStats[field]) && wbStats[field] >= 0);
+      }
+      assert.equal(wbStats.receiptProgressUpdates, 1);
       const stableRows = rows => rows.map(row => JSON.stringify(row)).sort();
       assert.deepEqual(stableRows(repeat.rows), stableRows(first.rows), 'Repeated update preserves rows without duplicates');
       assert.deepEqual(stableRows(repeat.fiscalPayments), stableRows(first.fiscalPayments), 'Repeated update preserves payments and advances');

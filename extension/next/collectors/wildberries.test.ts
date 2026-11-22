@@ -66,3 +66,31 @@ test('empty end, repeated cursor, list failure, missing document and cancellatio
   await assert.rejects(collectWildberries({ token: 'synthetic', signal: controller.signal, fetch: async () => { requests++; return new Response(); } }), { name: 'AbortError' });
   assert.equal(requests, 0);
 });
+
+test('reports measured document stages and keeps first and final progress with skipped and failed receipts', async t => {
+  let now = 0;
+  t.mock.method(performance, 'now', () => now);
+  const ids = ['known', 'a', 'b', 'c', 'd'];
+  const progress: Array<[number, number]> = [];
+  const result = await collectWildberries({
+    token: 'fixture-only', knownReceiptIds: ['known'],
+    fetch: async input => {
+      const url = new URL(String(input));
+      if (url.hostname === 'astro.wildberries.ru') {
+        now += 20;
+        return Response.json({ receipts: ids.map(id => ({ receiptUid: id, link: `https://receipt.wb.ru/${id}`, operationSum: 100, operationDateTime: receipt.date })) });
+      }
+      assert.notEqual(url.pathname, '/known');
+      now += 400;
+      return url.pathname === '/c' ? new Response('', { status: 503 }) : new Response(`<h2>Кассовый чек</h2>Приход${item('Товар', '100,00 ₽')}<div class="total"></div>`);
+    },
+    onProgress: update => { if (!update.message.includes('найдено')) progress.push([update.done, update.total]); },
+  });
+  assert.deepEqual(progress, [[1, 4], [4, 4]]);
+  assert.equal(result.stats.receiptProgressUpdates, 2);
+  assert.equal(result.stats.listingElapsedMs, 20);
+  assert.equal(result.stats.receiptFetchElapsedMs, 1600);
+  assert.equal(result.stats.elapsedMs, 1620);
+  assert.equal(result.stats.failedReceipts, 1);
+  assert.equal(result.rows.length, 3);
+});
