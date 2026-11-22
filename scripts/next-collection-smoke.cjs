@@ -435,6 +435,9 @@ async function main() {
           assert.equal(report.version, manifest.version);
           assert.equal(report.status, 'completed', JSON.stringify(report));
           assert.equal(report.stats.receipts, 1);
+          for (const field of ['listingElapsedMs', 'receiptFetchElapsedMs', 'elapsedMs']) {
+            assert.ok(Number.isSafeInteger(report.stats[field]) && report.stats[field] >= 0);
+          }
           assert.ok(!JSON.stringify(report).includes('https://'));
         }
         const { jobs } = await sendCommand({ action: 'status' });
