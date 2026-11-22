@@ -104,6 +104,24 @@ test('Ozon reads two PDFs concurrently after the first success and preserves rec
   for (const field of ['listingElapsedMs', 'receiptFetchElapsedMs', 'elapsedMs']) assert.ok(Number.isSafeInteger(result.stats[field]) && Number(result.stats[field]) >= 0);
 });
 
+test('Ozon reports first and final PDF progress and skips intermediate writes within a second', async t => {
+  let now = 0;
+  t.mock.method(performance, 'now', () => now);
+  const progress: number[] = [];
+  const ids = ['a', 'b', 'c', 'd', 'e', 'f'];
+  const result = await collectOzon({
+    fetch: async input => new Response(String(input).includes('downloadCheque') ? 'pdf' : page(ids)),
+    readPdf: async () => {
+      now += 400;
+      return readPdf();
+    },
+    onProgress: update => { if (update.total) progress.push(update.done); },
+  });
+  assert.deepEqual(progress, [1, 4, 6]);
+  assert.equal(result.stats.receiptProgressUpdates, progress.length);
+  assert.equal(result.rows.length, ids.length);
+});
+
 test('a PDF access denial stops admitting new work after collection has started', async () => {
   const requested: string[] = [];
   const result = await collectOzon({ fetch: async input => {

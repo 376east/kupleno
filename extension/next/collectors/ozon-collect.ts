@@ -153,6 +153,7 @@ export async function collectOzon(options: { fetch: typeof fetch; readPdf: (byte
   const pending = [...receipts.values()];
   const collected: Array<{ rows: Purchase[]; payment?: FiscalPayment } | undefined> = [];
   let failed = 0, done = 0, rowCount = 0, stopped = false;
+  let lastProgressAt = pdfStarted, receiptProgressUpdates = 0;
   const failures = new Map<string, number>();
   const readReceipt = async (receipt: Receipt, index: number) => {
     if (stopped) return;
@@ -188,7 +189,13 @@ export async function collectOzon(options: { fetch: typeof fetch; readPdf: (byte
       }
       if (!rowCount && reason.startsWith('Ozon: ошибка получения PDF') && failures.get(reason)! >= 3) throw new Error(`Ozon: три запроса PDF завершились одной ошибкой. Сбор остановлен. ${reason}`);
     }
-    await options.onProgress?.({ done: ++done, total: receipts.size, message: `Ozon: обработано ${done} из ${receipts.size} чеков.` });
+    done++;
+    const now = performance.now();
+    if (options.onProgress && (done === 1 || done === pending.length || now - lastProgressAt >= 1000)) {
+      lastProgressAt = now;
+      receiptProgressUpdates++;
+      await options.onProgress({ done, total: pending.length, message: `Ozon: обработано ${done} из ${pending.length} чеков.` });
+    }
   };
   // Verify access and the PDF transport before starting more than one receipt request.
   let checked = 0;
@@ -209,5 +216,5 @@ export async function collectOzon(options: { fetch: typeof fetch; readPdf: (byte
     warnings.push(`Ozon: у ${unverifiedReceipts} чеков не распознан итог. Суммы товаров требуют проверки.`);
   }
   const finished = performance.now();
-  return { rows, fiscalPayments, processedReceipts: [...new Set(rows.map(row => row.receipt_url || row.marketplace_id || '').filter(Boolean))], warnings, stats: { receipts: receipts.size, pages, failedReceipts: failed, incomplete, removed: 0, fallbackReceipts: new Set(rows.filter(row => row.parse_quality === 'fallback').map(row => row.marketplace_id)).size, unverifiedReceipts, listingElapsedMs: Math.round(pdfStarted - started), receiptFetchElapsedMs: Math.round(finished - pdfStarted), elapsedMs: Math.round(finished - started), ...diagnostics } };
+  return { rows, fiscalPayments, processedReceipts: [...new Set(rows.map(row => row.receipt_url || row.marketplace_id || '').filter(Boolean))], warnings, stats: { receipts: receipts.size, pages, failedReceipts: failed, incomplete, removed: 0, fallbackReceipts: new Set(rows.filter(row => row.parse_quality === 'fallback').map(row => row.marketplace_id)).size, unverifiedReceipts, listingElapsedMs: Math.round(pdfStarted - started), receiptFetchElapsedMs: Math.round(finished - pdfStarted), elapsedMs: Math.round(finished - started), receiptProgressUpdates, ...diagnostics } };
 }
