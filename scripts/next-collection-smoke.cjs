@@ -1252,11 +1252,13 @@ async function main() {
     });
     const lateStarted = await command({ action: 'start', source: 'yandex', profile: 'personal' });
     let lateDone;
-    for (let attempt = 0; attempt < 280; attempt++) {
+    // The offscreen document request can wait up to 35 seconds by design.
+    const lateCollectionDeadline = Date.now() + 45000;
+    do {
       lateDone = await command({ action: 'status', source: 'yandex' });
       if (lateDone.job.status !== 'running') break;
       await new Promise(resolve => setTimeout(resolve, 100));
-    }
+    } while (Date.now() < lateCollectionDeadline);
     assert.equal(lateDone.job.status, 'completed', JSON.stringify(lateDone));
     assert.equal(lateDone.job.result.rows.length, 1);
     assert.equal(lateDone.job.result.stats.domReceiptOrdersAttempted, 1);
