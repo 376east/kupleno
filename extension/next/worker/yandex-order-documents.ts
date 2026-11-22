@@ -44,7 +44,7 @@ export function yandexOrderDocumentsStep(expectedUrl: string, action: 'click' | 
   if (!dialogs.length) return result('waiting', [], 'dialog');
   if (dialogs[0]!.getAttribute('aria-busy') === 'true'
     || [...dialogs[0]!.querySelectorAll('progress,[role="progressbar"],[aria-busy="true"]')].some(visible)) return result('waiting', [], 'loading');
-  const labels = [...dialogs[0]!.querySelectorAll('h1,h2,h3,p,span,div')].filter(visible).map(text);
+  const labels = [...dialogs[0]!.querySelectorAll('h1,h2,h3,h4,p,span,div')].filter(visible).map(text);
   if (labels.includes('Ошибка загрузки документов') || labels.includes('Повторить загрузку')) return result('waiting', [], 'error');
   const anchors = [...dialogs[0]!.querySelectorAll('a[href]')];
   if (anchors.length > 1000) return result('blocked');

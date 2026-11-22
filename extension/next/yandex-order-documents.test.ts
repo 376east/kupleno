@@ -6,7 +6,7 @@ import { readYandexOrderDocuments } from './worker/yandex-order-documents.ts';
 const orderUrl = 'https://market.yandex.ru/my/order/123456';
 const button = '<button type="button">Чеки и другие документы</button>';
 const inertReceipt = '<span role="button" tabindex="0"><span>Чек доставки</span><span>01 января 2026, 12:00</span></span>';
-const knownEmpty = '<p>Документы пока не готовы</p><p>Они появятся здесь чуть позже</p>';
+const knownEmpty = '<h4>Документы пока не готовы</h4><span>Они появятся здесь чуть позже</span>';
 const dialog = `<section role="dialog"><h2>Документы по заказу</h2>
   <a href="https://check.yandex.ru/receipt?test=purchase">Чек покупки</a>
   <a href="https://check.yandex.ru/receipt?test=delivery">Чек доставки</a>
