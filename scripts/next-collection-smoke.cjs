@@ -943,6 +943,7 @@ async function main() {
     assert.equal(cancelled.job.status,'cancelled');
     assert.equal(await page.evaluate(id => chrome.tabs.get(id).then(() => true, () => false), cancelled.job.marketTabId), false, 'Cancellation closes tab');
     assert.ok(Date.now()-cancelledAt<7000,'Cancellation must not wait for network');
+    await stores.filter({ has: page.getByRole('heading', { name: 'Ozon', exact: true }) }).getByText('Сбор остановлен.', { exact: true }).waitFor();
     await checkWbReadiness();
     // A failed run is exported separately; historical warnings must not mask the current failure.
     const oldWarning = 'Яндекс Маркет: предупреждение прежнего сбора.';
@@ -1006,6 +1007,12 @@ async function main() {
       assert.deepEqual(stableRows(repeat.rows), stableRows(first.rows), 'Repeated update preserves rows without duplicates');
       assert.deepEqual(stableRows(repeat.fiscalPayments), stableRows(first.fiscalPayments), 'Repeated update preserves payments and advances');
       assert.ok(repeat.fiscalPayments.some(payment => payment.source === 'wildberries' && payment.paid === 2500 && payment.advance === 7500));
+      await page.reload();
+      for (const [name, status] of [['Ozon', 'История обновлена частично.'], ['Wildberries', 'История обновлена.']]) {
+        const panel = page.locator('.store-panel').filter({ has: page.getByRole('heading', { name, exact: true }) });
+        await panel.locator('.store-status').waitFor();
+        assert.equal(await panel.locator('.store-status').textContent(), status);
+      }
       await page.getByRole('link', { name: 'Настройки', exact: true }).click();
       const [download] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Скачать копию', exact: true }).click()]);
       const exported = JSON.parse(await fs.readFile(await download.path(), 'utf8'));

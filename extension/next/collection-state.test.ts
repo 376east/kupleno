@@ -8,6 +8,12 @@ import { parseBackup, serializeBackup } from './storage.mjs';
 import { summarizeFiscalPayments } from './fiscal-payments.mjs';
 import { clearSource } from './source-data.ts';
 import { sourceHealth } from './domain.mjs';
+
+test('a saved empty collection has a known result', () => {
+  assert.equal(sourceHealth('wildberries').state, 'unknown');
+  assert.equal(sourceHealth('wildberries', { collection: { stats: { wildberries: { receipts: 0 } } } }).state, 'ready');
+  assert.equal(sourceHealth('wildberries', { collection: { stats: { wildberries: { receipts: 0, incomplete: true } } } }).state, 'partial');
+});
 import { removeProfile } from './preferences.mjs';
 
 const empty = (): State => ({ rows: [], settings: {}, metadata: {} });

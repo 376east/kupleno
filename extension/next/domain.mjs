@@ -256,5 +256,6 @@ export function sourceHealth(source, metadata = {}) {
   const stats = collection.stats?.[source] || {};
   const warnings = (collection.warnings || []).filter(value => String(value).startsWith(SOURCES[source]?.name));
   const incomplete = stats.incomplete || stats.limitReached || stats.paginationIncomplete || Number(stats.failedOrders) > 0 || Number(stats.failedReceipts) > 0 || Number(stats.fallbackReceipts) > 0 || Number(stats.unverifiedReceipts) > 0;
-  return { stats, warnings, state: incomplete || warnings.length ? 'partial' : stats.receipts ? 'ready' : 'unknown' };
+  const checked = stats.receipts === 0 || Boolean(stats.receipts);
+  return { stats, warnings, state: incomplete || warnings.length ? 'partial' : checked ? 'ready' : 'unknown' };
 }
