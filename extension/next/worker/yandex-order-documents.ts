@@ -33,7 +33,16 @@ export function yandexOrderDocumentsStep(expectedUrl: string, action: 'click' | 
     const buttons = [...document.querySelectorAll('button,[role="button"]')].filter(element => visible(element) && text(element) === 'Чеки и другие документы');
     if (buttons.length > 1) return result('blocked');
     const button = buttons[0];
-    if (!button || button.hasAttribute('disabled') || button.getAttribute('aria-disabled') === 'true') return result('waiting', [], 'button');
+    if (!button) {
+      const unpaidCancellation = [...document.querySelectorAll('span')].some(reason =>
+        text(reason) === 'Не оплачен вовремя' && visible(reason)
+        && [...(reason.parentElement?.querySelectorAll('h4') || [])].some(heading =>
+          text(heading) === 'Отменён' && visible(heading)));
+      if (unpaidCancellation && !document.querySelector('a[href^="https://check.yandex.ru/" i]'))
+        return { ...result('read'), readKey: 'cancelled-unpaid' };
+      return result('waiting', [], 'button');
+    }
+    if (button.hasAttribute('disabled') || button.getAttribute('aria-disabled') === 'true') return result('waiting', [], 'button');
     if (!(button instanceof HTMLElement) || button.closest('form,a[href]') || button.getAttribute('type') === 'submit') return result('blocked');
     if (location.href !== expectedUrl || documentLoading() || navigating()) return result('unsafe');
     button.click();

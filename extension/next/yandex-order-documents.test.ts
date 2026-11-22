@@ -20,7 +20,7 @@ const dialog = `<section role="dialog"><h2>Документы по заказу<
 </section>`;
 
 type Api = Parameters<typeof readYandexOrderDocuments>[1]['browser'];
-async function fixture(context: BrowserContext, markup = button, clickMarkup = dialog, holdImage = false) {
+async function fixture(context: BrowserContext, markup = button, clickMarkup = dialog, { holdImage = false, includeOutsideLink = true } = {}) {
   let page: Page | undefined, creates = 0, removes = 0, clicks = 0, reads = 0;
   let pending = '', overrideUrl = '', status = 'complete', beforeGet: (() => void) | undefined;
   let registered = false, releases = 0;
@@ -32,7 +32,7 @@ async function fixture(context: BrowserContext, markup = button, clickMarkup = d
         assert.deepEqual(properties, { url: orderUrl, active: false });
         page = await context.newPage();
         await page.route('**/*', route => route.fulfill({ contentType: 'text/html; charset=utf-8', body: `<!doctype html><html><body>${markup}
-          <a href="https://check.yandex.ru/outside">Вне диалога</a>
+          ${includeOutsideLink ? '<a href="https://check.yandex.ru/outside">Вне диалога</a>' : ''}
           <script>window.clicks=0;document.querySelectorAll('button,[role="button"]').forEach(b=>b.addEventListener('click',()=>{window.clicks++;setTimeout(()=>document.body.insertAdjacentHTML('beforeend',${JSON.stringify(clickMarkup)}),10)}));</script>
         </body></html>` }));
         if (holdImage) await page.route('**/held-image.png', () => {});
@@ -278,6 +278,24 @@ test('order documents helper uses only its own offline fixture tab', async t => 
       const f = await fixture(context, button, '<div role="dialog">Документы по заказу</div>');
       assert.deepEqual(await readYandexOrderDocuments('123456', { browser: f.api, onOpened: f.onOpened, onReleased: f.onReleased, isCurrent: () => true, timeoutMs: 500 }), { urls: [], complete: false, blocked: false, failureReason: 'unrecognized' });
     });
+    const unpaidCancellation = '<div><h4>Отменён</h4><span>Не оплачен вовремя</span></div>';
+    await t.test('an explicitly unpaid cancellation without a receipt link completes without clicking', async () => {
+      const f = await fixture(context, unpaidCancellation, '', { includeOutsideLink: false });
+      assert.deepEqual(await readYandexOrderDocuments(123456, { browser: f.api, onOpened: f.onOpened, onReleased: f.onReleased, isCurrent: () => true, timeoutMs: 1500 }),
+        { urls: [], complete: true, blocked: false });
+      assert.equal(f.calls.filter(action => action === 'click').length, 2);
+      assert.equal(f.clicks, 0);
+      assert.equal(f.releases, 1);
+    });
+    for (const [markup, includeOutsideLink] of [
+      [unpaidCancellation.replace('Не оплачен вовремя', 'Отменён по просьбе покупателя'), false],
+      [unpaidCancellation.replace('<span>', '<span hidden>'), false],
+      [unpaidCancellation, true],
+    ] as const) {
+      const f = await fixture(context, markup, '', { includeOutsideLink });
+      assert.deepEqual(await readYandexOrderDocuments(123456, { browser: f.api, onOpened: f.onOpened, onReleased: f.onReleased, isCurrent: () => true, timeoutMs: 600 }),
+        { urls: [], complete: false, blocked: false, failureReason: 'button' });
+    }
     for (const [name, markup] of [['final inert receipt', inertReceipt], ['known empty state', knownEmpty]]) await t.test(`${name} completes after two stable reads without waiting for the deadline`, async () => {
       const f = await fixture(context, button, `<div role="dialog">Документы по заказу${markup}</div>`);
       const result = await readYandexOrderDocuments(123456, { browser: f.api, onOpened: f.onOpened, onReleased: f.onReleased, isCurrent: () => true, timeoutMs: 1500 });
@@ -406,7 +424,7 @@ test('order documents helper uses only its own offline fixture tab', async t => 
       assert.equal(f.clicks, 1);
     });
     await t.test('reads and closes an owned order while a subresource is still loading', async () => {
-      const f = await fixture(context, button + '<img src="/held-image.png">', dialog, true);
+      const f = await fixture(context, button + '<img src="/held-image.png">', dialog, { holdImage: true });
       f.loading();
       const result = await readYandexOrderDocuments(123456, {
         browser: f.api, onOpened: f.onOpened, onReleased: f.onReleased, isCurrent: () => true, timeoutMs: 2000,
