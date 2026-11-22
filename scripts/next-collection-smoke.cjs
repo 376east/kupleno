@@ -60,14 +60,16 @@ async function main() {
   if (process.argv.includes('--yandex-document-reasons')) return yandexDocumentReasons();
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'kupleno-collect-test-'));
   const build = path.join(root, 'extension');
-  const localAudit = process.argv.includes('--local-audit');
+  const fullAudit = process.argv.includes('--local-full');
+  const localAudit = fullAudit || process.argv.includes('--local-audit');
   const auditIds = ['710001', '710002', '710003', '710004'];
   await fs.cp(path.resolve(__dirname, '../extension/next/.output', localAudit ? 'chrome-mv3-local-audit' : 'chrome-mv3'), build, { recursive: true });
   // Pregrant hosts only in the disposable synthetic test extension. Shipping manifest remains optional.
   const manifest = JSON.parse(await fs.readFile(path.join(build, 'manifest.json'), 'utf8'));
   assert.equal(manifest.permissions.includes('downloads'), localAudit);
   const auditConfig = 'local-audit-v' + manifest.version.split('.').at(-1) + '.json';
-  if (localAudit) await fs.writeFile(path.join(build, auditConfig), JSON.stringify({ run: 'synthetic', orderIds: auditIds }));
+  if (localAudit) await fs.writeFile(path.join(build, auditConfig), JSON.stringify(fullAudit
+    ? { run: 'synthetic-full', collection: 'yandex' } : { run: 'synthetic', orderIds: auditIds }));
   manifest.host_permissions = manifest.optional_host_permissions;
   manifest.permissions.push('cookies');
   await fs.writeFile(path.join(build, 'manifest.json'), JSON.stringify(manifest));
@@ -396,6 +398,20 @@ async function main() {
         assert.fail('Missing automatic download: ' + label + ' ' + JSON.stringify(diagnostics));
       };
       await worker.evaluate(() => chrome.storage.local.set({ 'synthetic-audit-ready': true }));
+      if (fullAudit) {
+        const report = await readReport('startup full collection', item => item.run === 'synthetic-full');
+        assert.equal(report.version, manifest.version);
+        assert.equal(report.status, 'completed', JSON.stringify(report));
+        assert.equal(report.stats.orders, 1);
+        assert.equal(report.stats.failedOrders, 0);
+        assert.equal(report.stats.failedReceipts, 0);
+        assert.equal(report.stats.receipts, 1);
+        assert.ok(!JSON.stringify(report).includes('https://'));
+        const collection = await readReport('Yandex collection', item => item.source === 'yandex' && !item.run);
+        assert.deepEqual(collection.stats, report.stats);
+        console.log('PASS: startup runs the normal Yandex collector and downloads the report for the exact run without a UI command.');
+        return;
+      }
       const report = await readReport('startup audit', report => report.run === 'synthetic');
       assert.equal(report.status, 'checked');
       assert.deepEqual(report.orders, auditIds.map((_, index) => ({ order: index + 1, status: 'confirmed_empty', fiscalLinks: 0 })));

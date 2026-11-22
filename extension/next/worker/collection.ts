@@ -286,7 +286,7 @@ async function execute(job: Job, controller: AbortController, sessionCookie: str
   } finally { await closeCollectionTab(job); running.delete(job.id); }
 }
 
-async function handle(command: Command): Promise<JobResponse> {
+export async function handleCollectionCommand(command: Command, internalJobId?: string): Promise<JobResponse> {
   await init;
   if (command.action === 'status') {
     for (const stale of Object.values(jobs)) {
@@ -340,7 +340,7 @@ async function handle(command: Command): Promise<JobResponse> {
   if ('refreshReceipts' in command && (command.source !== 'yandex' || typeof command.refreshReceipts !== 'boolean')) return { ok: false, error: 'Некорректный режим чтения чеков.' };
   const knownOrderIds = command.source === 'yandex' ? readUnresolvedOrderIds(command.knownOrderIds) : undefined;
   if ('knownOrderIds' in command && !knownOrderIds) return { ok: false, error: 'Некорректные номера сохранённых заказов.' };
-  const job: Job = { id: crypto.randomUUID(), source: command.source, profile: command.profile, ...(command.refreshReceipts === true ? { refreshReceipts: true } : {}), status: 'running', startedAt: new Date().toISOString(), updatedAt: new Date().toISOString(), message: `Подключаем ${SOURCES[command.source].name}…`, progress: { done: 0, total: 0 } };
+  const job: Job = { id: internalJobId ?? crypto.randomUUID(), source: command.source, profile: command.profile, ...(command.refreshReceipts === true ? { refreshReceipts: true } : {}), status: 'running', startedAt: new Date().toISOString(), updatedAt: new Date().toISOString(), message: `Подключаем ${SOURCES[command.source].name}…`, progress: { done: 0, total: 0 } };
   // Reserve this source before opening a tab; other sources can start immediately.
   await persist(job.source, previous => {
     if (job.source === 'yandex' && auditOwner) throw new Error('Выполняется локальная проверка документов Яндекс Маркета.');
@@ -533,7 +533,7 @@ export function registerCollection() {
     if (!message || typeof message !== 'object' || !('type' in message) || message.type !== 'KUPLENO_JOB') return;
     const trustedUrl = browser.runtime.getURL('/app.html');
     if (sender.id !== browser.runtime.id || sender.url?.split('#')[0] !== trustedUrl) { reply({ ok: false, error: 'Источник команды не разрешён.' }); return; }
-    void handle(message as Command).then(reply, error => reply({ ok: false, error: error instanceof Error ? error.message : 'Хранилище сбора недоступно.' }));
+    void handleCollectionCommand(message as Command).then(reply, error => reply({ ok: false, error: error instanceof Error ? error.message : 'Хранилище сбора недоступно.' }));
     return true;
   });
 }
