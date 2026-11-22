@@ -1,5 +1,5 @@
 import { browser } from 'wxt/browser';
-import { collectWildberries } from '../collectors/wildberries';
+import { collectWildberries, wbRateLimitMessage } from '../collectors/wildberries';
 import type { Job, Command, JobResponse } from '../collection';
 import { readFailureStats } from '../collection';
 import { SOURCES } from '../domain.mjs';
@@ -271,11 +271,13 @@ async function execute(job: Job, controller: AbortController, sessionCookie: str
       const status = /^WB_LIST_HTTP_([1-5]\d{2})$/.exec(diagnostic);
       const failureStats: Job['failureStats'] = diagnostic === 'WB_SESSION_NOT_FOUND' || diagnostic === 'WB_TOKEN_REQUIRED' ? { wbSessionUnavailable: true }
         : status ? { wbListHttpStatus: Number(status[1]) }
+        : diagnostic === 'WB_RECEIPT_HTTP_429' ? { wbReceiptHttpStatus: 429 }
         : diagnostic === 'WB_LIST_NON_JSON' || diagnostic.startsWith('WB_LIST_UNKNOWN_PAYLOAD shape=') ? { wbListFormatUnknown: true }
         : undefined;
       const message = diagnostic.startsWith('WB_LIST_UNKNOWN_PAYLOAD') ? 'Wildberries изменил формат списка чеков. Скопируйте сведения об ошибке — в них есть структура ответа для исправления сборщика.'
         : diagnostic === 'WB_SESSION_NOT_FOUND' ? 'Не удалось получить сессию Wildberries из открытой вкладки. Откройте страницу чеков WB и повторите сбор.'
         : /WB_(TOKEN_REQUIRED|LIST_HTTP_401)/.test(diagnostic) ? 'Wildberries отклонил сессию. Обновите страницу магазина и повторите сбор.'
+        : diagnostic === 'WB_RECEIPT_HTTP_429' || diagnostic === 'WB_LIST_HTTP_429' ? wbRateLimitMessage
         : diagnostic === 'WB_LIST_HTTP_403' ? 'Wildberries отказал в доступе к чекам (403). Откройте страницу чеков и проверьте, доступны ли они в магазине.'
         : diagnostic === 'WB_LIST_NON_JSON' ? 'Wildberries вернул страницу вместо списка чеков. Откройте магазин, проверьте вход и повторите сбор.'
         : diagnostic.startsWith('WB_LIST_HTTP_') ? `Wildberries временно не отдал историю (код ${diagnostic.split('_').at(-1)}). Повторите сбор позже.` : diagnostic;

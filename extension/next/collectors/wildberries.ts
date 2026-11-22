@@ -133,6 +133,8 @@ function receiptFromUnknown(value: unknown): Receipt | null {
   return id && url ? { ...item, id, url, receiptUid: id, date: text(item.operationDateTime) || undefined } : null;
 }
 
+export const wbRateLimitMessage = 'Wildberries временно ограничил запросы. Повторите сбор позже.';
+
 export async function collectWildberries(options: {
   fetch: typeof fetch; token: string; signal?: AbortSignal; onProgress?: (progress: Progress) => void | Promise<void>; knownReceiptIds?: string[];
 }): Promise<CollectionResult> {
@@ -175,6 +177,7 @@ export async function collectWildberries(options: {
   const rows: Purchase[] = [];
   const fiscalPayments: NonNullable<CollectionResult['fiscalPayments']> = [];
   let failedReceipts = 0;
+  let receiptRateLimited = false;
   let processed = 0;
   let lastProgressAt = documentsStarted, receiptProgressUpdates = 0;
   for (const receipt of pending) {
@@ -183,6 +186,13 @@ export async function collectWildberries(options: {
       const parsed = new URL(receipt.url);
       if (parsed.protocol !== 'https:' || parsed.hostname !== 'receipt.wb.ru' || parsed.username || parsed.password) throw new Error('WB_RECEIPT_URL_FORBIDDEN');
       const response = await options.fetch(receipt.url, { signal: options.signal, headers: { accept: 'text/html' } });
+      options.signal?.throwIfAborted();
+      if (response.status === 429) {
+        receiptRateLimited = true;
+        failedReceipts++;
+        processed++;
+        break;
+      }
       if (!response.ok) throw new Error(`HTTP_${response.status}`);
       if (response.url && new URL(response.url).origin !== 'https://receipt.wb.ru') throw new Error('WB_RECEIPT_REDIRECT');
       const html = await response.text();
@@ -193,7 +203,7 @@ export async function collectWildberries(options: {
       const payment = readWildberriesPayment(html, items[0]!.date, items[0]!.currency || 'RUB');
       if (payment) fiscalPayments.push(payment);
     } catch (error) {
-      if ((error as { name?: string }).name === 'AbortError' || options.signal?.aborted) throw error;
+      if (options.signal?.aborted || (error as { name?: string } | null)?.name === 'AbortError') throw error;
       failedReceipts += 1;
     }
     processed++;
@@ -205,13 +215,20 @@ export async function collectWildberries(options: {
     }
     if (rows.length > MAX_ROWS) { const error = new Error('ROW_LIMIT_EXCEEDED'); (error as Error & { code: string }).code = 'ROW_LIMIT_EXCEEDED'; throw error; }
   }
-  if (failedReceipts) warnings.push(`Wildberries: не удалось прочитать ${failedReceipts} чеков. Ранее сохранённая история остаётся.`);
+  if (receiptRateLimited) {
+    if (!rows.length) throw new Error('WB_RECEIPT_HTTP_429');
+    incomplete = true;
+    warnings.push(wbRateLimitMessage);
+  }
+  const otherFailures = failedReceipts - Number(receiptRateLimited);
+  if (otherFailures) warnings.push(`Wildberries: не удалось прочитать ${otherFailures} чеков. Ранее сохранённая история остаётся.`);
   if (!rows.length && (failedReceipts || invalidReceipts) && !known.size) throw new Error(warnings.at(-1));
   const qualityCount = (quality: string) => new Set(rows.filter(row => row.parse_quality === quality).map(row => row.marketplace_id)).size;
   const fallbackReceipts = qualityCount('fallback'), unverifiedReceipts = qualityCount('unverified');
   const finished = performance.now();
   return { rows, fiscalPayments, warnings, stats: {
     receipts: receipts.size, pages, failedReceipts, invalidReceipts, skippedKnown: known.size > 0, incomplete,
+    ...(receiptRateLimited ? { wbReceiptHttpStatus: 429, skippedDueToRateLimit: pending.length - processed } : {}),
     itemRows: rows.length, fallbackReceipts, unverifiedReceipts, receiptProgressUpdates,
     listingElapsedMs: Math.round(documentsStarted - started), receiptFetchElapsedMs: Math.round(finished - documentsStarted),
     elapsedMs: Math.round(finished - started),

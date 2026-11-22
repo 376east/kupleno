@@ -532,6 +532,25 @@ async function main() {
       console.log('PASS: WB starts session check while a nonessential image is pending and closes only its own tab.');
     }
     if (process.argv.includes('--wb-readiness')) return await checkWbReadiness();
+    async function checkWbRateLimit() {
+      const savedBefore = await saved();
+      const currentWorker = context.serviceWorkers().find(entry => entry.url() === fixtureWorkerUrl);
+      await configureWbFixture(currentWorker, false, 429);
+      await command({ action: 'start', source: 'wildberries', profile: 'personal' });
+      const deadline = Date.now() + 10000;
+      let job;
+      do {
+        ({ job } = await command({ action: 'status', source: 'wildberries' }));
+        if (job?.status !== 'running') break;
+        await new Promise(resolve => setTimeout(resolve, 50));
+      } while (Date.now() < deadline);
+      assert.equal(job?.status, 'failed');
+      assert.deepEqual(job.failureStats, { wbReceiptHttpStatus: 429 });
+      assert.match(job.error, /временно ограничил запросы/);
+      assert.deepEqual(await saved(), savedBefore);
+      console.log('PASS: WB receipt rate limit is reported as a fixed safe failure in the background worker.');
+    }
+    if (process.argv.includes('--wb-rate-limit')) return await checkWbRateLimit();
     async function checkOzonReadiness() {
       holdOzonImage = true;
       try {
@@ -775,8 +794,8 @@ async function main() {
     stallOzon = true; holdYandex = true; releaseYandex = undefined;
     const parallelWorker = context.serviceWorkers()[0];
     await configureWbFixture(parallelWorker, true);
-    async function configureWbFixture(worker, hold) {
-      await worker.evaluate(hold => {
+    async function configureWbFixture(worker, hold, receiptStatus = 200) {
+      await worker.evaluate(({ hold, receiptStatus }) => {
         const original = globalThis.fetch;
         globalThis.fetch = async (input, init) => {
           if (String(input).startsWith('https://astro.wildberries.ru/')) {
@@ -787,6 +806,7 @@ async function main() {
             return new Response(JSON.stringify({ receipts: [{ receiptUid: 'parallel-wb', link: 'https://receipt.wb.ru/parallel-wb', operationSum: 100, operationDateTime: '2026-01-01T10:00:00Z' }] }));
           }
           if (String(input) === 'https://receipt.wb.ru/parallel-wb') {
+            if (receiptStatus !== 200) return new Response('', { status: receiptStatus });
             const property = (label, value) => '<div class="property-name">' + label + '</div><div class="property-value">' + value + '</div>';
             return new Response('<div class="check-header-column first">Приход<br></div><div class="products-item"><div class="products-cell products-cell_name"><div class="products-prop-value">Наименование Книга</div></div><div class="products-cell products-cell_price"></div><div class="products-cell products-cell_cost"><div class="products-prop-value">100,00 ₽</div></div></div><div class="total">'
               + property('Итого', '100.00') + property('Электронными', '25.00') + property('Аванс', '75.00')
@@ -794,7 +814,7 @@ async function main() {
           }
           return original(input, init);
         };
-      }, hold);
+      }, { hold, receiptStatus });
       await context.addCookies([{ url: 'https://www.wildberries.ru/', name: 'wbid-sdk-id-token', value: 'synthetic.' + Buffer.from(JSON.stringify({ exp: Math.floor(Date.now()/1000)+3600 })).toString('base64url') + '.signature' }]);
     }
     await page.goto(`chrome-extension://${id}/app.html#stores`);
@@ -1390,6 +1410,7 @@ async function main() {
     assert.deepEqual((await saved()).state, failureBaseline.state);
     await checkOneClick();
     await checkYandexStartupTimeout();
+    await checkWbRateLimit();
     assert.deepEqual(fixtureNavigationErrors, []);
     console.log('PASS: captured header context survives DOM removal; fresh DOM wins; missing context stays absent; invalid headers rejected; tokens never persisted.');
     console.log('PASS: failed-run diagnostics survive restart/export without history writes; old warnings hidden; HTML stops the queue; login distinguished; human check URL guarded and kept without focus or token persistence.');

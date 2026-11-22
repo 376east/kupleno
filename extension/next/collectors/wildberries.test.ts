@@ -94,3 +94,36 @@ test('reports measured document stages and keeps first and final progress with s
   assert.equal(result.stats.failedReceipts, 1);
   assert.equal(result.rows.length, 3);
 });
+
+test('stops at the first receipt rate limit and retains any receipts already read', async () => {
+  const field = (label: string, value: string) => `<div class="property-name">${label}</div><div class="property-value">${value}</div>`;
+  const document = '<h2>Кассовый чек</h2><div class="check-header-column first">Приход<br></div>'
+    + item('Товар', '100,00 ₽') + '<div class="total">'
+    + field('Итого', '100.00') + field('Электронными', '25.00') + field('Аванс', '75.00')
+    + field('№ ФН', '101') + field('№ ФД', '202') + field('ФПД', '303') + '</div>';
+  const receipts = Array.from({ length: 46 }, (_, index) => ({
+    receiptUid: String(index), link: `https://receipt.wb.ru/${index}`, operationSum: 100, operationDateTime: receipt.date,
+  }));
+  for (const limitAt of [1, 2]) {
+    let requests = 0;
+    const fetch: typeof globalThis.fetch = async input => {
+      if (new URL(String(input)).hostname === 'astro.wildberries.ru') return Response.json({ receipts });
+      if (++requests >= limitAt) return new Response('private response body', { status: 429 });
+      return new Response(document);
+    };
+    const result = collectWildberries({ fetch, token: 'fixture-only' });
+    if (limitAt === 1) await assert.rejects(result, { message: 'WB_RECEIPT_HTTP_429' });
+    else {
+      const partial = await result;
+      assert.equal(partial.rows.length, 1);
+      assert.deepEqual(partial.fiscalPayments, [{ id: '101:202:303', date: '2026-09-14 10:00', paid: 2500, advance: 7500 }]);
+      assert.equal(partial.stats.incomplete, true);
+      assert.equal(partial.stats.failedReceipts, 1);
+      assert.equal(partial.stats.wbReceiptHttpStatus, 429);
+      assert.equal(partial.stats.skippedDueToRateLimit, 44);
+      assert.equal(partial.warnings.length, 1);
+      assert.match(partial.warnings[0]!, /временно ограничил запросы/);
+    }
+    assert.equal(requests, limitAt);
+  }
+});
