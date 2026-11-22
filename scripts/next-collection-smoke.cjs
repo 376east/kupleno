@@ -247,6 +247,7 @@ async function main() {
     let domClicks = 0, documentClicks = 0;
     let holdHumanNavigation = false, unsafeNavigations = 0;
     let holdOrdersImage = false, releaseOrdersImage, readOrdersWhileLoading = false;
+    let holdOrdersNavigation = false, releaseOrdersNavigation;
     const ozonRequestPages = new Set();
     let holdOzonImage = false, releaseOzonImage, readOzonWhileLoading = false;
     await context.route('https://www.ozon.ru/**', async route => {
@@ -268,6 +269,10 @@ async function main() {
     });
     await context.route('https://market.yandex.ru/**', async route => {
       const url = new URL(route.request().url()); requests.push(url.href);
+      if (holdOrdersNavigation && url.pathname === '/my/orders' && route.request().isNavigationRequest()) {
+        await new Promise(resolve => { releaseOrdersNavigation = resolve; });
+        return route.abort().catch(() => {});
+      }
       if (url.pathname === '/synthetic-orders-image.png') {
         await new Promise(resolve => { releaseOrdersImage = resolve; });
         return route.abort().catch(() => {});
@@ -349,6 +354,10 @@ async function main() {
       return sendCommand(message);
     };
     if (process.argv.includes('--one-click')) return await checkOneClick();
+    if (process.argv.includes('--yandex-start-timeout')) {
+      await checkOneClick();
+      return await checkYandexStartupTimeout();
+    }
     async function checkWbReadiness() {
       await context.clearCookies({ name: 'wbid-sdk-id-token', domain: 'www.wildberries.ru' });
       const wbUser = await context.newPage(); await wbUser.goto('https://www.wildberries.ru/lk/receipts/get');
@@ -825,6 +834,30 @@ async function main() {
       assert.deepEqual(stableRows(exported.state.fiscalPayments), stableRows(repeat.fiscalPayments));
       console.log('PASS: two real UI clicks in the isolated extension apply all three stores, preserve history and advances, and export the same data.');
     }
+    async function checkYandexStartupTimeout() {
+      const before = (await saved()).state;
+      const firstRequest = requests.length;
+      holdOrdersNavigation = true;
+      try {
+        const run = await command({ action: 'start', source: 'yandex', profile: 'personal' });
+        assert.equal(run.job.status, 'failed');
+        assert.match(run.job.error, /страница ещё загружается/);
+        assert.deepEqual(run.job.failureStats, { yandexPageLoadingTimeout: true });
+        assert.equal(requests.slice(firstRequest).filter(url => new URL(url).pathname === '/api/resolve/').length, 0);
+        await page.goto(`chrome-extension://${id}/app.html#settings`);
+        const [download] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Скачать копию', exact: true }).click()]);
+        const exported = JSON.parse(await fs.readFile(await download.path(), 'utf8'));
+        const attempt = exported.state.metadata.collectionDiagnostics.attempts.find(entry => entry.source === 'yandex');
+        assert.deepEqual(attempt.failureStats, { yandexPageLoadingTimeout: true });
+        assert.deepEqual(exported.state.rows, before.rows);
+        assert.deepEqual(exported.state.fiscalPayments, before.fiscalPayments);
+        await page.waitForFunction(tabId => chrome.tabs.get(tabId).then(() => false, () => true), run.job.marketTabId);
+        console.log('PASS: Yandex startup timeout is exported separately from receipt failures and preserves saved history.');
+      } finally {
+        holdOrdersNavigation = false;
+        releaseOrdersNavigation?.();
+      }
+    }
     const failureBaseline = await saved();
     async function failedYandex(started) {
       const deadline = Date.now() + 15000;
@@ -1187,6 +1220,7 @@ async function main() {
     assert.ok(!/cached-sk-secret|fresh-sk-secret|cached-glue|fresh-glue|owned-tab-cursor/.test(durableAfterHeaders));
     assert.deepEqual((await saved()).state, failureBaseline.state);
     await checkOneClick();
+    await checkYandexStartupTimeout();
     assert.deepEqual(fixtureNavigationErrors, []);
     console.log('PASS: captured header context survives DOM removal; fresh DOM wins; missing context stays absent; invalid headers rejected; tokens never persisted.');
     console.log('PASS: failed-run diagnostics survive restart/export without history writes; old warnings hidden; HTML stops the queue; login distinguished; human check URL guarded and kept without focus or token persistence.');

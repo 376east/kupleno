@@ -111,6 +111,7 @@ function ozonReceiptPageReady() {
 }
 
 const marketLoadingMessage = (source: Source) => `${SOURCES[source].name}: страница ещё загружается. Повторите сбор после загрузки.`;
+const pageLoadingTimeoutFlag = { ozon: 'ozonPageLoadingTimeout', wildberries: 'wbPageLoadingTimeout', yandex: 'yandexPageLoadingTimeout' };
 
 async function marketContext(job: Job, controller: AbortController) {
   const { source } = job;
@@ -119,7 +120,7 @@ async function marketContext(job: Job, controller: AbortController) {
   let tab = await browser.tabs.create({ url: SOURCES[source].url, active: false });
   const ownedId = tab.id;
   const loadingMessage = marketLoadingMessage(source);
-  if (ownedId === undefined) throw new Error(loadingMessage);
+  if (ownedId === undefined) throw new Error(`${SOURCES[source].name}: не удалось открыть вкладку сбора.`);
   try {
     await persist(source, current => current?.id === job.id ? { ...current, marketTabId: ownedId } : current);
     const deadline = Date.now() + 20000;
@@ -363,8 +364,7 @@ async function handle(command: Command): Promise<JobResponse> {
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Не удалось запустить сбор.';
     const loadingTimedOut = !controller.signal.aborted && message === marketLoadingMessage(job.source);
-    const failureStats: Job['failureStats'] = loadingTimedOut && job.source === 'wildberries' ? { wbPageLoadingTimeout: true }
-      : loadingTimedOut && job.source === 'ozon' ? { ozonPageLoadingTimeout: true } : undefined;
+    const failureStats = loadingTimedOut ? { [pageLoadingTimeoutFlag[job.source]]: true } : undefined;
     await persist(job.source, value => value?.id === job.id && value.status === 'running'
       ? { ...value, status: controller.signal.aborted ? 'cancelled' : 'failed', error: message,
         ...(failureStats ? { failureStats } : {}), updatedAt: new Date().toISOString() } : value);
