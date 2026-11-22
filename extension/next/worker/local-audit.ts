@@ -6,9 +6,11 @@ import type { Source } from '../model';
 import { knownYandexOrderIds } from '../collection-state';
 import { settingsWithDefaults } from '../preferences.mjs';
 import { createStore } from '../storage.mjs';
+import { applyPendingMarketJob } from './local-apply';
 
 const auditKey = 'kupleno-local-audit-result';
 const fullKey = 'kupleno-local-collection-request';
+const applyKey = 'kupleno-local-apply-result';
 const folder = 'Kupleno-diagnostics';
 type FullRun = { run: string; version: string; id: string; report?: object; downloadId?: number };
 
@@ -100,6 +102,28 @@ export function registerLocalAudit(jobsKey: string, verify: typeof verifyYandexO
     } catch { return reportFull(request, { status: 'start_failed' }); }
   }
 
+  async function runApply(run: string, sourceRun: string, orders: number) {
+    const saved = (await browser.storage.local.get(applyKey))[applyKey] as { run: string; version: string; report: object; downloadId?: number } | undefined;
+    const previousApply = saved?.run === run && saved.version === version ? saved : undefined;
+    if (typeof previousApply?.downloadId === 'number') {
+      const [file] = await browser.downloads.search({ id: previousApply.downloadId });
+      if (file?.state === 'in_progress' || (file?.state === 'complete' && file.exists)) return;
+    }
+    let report = previousApply?.report;
+    if (!report) {
+      const full = await readFull();
+      const previousReport = full?.report as { status?: string; stats?: { orders?: number } } | undefined;
+      const matches = full?.run === sourceRun && previousReport?.status === 'completed' && previousReport.stats?.orders === orders;
+      const result = matches
+        ? await applyPendingMarketJob(full.id, orders).catch(() => ({ status: 'apply_error' }))
+        : { status: 'collection_not_confirmed' };
+      report = { schema: 1, version, run, sourceRun, orders, checkedAt: new Date().toISOString(), ...result };
+      await browser.storage.local.set({ [applyKey]: { run, version, report } });
+    }
+    const downloadId = await saveReport(`apply-yandex-${run}`, report);
+    await browser.storage.local.set({ [applyKey]: { run, version, report, downloadId } });
+  }
+
   async function runAudit() {
     const configUrl = new URL(localAuditConfig, browser.runtime.getURL('/app.html'));
     const response = await fetch(configUrl).catch(() => null);
@@ -108,6 +132,11 @@ export function registerLocalAudit(jobsKey: string, verify: typeof verifyYandexO
     if (!config || typeof config !== 'object' || !('run' in config)) return;
     const { run } = config;
     if (typeof run !== 'string' || !/^[a-z0-9-]{1,48}$/.test(run)) return;
+    if ('apply' in config && !('collection' in config) && !('orderIds' in config)
+      && typeof config.apply === 'string' && /^[a-z0-9-]{1,48}$/.test(config.apply)
+      && 'orders' in config && typeof config.orders === 'number' && Number.isSafeInteger(config.orders) && config.orders > 0) {
+      return runApply(run, config.apply, config.orders);
+    }
     if ('collection' in config && config.collection === 'yandex' && !('orderIds' in config)) return runFull(run);
     if (!('orderIds' in config) || 'collection' in config) return;
     const ids = readUnresolvedOrderIds(config.orderIds);

@@ -198,11 +198,12 @@ async function main() {
   };`);
   const html = await fs.readFile(path.join(build, 'offscreen.html'), 'utf8');
   await fs.writeFile(path.join(build, 'offscreen.html'), html.replace('<head>', '<head><script src="/test-fixtures.js"></script>'));
-  const context = await chromium.launchPersistentContext(path.join(root, 'profile'), {
+  const launchFixtureProfile = () => chromium.launchPersistentContext(path.join(root, 'profile'), {
     channel: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ? undefined : 'chromium',
     executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH, headless: true,
     args: [`--disable-extensions-except=${build}`, `--load-extension=${build}`],
-  }).catch(async error => {
+  });
+  const context = await launchFixtureProfile().catch(async error => {
     assert.equal(path.dirname(root), os.tmpdir()); assert.ok(path.basename(root).startsWith('kupleno-collect-test-'));
     await fs.rm(root, { recursive: true, force: true });
     throw error;
@@ -346,7 +347,8 @@ async function main() {
         const body = route.request().postDataJSON(); assert.ok(yandexOrderIds.includes(body.params[0].orderId));
         assert.equal(body.params.length, 1);
         if ((yandexMode === 'dom-fallback' && body.params[0].orderId === 345678) || (yandexMode === 'docs-late' && body.params[0].orderId === 234567) || yandexMode === 'docs-concurrent') return route.fulfill({ json: { results: [{ data: { result: ['r'], collections: { orderReceipt: { r: {} } } } }] } });
-        return route.fulfill({ json: { results: body.params.map(({orderId}) => ({ data: { result: cacheRefund ? ['r','refund'] : ['r'], collections: { orderReceipt: { r: { id: String(orderId), fiscalUrl: 'https://check.yandex.ru/test/' + orderId, createdAt: 1767225600, type: 'INCOME' }, ...(cacheRefund ? { refund: { id: 'refund-'+orderId, fiscalUrl: 'https://check.yandex.ru/test/refund-'+orderId, createdAt:1767225600,type:'RETURN_INCOME' } } : {}) } } } })) } });
+        const fiscalQuery = fullAudit ? '?fn=101&n=202&fpd=303' : '';
+        return route.fulfill({ json: { results: body.params.map(({orderId}) => ({ data: { result: cacheRefund ? ['r','refund'] : ['r'], collections: { orderReceipt: { r: { id: String(orderId), fiscalUrl: 'https://check.yandex.ru/test/' + orderId + fiscalQuery, createdAt: 1767225600, type: 'INCOME' }, ...(cacheRefund ? { refund: { id: 'refund-'+orderId, fiscalUrl: 'https://check.yandex.ru/test/refund-'+orderId, createdAt:1767225600,type:'RETURN_INCOME' } } : {}) } } } })) } });
       }
       const captured = headerPhase && headerPhase !== 'absent' ? '<script id="synthetic-header-context" type="application/json">{"sk":"cached-sk-secret","-version":"cached-version","marketFrontGlue":"cached-glue","page":"market:orders:cached"}</script>' : '';
       if (yandexMode === 'dom-fatal') return route.fulfill({ contentType: 'text/html; charset=utf-8', body: '<html><script type="application/json">{"pageToken":"owned-tab-cursor"}</script><h1>Что-то пошло не так</h1><button>Показать ещё</button></html>' });
@@ -378,25 +380,43 @@ async function main() {
     };
     if (localAudit) {
       // Playwright stores downloads under generated names. Match by report type and read the actual bytes from disk.
-      const readReport = async (label, matches) => {
+      const readReport = async (label, matches, reportPage = page) => {
         const deadline = Date.now() + 35000;
         const checked = new Set();
         do {
-          const items = await page.evaluate(() => chrome.downloads.search({ state: 'complete' }));
+          const items = await reportPage.evaluate(() => chrome.downloads.search({ state: 'complete' }));
           for (const { id, filename, url } of items) {
             if (!filename || !url.startsWith('data:application/json;charset=utf-8,') || checked.has(id)) continue;
             checked.add(id);
-            const report = JSON.parse(await fs.readFile(filename, 'utf8'));
+            const contents = await fs.readFile(filename, 'utf8').catch(error => {
+              if (error.code !== 'ENOENT') throw error;
+              return null; // Downloads from a closed Playwright context no longer exist.
+            });
+            if (contents === null) continue;
+            const report = JSON.parse(contents);
             if (matches(report)) return report;
           }
           await new Promise(resolve => setTimeout(resolve, 100));
         } while (Date.now() < deadline);
-        const diagnostics = await page.evaluate(async () => ({
+        const diagnostics = await reportPage.evaluate(async () => ({
           downloads: (await chrome.downloads.search({})).map(({ filename, state, error }) => ({ filename, state, error })),
           audit: (await chrome.storage.local.get('kupleno-local-audit-result'))['kupleno-local-audit-result'],
         }));
         assert.fail('Missing automatic download: ' + label + ' ' + JSON.stringify(diagnostics));
       };
+      if (fullAudit) {
+        const state = {
+          rows: [
+            { source: 'yandex', rowId: 'old-market', date: '2025-12-01', title: 'Старая покупка', amount: '100.00' },
+            { source: 'ozon', rowId: 'old-ozon', date: '2025-12-01', title: 'Покупка другого магазина', amount: '20.00' },
+          ],
+          settings: {}, metadata: {},
+          fiscalPayments: [{ source: 'yandex', id: '101:202:303', date: '2026-01-01', paid: 2500, advance: 7500 }],
+        };
+        await page.locator('input[type=file]').setInputFiles({ name: 'synthetic-existing.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify({ format: 'kupleno-backup', version: 2, state })) });
+        await page.getByRole('dialog').getByRole('button', { name: 'Загрузить историю', exact: true }).click();
+        await page.getByRole('dialog').waitFor({ state: 'hidden' });
+      }
       await worker.evaluate(() => chrome.storage.local.set({ 'synthetic-audit-ready': true }));
       if (fullAudit) {
         const report = await readReport('startup full collection', item => item.run === 'synthetic-full');
@@ -409,7 +429,26 @@ async function main() {
         assert.ok(!JSON.stringify(report).includes('https://'));
         const collection = await readReport('Yandex collection', item => item.source === 'yandex' && !item.run);
         assert.deepEqual(collection.stats, report.stats);
-        console.log('PASS: startup runs the normal Yandex collector and downloads the report for the exact run without a UI command.');
+        await fs.writeFile(path.join(build, auditConfig), JSON.stringify({ run: 'synthetic-apply', apply: 'synthetic-full', orders: 1 }));
+        await context.close();
+        const reopened = await launchFixtureProfile();
+        let applied;
+        try {
+          const afterRestart = await reopened.newPage();
+          await afterRestart.goto(`chrome-extension://${id}/app.html`);
+          applied = await readReport('startup applies the saved collection', item => item.run === 'synthetic-apply', afterRestart);
+        } finally { await reopened.close(); }
+        assert.equal(applied.status, 'applied', JSON.stringify(applied));
+        assert.equal(applied.comparison.rowsBefore, 2);
+        assert.equal(applied.comparison.rowsAfter, 3);
+        assert.equal(applied.comparison.missingPreviousRows, 0);
+        assert.equal(applied.comparison.duplicatePayments, 0);
+        assert.equal(applied.comparison.changedPreviousPayments, 0);
+        assert.equal(applied.comparison.newMarketPayments, 0);
+        assert.equal(applied.comparison.marketAmountsAfter.advance, 7500);
+        assert.equal(applied.comparison.otherStoresUnchanged, true);
+        assert.equal(applied.acknowledged, true);
+        console.log('PASS: startup collects and applies the exact Yandex result without a UI command; the persisted history retains old rows and charges the existing advance once.');
         return;
       }
       const report = await readReport('startup audit', report => report.run === 'synthetic');

@@ -1,6 +1,6 @@
 import type { FiscalPayment, Purchase, Source } from './model';
 
-export const localAuditRevision = 4;
+export const localAuditRevision = 5;
 export const localAuditWorker = `local-audit-background-v${localAuditRevision}.js`;
 export const localAuditConfig = `local-audit-v${localAuditRevision}.json`;
 
