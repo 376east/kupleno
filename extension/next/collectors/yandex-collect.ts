@@ -493,7 +493,6 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
     if (uniformError(1)) {
       await loadMetadata(probe, true);
       useDocuments = uniformError(2);
-      if (useDocuments) warnings.push('Яндекс Маркет: магазин не вернул чеки по API. Читаем документы в карточках заказов.');
     }
     if (!useDocuments) {
       await loadMetadata(states.slice(probe.length), false);
@@ -589,7 +588,13 @@ export async function collectYandex(options: { fetch: typeof fetch; signal?: Abo
       failures.clear();
       if (failedOrders) rememberFailure(new Error('Часть карточек не удалось прочитать полностью.'));
     }
-    if (candidates.length) { incomplete = true; warnings.push('Яндекс Маркет: покрытие отсутствующих в API чеков не подтверждено.'); }
+    if (candidates.length) {
+      incomplete = true;
+      const coverage = useDocuments && !failedOrders
+        ? `Проверены карточки всех найденных заказов (${candidates.length.toLocaleString('ru-RU')}). `
+        : '';
+      warnings.push(`Яндекс Маркет: ${coverage}Полнота списка чеков не подтверждена.`);
+    }
   }
   finishStage('receiptFetchElapsedMs');
   // Finish admitted downloads before the normal pool starts. Parse only after all

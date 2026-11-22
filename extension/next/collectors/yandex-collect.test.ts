@@ -144,10 +144,15 @@ test('four matching errors in both metadata passes move the whole queue to order
     assert.equal(result.stats.failedOrders, 0);
     assert.equal(result.stats.domReceiptProgressUpdates, documentProgress.length);
     assert.deepEqual(readFailureStats(result.stats), result.stats);
-    if (archiveWorks) assert.deepEqual(documentProgress, []);
+    if (archiveWorks) {
+      assert.deepEqual(documentProgress, []);
+      assert.doesNotMatch(result.warnings.join(' '), /Проверены карточки/);
+    }
     else {
       assert.equal(documentProgress[0], 1);
       assert.equal(documentProgress.at(-1), ids.length);
+      assert.equal(result.stats.incomplete, true);
+      assert.match(result.warnings.join(' '), /Проверены карточки всех найденных заказов \(10\)\. Полнота списка чеков не подтверждена\./);
     }
   }
 });
@@ -412,7 +417,7 @@ test('incomplete document reads retain only fixed failure categories in exported
   assert.deepEqual(result.failedReceiptOrderIds, []);
   assert.equal(result.stats.incomplete, true);
   for (const key of ['NavigationWaits', 'ButtonWaits', 'DialogWaits', 'LoadingWaits', 'ErrorWaits', 'UnrecognizedWaits', 'RequestErrors']) assert.equal(result.stats[`domReceipt${key}`], 1);
-  assert.ok(Object.keys(result.stats).length <= 128);
+  assert.deepEqual(readFailureStats(result.stats), result.stats);
   assert.doesNotMatch(JSON.stringify(result.stats), /123456|check\.yandex/);
 });
 
@@ -719,7 +724,7 @@ test('receipt failures have separate safe categories and never expose transport 
   for (const name of ['Forbidden', 'RateLimit', 'Http', 'Network', 'Timeout', 'Parse', 'Oversize', 'Redirect']) assert.equal(result.stats[`receipt${name}Errors`], 1, name);
   assert.equal(diagnostics?.incomplete, true);
   assert.equal(diagnostics?.failedReceipts, 8);
-  assert.ok(Object.keys(result.stats).length <= 128);
+  assert.deepEqual(readFailureStats(result.stats), result.stats);
   assert.doesNotMatch(JSON.stringify([result.stats, result.warnings, diagnostics]), /fiscal-secret|elsewhere|check\.yandex/);
 });
 
@@ -1562,7 +1567,7 @@ test('warm RAW cache preserves prepayment rows and reparses current metadata whi
   assert.equal(changed.stats.receiptNetworkRequests, 1);
   assert.equal(changed.rows.find(row => row.receipt_url === sale.url)?.amount, '-100.00');
   assert.match(changed.rows.find(row => row.receipt_url === sale.url)?.marketplace_id || '', /current-id/);
-  assert.ok(Object.keys(changed.stats).length <= 128);
+  assert.deepEqual(readFailureStats(changed.stats), changed.stats);
 });
 
 test('invalid cached HTML is removed and fallback, unverified or failed network receipts are never cached', async () => {
