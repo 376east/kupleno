@@ -1,7 +1,8 @@
 import type { FiscalPayment, Purchase, Source } from './model';
 
-export const localAuditRevision = 2;
+export const localAuditRevision = 3;
 export const localAuditWorker = `local-audit-background-v${localAuditRevision}.js`;
+export const localAuditConfig = `local-audit-v${localAuditRevision}.json`;
 
 export const storeOrigins: Record<Source, string[]> = {
   ozon: ['https://www.ozon.ru/*', 'https://ozon.ru/*'],

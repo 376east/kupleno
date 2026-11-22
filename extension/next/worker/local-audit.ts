@@ -1,5 +1,5 @@
 import { browser } from 'wxt/browser';
-import { collectionAttemptDiagnostics, readFailureStats, readUnresolvedOrderIds } from '../collection';
+import { collectionAttemptDiagnostics, localAuditConfig, readFailureStats, readUnresolvedOrderIds } from '../collection';
 import type { verifyYandexOrders } from './collection';
 import type { Job } from '../collection';
 import type { Source } from '../model';
@@ -41,7 +41,7 @@ export function registerLocalAudit(jobsKey: string, verify: typeof verifyYandexO
   });
 
   async function runAudit() {
-    const configUrl = new URL('local-audit.json', browser.runtime.getURL('/app.html'));
+    const configUrl = new URL(localAuditConfig, browser.runtime.getURL('/app.html'));
     const response = await fetch(configUrl).catch(() => null);
     if (!response?.ok) return;
     const config: unknown = await response.json();
@@ -49,9 +49,10 @@ export function registerLocalAudit(jobsKey: string, verify: typeof verifyYandexO
     const { run } = config;
     const ids = readUnresolvedOrderIds(config.orderIds);
     if (typeof run !== 'string' || !/^[a-z0-9-]{1,48}$/.test(run) || !ids?.length || ids.length > 4) return;
-    const previous = (await browser.storage.local.get(auditKey))[auditKey] as { run: string; report: object; downloadId?: number } | undefined;
+    const version = browser.runtime.getManifest().version;
+    const previous = (await browser.storage.local.get(auditKey))[auditKey] as { run: string; report: { version?: string }; downloadId?: number } | undefined;
     let report: object;
-    if (previous?.run === run) {
+    if (previous?.run === run && previous.report?.version === version) {
       if (typeof previous.downloadId === 'number') {
         const [file] = await browser.downloads.search({ id: previous.downloadId });
         if (file?.state === 'in_progress' || (file?.state === 'complete' && file.exists)) return;
@@ -60,7 +61,7 @@ export function registerLocalAudit(jobsKey: string, verify: typeof verifyYandexO
     } else {
       const result = await verify(ids);
       if (result.status === 'busy') return;
-      report = { schema: 1, version: browser.runtime.getManifest().version, run, checkedAt: new Date().toISOString(), ...result };
+      report = { schema: 1, version, run, checkedAt: new Date().toISOString(), ...result };
       await browser.storage.local.set({ [auditKey]: { run, report } });
     }
     const downloadId = await saveReport(`yandex-orders-${run}`, report);

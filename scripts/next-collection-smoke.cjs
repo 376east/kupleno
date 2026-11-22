@@ -66,7 +66,8 @@ async function main() {
   // Pregrant hosts only in the disposable synthetic test extension. Shipping manifest remains optional.
   const manifest = JSON.parse(await fs.readFile(path.join(build, 'manifest.json'), 'utf8'));
   assert.equal(manifest.permissions.includes('downloads'), localAudit);
-  if (localAudit) await fs.writeFile(path.join(build, 'local-audit.json'), JSON.stringify({ run: 'synthetic', orderIds: auditIds }));
+  const auditConfig = 'local-audit-v' + manifest.version.split('.').at(-1) + '.json';
+  if (localAudit) await fs.writeFile(path.join(build, auditConfig), JSON.stringify({ run: 'synthetic', orderIds: auditIds }));
   manifest.host_permissions = manifest.optional_host_permissions;
   manifest.permissions.push('cookies');
   await fs.writeFile(path.join(build, 'manifest.json'), JSON.stringify(manifest));
@@ -74,7 +75,7 @@ async function main() {
   await fs.writeFile(path.join(build, 'test-tabs.js'), `
   const nativeFetch = globalThis.fetch;
   globalThis.fetch = async (input, ...args) => {
-    if (String(input) === chrome.runtime.getURL('/local-audit.json')) {
+    if (String(input) === chrome.runtime.getURL('/${auditConfig}')) {
       for (let i = 0; i < 300 && !(await chrome.storage.local.get('synthetic-audit-ready'))['synthetic-audit-ready']; i++) {
         await new Promise(resolve => setTimeout(resolve, 50));
       }

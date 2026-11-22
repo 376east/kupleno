@@ -22,13 +22,18 @@ async function main() {
     const id = new URL(worker.url()).host;
     await worker.evaluate(async () => {
       if (chrome.runtime.getManifest().permissions.includes('downloads')) throw new Error('Normal Preview requests downloads.');
-      await chrome.storage.local.set({ syntheticInstalledData: true });
+      await chrome.storage.local.set({
+        syntheticInstalledData: true,
+        'kupleno-local-audit-result': { run: 'synthetic-restart', report: { version: '0.22.15.1', status: 'checked' } },
+      });
     });
     await context.close();
     context = undefined;
 
     await fs.cp(path.join(output, 'chrome-mv3-local-audit'), extension, { recursive: true });
-    await fs.writeFile(path.join(extension, 'local-audit.json'), JSON.stringify({ run: 'synthetic-restart', orderIds: ['123456'] }));
+    const localManifest = JSON.parse(await fs.readFile(path.join(extension, 'manifest.json'), 'utf8'));
+    await fs.writeFile(path.join(extension, 'local-audit.json'), JSON.stringify({ run: 'old-config', orderIds: ['123456'] }));
+    await fs.writeFile(path.join(extension, 'local-audit-v' + localManifest.version.split('.').at(-1) + '.json'), JSON.stringify({ run: 'synthetic-restart', orderIds: ['123456'] }));
     // CLI-loaded extensions in Chromium's test harness require this flag again.
     context = await launch([`--load-extension=${extension}`]);
     const page = await context.newPage();
@@ -47,6 +52,7 @@ async function main() {
       const file = files.find(item => item.state === 'complete');
       if (file) {
         const report = JSON.parse(await fs.readFile(file.filename, 'utf8'));
+        assert.equal(report.version, localManifest.version);
         assert.equal(report.run, 'synthetic-restart');
         assert.equal(report.status, 'permission_required');
         console.log('PASS: startup report after replacing the build in the same test profile and extension path; storage persists and absent scope is reported.');
