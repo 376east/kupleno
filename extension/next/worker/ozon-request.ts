@@ -16,7 +16,7 @@ export async function ozonRequest(input: unknown, tabId?: number) {
   const tab = await browser.tabs.get(tabId).catch(() => null);
   if (!tab?.url || !['https://ozon.ru','https://www.ozon.ru'].includes(new URL(tab.url).origin)) throw new Error('Вкладка сбора Ozon закрыта или открыта другая страница. Повторите сбор.');
   if (receipt) return withDeadline(fetchOzonPdf(url.href), 'Ozon не отдал PDF за 30 секунд.');
-  const execution = await withDeadline(browser.scripting.executeScript({ target: { tabId }, world: 'ISOLATED', args: [url.href, receipt], func: async (url: string, binary: boolean) => {
+  const execution = await withDeadline(browser.scripting.executeScript({ target: { tabId }, world: 'ISOLATED', injectImmediately: true, args: [url.href, receipt], func: async (url: string, binary: boolean) => {
     if (location.protocol !== 'https:' || !['www.ozon.ru','ozon.ru'].includes(location.hostname)) return { status: 403, text: '', binary, error: 'Страница Ozon изменилась.' };
     let stage = 'запрос';
     try {

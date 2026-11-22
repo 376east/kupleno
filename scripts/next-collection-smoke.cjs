@@ -245,10 +245,20 @@ async function main() {
     let holdHumanNavigation = false, unsafeNavigations = 0;
     let holdOrdersImage = false, releaseOrdersImage, readOrdersWhileLoading = false;
     const ozonRequestPages = new Set();
+    let holdOzonImage = false, releaseOzonImage, readOzonWhileLoading = false;
     await context.route('https://www.ozon.ru/**', async route => {
-      if (route.request().isNavigationRequest()) return route.fulfill({contentType:'text/html',body:'<html><script>window.fetch = () => new Promise(() => {});</script><body>Receipt page</body></html>'});
+      if (new URL(route.request().url()).pathname === '/synthetic-ozon-image.png') {
+        await new Promise(resolve => { releaseOzonImage = resolve; });
+        return route.abort().catch(() => {});
+      }
+      if (route.request().isNavigationRequest()) return route.fulfill({
+        contentType: 'text/html',
+        body: '<html><script>window.fetch = () => new Promise(() => {});</script><body>Receipt page'
+          + (holdOzonImage ? '<img src="/synthetic-ozon-image.png" alt="">' : '') + '</body></html>',
+      });
       requests.push(route.request().url());
       ozonRequestPages.add(route.request().frame().page());
+      if (holdOzonImage && releaseOzonImage) readOzonWhileLoading ||= await route.request().frame().page().evaluate(() => document.readyState === 'interactive');
       if (stallOzon) return new Promise(() => {});
       if (ozonGate) await ozonGate;
       return route.fulfill(route.request().url().includes('downloadCheque') ? { contentType: 'application/pdf', body: pdf } : { contentType: 'application/json', json: { cheques: [{ link: '/_action/downloadCheque?id=synthetic' }] } });
@@ -361,6 +371,17 @@ async function main() {
       console.log('PASS: WB starts session check while a nonessential image is pending and closes only its own tab.');
     }
     if (process.argv.includes('--wb-readiness')) return await checkWbReadiness();
+    async function checkOzonReadiness() {
+      holdOzonImage = true;
+      try {
+        const started = await command({ action: 'start', source: 'ozon', profile: 'personal' });
+        assert.equal(started.job.status, 'running', started.job.error);
+        await finish('ozon');
+        assert.equal(readOzonWhileLoading, true, 'Ozon issued a list request while the image was still loading');
+        console.log('PASS: Ozon reads and closes its collection tab without waiting for images.');
+      } finally { holdOzonImage = false; releaseOzonImage?.(); }
+    }
+    if (process.argv.includes('--ozon-readiness')) return await checkOzonReadiness();
     async function finish(source, expectedRows = 1) {
       const scope = source ? { source } : {};
       let result;
@@ -567,6 +588,7 @@ async function main() {
     assert.equal(typeof releaseYandex, 'function'); holdYandex = false; releaseYandex();
     await finish('yandex');
     console.log('PASS: lost finished reply; exact ACK releases retained delivery; immediate same-source collection succeeds.');
+    await checkOzonReadiness();
     // Migrate a durable old single-job result without discarding it on worker restart.
     const devtools = await context.newCDPSession(page);
     await devtools.send('ServiceWorker.enable');
