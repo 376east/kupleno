@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chromium, type BrowserContext, type Page } from 'playwright';
+import { chromium, type BrowserContext } from 'playwright';
 import { readYandexOrderDocuments } from './worker/yandex-order-documents.ts';
 import type { YandexDocumentTimings } from './collection.ts';
 
@@ -22,7 +22,16 @@ const dialog = `<section role="dialog"><h2>Документы по заказу<
 
 type Api = Parameters<typeof readYandexOrderDocuments>[1]['browser'];
 async function fixture(context: BrowserContext, markup = button, clickMarkup = dialog, { holdImage = false, includeOutsideLink = true } = {}) {
-  let page: Page | undefined, creates = 0, removes = 0, clicks = 0, reads = 0;
+  // Prepare the DOM before starting the reader's clock. Dedicated tab tests
+  // below drive navigation and late creation through their own browser mocks.
+  const page = await context.newPage();
+  await page.route('**/*', route => route.fulfill({ contentType: 'text/html; charset=utf-8', body: `<!doctype html><html><body>${markup}
+    ${includeOutsideLink ? '<a href="https://check.yandex.ru/outside">Вне диалога</a>' : ''}
+    <script>window.clicks=0;document.querySelectorAll('button,[role="button"]').forEach(b=>b.addEventListener('click',()=>{window.clicks++;setTimeout(()=>document.body.insertAdjacentHTML('beforeend',${JSON.stringify(clickMarkup)}),10)}));</script>
+  </body></html>` }));
+  if (holdImage) await page.route('**/held-image.png', () => {});
+  await page.goto(orderUrl, { waitUntil: holdImage ? 'domcontentloaded' : 'load' });
+  let creates = 0, removes = 0, clicks = 0, reads = 0;
   let pending = '', overrideUrl = '', status = 'complete', beforeGet: (() => void) | undefined;
   let registered = false, releases = 0;
   const calls: string[] = [];
@@ -31,25 +40,18 @@ async function fixture(context: BrowserContext, markup = button, clickMarkup = d
       async create(properties: { url: string; active: boolean }) {
         creates++;
         assert.deepEqual(properties, { url: orderUrl, active: false });
-        page = await context.newPage();
-        await page.route('**/*', route => route.fulfill({ contentType: 'text/html; charset=utf-8', body: `<!doctype html><html><body>${markup}
-          ${includeOutsideLink ? '<a href="https://check.yandex.ru/outside">Вне диалога</a>' : ''}
-          <script>window.clicks=0;document.querySelectorAll('button,[role="button"]').forEach(b=>b.addEventListener('click',()=>{window.clicks++;setTimeout(()=>document.body.insertAdjacentHTML('beforeend',${JSON.stringify(clickMarkup)}),10)}));</script>
-        </body></html>` }));
-        if (holdImage) await page.route('**/held-image.png', () => {});
-        await page.goto(properties.url, { waitUntil: holdImage ? 'domcontentloaded' : 'load' });
         return { id: 7 };
       },
       async get(id: number) {
         assert.equal(id, 7);
         beforeGet?.();
-        return { id, url: overrideUrl || page?.url(), status, ...(pending ? { pendingUrl: pending } : {}) };
+        return { id, url: overrideUrl || page.url(), status, ...(pending ? { pendingUrl: pending } : {}) };
       },
       async remove(id: number) {
         assert.equal(id, 7);
         removes++;
-        clicks = await page!.evaluate('window.clicks');
-        await page!.close();
+        clicks = await page.evaluate('window.clicks');
+        await page.close();
       }
     },
     scripting: {
@@ -59,7 +61,7 @@ async function fixture(context: BrowserContext, markup = button, clickMarkup = d
         if (injection.args[1] !== 'inspect') assert.equal(registered, true, 'Ownership must be persisted before UI actions');
         calls.push(injection.args[1]!);
         if (injection.args[1] === 'read') reads++;
-        const result = await page!.evaluate(({ source, args }) => (0, eval)(`(${source})`)(...args), { source: injection.func.toString(), args: injection.args });
+        const result = await page.evaluate(({ source, args }) => (0, eval)(`(${source})`)(...args), { source: injection.func.toString(), args: injection.args });
         return [{ result }];
       }
     }
@@ -68,7 +70,7 @@ async function fixture(context: BrowserContext, markup = button, clickMarkup = d
     api, calls,
     async onOpened(id: number, orderId: string) { assert.equal(id, 7); assert.equal(orderId, '123456'); registered = true; },
     async onReleased(id: number, orderId: string) { assert.equal(id, 7); assert.equal(orderId, '123456'); registered = false; releases++; },
-    get page() { return page!; }, get creates() { return creates; }, get removes() { return removes; }, get clicks() { return clicks; }, get reads() { return reads; },
+    page, get creates() { return creates; }, get removes() { return removes; }, get clicks() { return clicks; }, get reads() { return reads; },
     get releases() { return releases; },
     pending(value: string) { pending = value; }, navigate(value: string) { overrideUrl = value; }, beforeGet(callback: () => void) { beforeGet = callback; },
     loading() { status = 'loading'; }
@@ -87,6 +89,7 @@ test('order documents helper uses only its own offline fixture tab', async t => 
         await assert.rejects(readYandexOrderDocuments(id, { browser: f.api, onOpened: f.onOpened, onReleased: f.onReleased, isCurrent: () => true }), /Некорректный номер/);
       }
       assert.equal(f.creates, 0);
+      await f.page.close();
     });
     await t.test('already cancelled or stale jobs create no tab', async () => {
       const controller = new AbortController(); controller.abort();
@@ -98,6 +101,7 @@ test('order documents helper uses only its own offline fixture tab', async t => 
       await readYandexOrderDocuments(123456, { browser: f.api, onOpened: f.onOpened, onReleased: f.onReleased, onNoTab, signal: controller.signal, isCurrent: () => true });
       assert.equal(noTabs, 2, 'Exactly one release for each precreate refusal');
       assert.equal(f.creates, 0);
+      await f.page.close();
     });
     await t.test('creation rejection, synchronous throw or missing valid ID releases the reservation exactly once', async () => {
       for (const mode of ['reject', 'throw', 'missing', 'invalid']) {
@@ -201,7 +205,7 @@ test('order documents helper uses only its own offline fixture tab', async t => 
     await t.test('one delayed retry opens documents after the first click precedes listener installation', async () => {
       const f = await fixture(context);
       const result = await readYandexOrderDocuments(123456, {
-        browser: f.api, onReleased: f.onReleased, isCurrent: () => true, timeoutMs: 4500,
+        browser: f.api, onReleased: f.onReleased, isCurrent: () => true, timeoutMs: 6000,
         onOpened: async (id, orderId) => {
           await f.onOpened(id, orderId);
           await f.page.evaluate(dialog => {
