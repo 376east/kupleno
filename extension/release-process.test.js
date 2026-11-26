@@ -83,8 +83,9 @@ for (const workflow of ['.github/workflows/ci.yml', '.github/workflows/release-c
 
 // The public download describes a published preview. It can lag the source version.
 const rootReadme = read('README.md');
-assert.match(rootReadme, /\[Скачать Куплено (\d+\.\d+\.\d+)\]\(https:\/\/github\.com\/376east\/kupleno\/releases\/download\/v\1-preview\.[1-9]\d*\/kupleno-extension\.zip\)/);
-assert.ok(rootReadme.includes('(docs/PREVIEW.md#запуск)'));
+assert.match(rootReadme, /\[Скачать Куплено (\d+\.\d+\.\d+) Preview\]\(https:\/\/github\.com\/376east\/kupleno\/releases\/download\/v\1-preview\.[1-9]\d*\/kupleno-extension\.zip\)/);
+assert.ok(rootReadme.includes('[Инструкция по установке](#установка)'));
+assert.match(rootReadme, /^## Установка$/m);
 
 const releaseWorkflow = read('.github/workflows/release-candidate.yml');
 const [candidate, publish] = releaseWorkflow.split(/^  publish:\n/m);
@@ -103,6 +104,7 @@ assert.doesNotMatch(releaseWorkflow, /verify:release\b|package-extension\.sh/);
 assert.match(publish, /^    if: github\.event_name == 'push'$/m);
 assert.match(publish, /^    needs: candidate$/m);
 assert.match(publish, /^    permissions:\n      actions: read\n      contents: write$/m);
+assert.ok(publish.includes('[Пошаговая установка]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/blob/master/README.md#установка)'));
 assert.match(publish, /gh run download .*--name "\$ARTIFACT_NAME"/);
 assert.match(publish, /sha256sum --check SHA256SUMS[\s\S]+gh release create/);
 assert.match(publish, /gh release view[\s\S]+already exists\.[\s\S]+exit 1[\s\S]+gh release create/);
