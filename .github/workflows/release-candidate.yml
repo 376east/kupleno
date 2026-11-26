@@ -47,13 +47,14 @@ jobs:
         run: |
           set -euo pipefail
           commit=$(git rev-parse HEAD)
-          if [[ "$commit" != "$(git rev-parse refs/remotes/origin/master)" ]]; then
-            echo "Release commit $commit must match current master."
+          if ! git merge-base --is-ancestor "$commit" refs/remotes/origin/master; then
+            echo "Release commit $commit must be in master history."
             exit 1
           fi
-          conclusion=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" \
-            -f event=push -f branch=master -f "head_sha=$commit" --jq '.workflow_runs[0].conclusion')
-          if [[ "$conclusion" != success ]]; then
+          ci_result=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" \
+            -f event=push -f branch=master -f "head_sha=$commit" \
+            --jq '.workflow_runs[0] | select(.event == "push" and .head_branch == "master" and .status == "completed") | [.head_sha, .conclusion] | @tsv')
+          if [[ "$ci_result" != "$commit"$'\tsuccess' ]]; then
             echo "Release commit $commit requires successful master push CI."
             exit 1
           fi
@@ -97,6 +98,9 @@ jobs:
     name: Publish verified GitHub release
     if: github.event_name == 'push'
     needs: candidate
+    concurrency:
+      group: publish-stable-release
+      queue: max
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -126,15 +130,31 @@ jobs:
           [[ "$commit" =~ ^[0-9a-f]{40}$ ]]
 
           check_release_refs() {
-            local remote_tag remote_master
+            local remote_tag remote_master merge_base
             remote_tag=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq .object.sha)
             if [[ -z "$TAG_OBJECT" || "$remote_tag" != "$TAG_OBJECT" ]]; then
               echo "Release tag $RELEASE_TAG changed after verification." >&2
               return 1
             fi
             remote_master=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/master" --jq .object.sha)
-            if [[ "$remote_master" != "$commit" ]]; then
-              echo "Master moved after release commit $commit was verified." >&2
+            [[ "$remote_master" =~ ^[0-9a-f]{40}$ ]] || return 1
+            merge_base=$(gh api "repos/$GITHUB_REPOSITORY/compare/$commit...$remote_master?per_page=1" --jq .merge_base_commit.sha)
+            if [[ "$merge_base" != "$commit" ]]; then
+              echo "Release commit $commit is no longer in master history." >&2
+              return 1
+            fi
+          }
+
+          check_release_version() {
+            local product_tags highest
+            product_tags=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '
+              .[] | select(.draft == false and .prerelease == false)
+              | select(.tag_name | test("^v(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)$"))
+              | select(any(.assets[]; .name == "kupleno-extension.zip" and .state == "uploaded"))
+              | .tag_name')
+            highest=$(printf '%s\n' "$product_tags" | LC_ALL=C sort -V | tail -n 1)
+            if [[ -n "$highest" ]] && ! printf '%s\n' "$highest" "$RELEASE_TAG" | LC_ALL=C sort -V -Cu; then
+              echo "Release $RELEASE_TAG must be newer than public stable release $highest." >&2
               return 1
             fi
           }
@@ -145,11 +165,23 @@ jobs:
           fi
 
           check_release_refs
+          check_release_version
           gh release create "$RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag --draft --latest=false \
             --title "Куплено ${RELEASE_TAG#v}" \
             --notes-file release-notes.md \
             kupleno-extension.zip SHA256SUMS provenance.txt
+
+          draft_assets=$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,assets --jq '
+            if .isDraft and all(.assets[]; .state == "uploaded") then .assets[] | [.name, .digest] | @tsv
+            else error("Expected a draft with uploaded assets") end' | LC_ALL=C sort)
+          expected_assets=$(sha256sum kupleno-extension.zip SHA256SUMS provenance.txt | awk '{print $2 "\tsha256:" $1}' | LC_ALL=C sort)
+          if [[ "$draft_assets" != "$expected_assets" ]]; then
+            echo "The uploaded draft files do not match the verified release files." >&2
+            exit 1
+          fi
+
           check_release_refs
+          check_release_version
           gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest

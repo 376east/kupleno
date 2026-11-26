@@ -1,7 +1,7 @@
 'use strict';
 
 const assert = require('node:assert/strict');
-const { execFileSync } = require('node:child_process');
+const { execFileSync, spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 
@@ -98,25 +98,71 @@ assert.match(candidate, /github\.event\.created && !github\.event\.deleted/);
 assert.match(candidate, /ref: \$\{\{ github\.sha \}\}/);
 assert.match(candidate, /npm --prefix extension\/next ci/);
 assert.match(candidate, /if \[\[ "\$GITHUB_EVENT_NAME" == push \]\]; then\n\s+: "\$\{EVENT_SHA:\?[^}]+\}"\n\s+args=\(--tag "\$GITHUB_REF_NAME" --event-sha "\$EVENT_SHA"\)/);
-assert.ok(candidate.includes('git rev-parse refs/remotes/origin/master'));
-assert.match(candidate, /actions\/workflows\/ci\.yml\/runs"[\s\S]+-f event=push -f branch=master -f "head_sha=\$commit"[\s\S]+"\$conclusion" != success/);
+assert.ok(candidate.includes('git merge-base --is-ancestor "$commit" refs/remotes/origin/master'));
+assert.match(candidate, /actions\/workflows\/ci\.yml\/runs"[\s\S]+-f event=push -f branch=master -f "head_sha=\$commit"[\s\S]+select\(\.event == "push" and \.head_branch == "master" and \.status == "completed"\)[\s\S]+"\$ci_result" != "\$commit"\$'\\tsuccess'/);
 assert.match(candidate, /python3 scripts\/verify-next-release\.py --output-dir dist\/next-release/);
 assert.match(candidate, /path: dist\/next-release\//);
 assert.doesNotMatch(releaseWorkflow, /verify:release\b|package-extension\.sh/);
 
 assert.match(publish, /^    if: github\.event_name == 'push'$/m);
 assert.match(publish, /^    needs: candidate$/m);
+assert.match(publish, /^    concurrency:\n      group: publish-stable-release\n      queue: max$/m);
 assert.match(publish, /^    permissions:\n      actions: read\n      contents: write$/m);
 assert.ok(candidate.includes('node scripts/release-notes.js "$GITHUB_REF_NAME" dist/next-release/release-notes.md --current'));
 assert.match(publish, /gh run download .*--name "\$ARTIFACT_NAME"/);
 assert.match(publish, /sha256sum --check SHA256SUMS[\s\S]+gh release create/);
-assert.match(publish, /git\/ref\/heads\/master"[\s\S]+"\$remote_master" != "\$commit"/);
-assert.match(publish, /\n\s+check_release_refs\n\s+gh release create[\s\S]+\n\s+check_release_refs\n\s+gh release edit/);
+assert.match(publish, /git\/ref\/heads\/master" --jq \.object\.sha[\s\S]+compare\/\$commit\.\.\.\$remote_master\?per_page=1" --jq \.merge_base_commit\.sha/);
+assert.match(publish, /gh api --paginate "repos\/\$GITHUB_REPOSITORY\/releases\?per_page=100"[\s\S]+select\(\.draft == false and \.prerelease == false\)[\s\S]+select\(any\(\.assets\[\]; \.name == "kupleno-extension\.zip" and \.state == "uploaded"\)\)/);
+assert.match(publish, /\n\s+check_release_refs\n\s+check_release_version\n\s+gh release create[\s\S]+\n\s+check_release_refs\n\s+check_release_version\n\s+gh release edit/);
 assert.match(publish, /gh release view[\s\S]+already exists\.[\s\S]+exit 1[\s\S]+gh release create/);
 assert.match(publish, /gh release create[\s\S]+--verify-tag --draft --latest=false/);
 assert.doesNotMatch(publish, /--prerelease/);
+assert.match(publish, /if \.isDraft and all\(\.assets\[\]; \.state == "uploaded"\) then \.assets\[\] \| \[\.name, \.digest\] \| @tsv/);
+assert.match(publish, /sha256sum kupleno-extension\.zip SHA256SUMS provenance\.txt[\s\S]+if \[\[ "\$draft_assets" != "\$expected_assets" \]\]/);
 assert.match(publish, /kupleno-extension\.zip SHA256SUMS provenance\.txt[\s\S]+gh release edit .*--draft=false --latest$/m);
 assert.doesNotMatch(publish, /gh release (?:delete|upload)/);
+
+const policy = publish.split('          check_release_refs() {')[1].split('          if gh release view')[0];
+const checkRelease = `
+set -euo pipefail
+gh() {
+  case "$2" in
+    */git/ref/tags/*) printf '%s\\n' "$REMOTE_TAG" ;;
+    */git/ref/heads/master) printf '%s\\n' "$MASTER_TIP" ;;
+    */compare/*) printf '%s\\n' "$MERGE_BASE" ;;
+    --paginate) [[ "$RELEASES_AVAILABLE" == yes ]] && printf '%s\\n' "$PUBLIC_STABLE_TAGS" ;;
+    *) return 2 ;;
+  esac
+}
+check_release_refs() {${policy}
+check_release_refs
+check_release_version
+`;
+const commit = 'a'.repeat(40);
+const tagObject = 'b'.repeat(40);
+function runReleasePolicy(tag, productTags, overrides = {}) {
+  const command = process.platform === 'win32' ? 'git' : 'bash';
+  const args = process.platform === 'win32' ? ['-c', 'alias.release-policy=!bash -s', 'release-policy'] : ['-s'];
+  const result = spawnSync(command, args, {
+    cwd: root,
+    input: checkRelease,
+    encoding: 'utf8',
+    env: { ...process.env, GITHUB_REPOSITORY: 'example/kupleno', RELEASE_TAG: tag,
+      commit, TAG_OBJECT: tagObject, REMOTE_TAG: tagObject, MASTER_TIP: 'd'.repeat(40), MERGE_BASE: commit,
+      RELEASES_AVAILABLE: 'yes', PUBLIC_STABLE_TAGS: productTags.join('\n'), ...overrides }
+  });
+  if (result.error) throw result.error;
+  return result;
+}
+
+const stableTags = ['v0.22.9', 'v0.22.10', 'v0.18.2'];
+assert.equal(runReleasePolicy('v0.22.11', stableTags).status, 0, 'Reachable annotated release can advance the version');
+assert.equal(runReleasePolicy('v0.1.0', []).status, 0, 'First product release is allowed');
+assert.match(runReleasePolicy('v0.22.9', stableTags).stderr, /must be newer than public stable release v0\.22\.10/);
+assert.match(runReleasePolicy('v0.22.10', stableTags).stderr, /must be newer/, 'Equal version is rejected');
+assert.match(runReleasePolicy('v0.22.11', stableTags, { MERGE_BASE: 'c'.repeat(40) }).stderr, /no longer in master history/);
+assert.match(runReleasePolicy('v0.22.11', stableTags, { REMOTE_TAG: 'c'.repeat(40) }).stderr, /changed after verification/);
+assert.notEqual(runReleasePolicy('v0.22.11', stableTags, { RELEASES_AVAILABLE: 'no' }).status, 0, 'Release metadata failure stops publication');
 
 const ciWorkflow = read('.github/workflows/ci.yml');
 assert.match(ciWorkflow, /^name: CI/m);
