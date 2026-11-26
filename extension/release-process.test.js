@@ -110,6 +110,8 @@ assert.match(publish, /^    permissions:\n      actions: read\n      contents: w
 assert.ok(candidate.includes('node scripts/release-notes.js "$GITHUB_REF_NAME" dist/next-release/release-notes.md --current'));
 assert.match(publish, /gh run download .*--name "\$ARTIFACT_NAME"/);
 assert.match(publish, /sha256sum --check SHA256SUMS[\s\S]+gh release create/);
+assert.match(publish, /git\/ref\/heads\/master"[\s\S]+"\$remote_master" != "\$commit"/);
+assert.match(publish, /\n\s+check_release_refs\n\s+gh release create[\s\S]+\n\s+check_release_refs\n\s+gh release edit/);
 assert.match(publish, /gh release view[\s\S]+already exists\.[\s\S]+exit 1[\s\S]+gh release create/);
 assert.match(publish, /gh release create[\s\S]+--verify-tag --draft --latest=false/);
 assert.doesNotMatch(publish, /--prerelease/);

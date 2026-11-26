@@ -122,12 +122,19 @@ jobs:
           sha256sum --check SHA256SUMS
           grep -Fx "tag=$RELEASE_TAG" provenance.txt
           grep -Fx "tag_object=$TAG_OBJECT" provenance.txt
+          commit=$(sed -n 's/^git_commit=//p' provenance.txt)
+          [[ "$commit" =~ ^[0-9a-f]{40}$ ]]
 
-          check_tag() {
-            local remote_tag
+          check_release_refs() {
+            local remote_tag remote_master
             remote_tag=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq .object.sha)
             if [[ -z "$TAG_OBJECT" || "$remote_tag" != "$TAG_OBJECT" ]]; then
               echo "Release tag $RELEASE_TAG changed after verification." >&2
+              return 1
+            fi
+            remote_master=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/master" --jq .object.sha)
+            if [[ "$remote_master" != "$commit" ]]; then
+              echo "Master moved after release commit $commit was verified." >&2
               return 1
             fi
           }
@@ -137,12 +144,12 @@ jobs:
             exit 1
           fi
 
-          check_tag
+          check_release_refs
           gh release create "$RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag --draft --latest=false \
             --title "Куплено ${RELEASE_TAG#v}" \
             --notes-file release-notes.md \
             kupleno-extension.zip SHA256SUMS provenance.txt
-          check_tag
+          check_release_refs
           gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
