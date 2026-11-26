@@ -1,10 +1,10 @@
 # Выпуск Куплено
 
-Текущий предпросмотр для Chrome и Edge собирается из [extension/next](extension/next/). [Установка и резервное копирование](docs/PREVIEW.md#запуск).
+Выпуск для Chrome и Edge собирается из [extension/next](extension/next/). [Установка и резервное копирование](README.md#установка)
 
 ## Проверка без публикации
 
-Для проверки на GitHub откройте [Build and publish preview](https://github.com/376east/kupleno/actions/workflows/release-candidate.yml). После включения workflow в основную ветку нажмите **Run workflow** и выберите ветку с нужным коммитом. Результат появится в артефакте `kupleno-preview-<run_id>-<run_attempt>`.
+Для проверки на GitHub откройте [Build and publish release](https://github.com/376east/kupleno/actions/workflows/release-candidate.yml). Нажмите **Run workflow** и выберите ветку с нужным коммитом. Результат появится в артефакте `kupleno-release-<run_id>-<run_attempt>`. Ручной запуск только проверяет сборку.
 
 Локально используйте Node.js 24 и Python 3.10+.
 
@@ -17,16 +17,20 @@ python scripts/verify-next-release.py --output-dir dist/next-release
 
 Команда запускает проверку типов, тесты, чистую установку в Chromium и сценарии с тестовыми ответами магазинов. Две сборки должны дать одинаковый ZIP. Рядом сохраняются `SHA256SUMS` и `provenance.txt` с версией и SHA исходников.
 
-## Публикация предпросмотра
+## Публикация выпуска
 
-После проверки конечного коммита возьмите версию из [extension/next/package.json](extension/next/package.json) и создайте аннотированный тег. Пример для `0.22.15`.
+Сверьте версию в [extension/next/package.json](extension/next/package.json), CHANGELOG и ссылку на ZIP в README. Дождитесь успешного CI для события `push` на точной текущей вершине `master`. Создайте на ней аннотированный тег. Пример для `0.22.16`.
 
 ```sh
-git tag -a v0.22.15-preview.1 -m "Куплено 0.22.15 preview 1"
-git push origin refs/tags/v0.22.15-preview.1
+git tag -a v0.22.16 origin/master -m "Куплено 0.22.16"
+git push origin refs/tags/v0.22.16
 ```
 
-Новый тег запускает ту же проверку и публикацию GitHub prerelease с `kupleno-extension.zip`, `SHA256SUMS` и `provenance.txt`. Событие обновления или удаления тега пропускается. Для повторной публикации после исправления нужен новый тег с увеличенным номером предпросмотра. Если публикация оставила черновик, проверьте состояние тега и файлов перед ручным завершением черновика.
+Новый тег `vX.Y.Z` повторно проверяется и собирается на своём коммите. После успешной проверки GitHub публикует выпуск с `kupleno-extension.zip`, `SHA256SUMS` и `provenance.txt` и помечает его как [последний выпуск](https://github.com/376east/kupleno/releases/latest). Публикация берёт изменения из раздела версии в CHANGELOG.
+
+Обновление и удаление тега не запускают выпуск. Опубликованный тег и файлы сохраняются. Исправление выпускается следующей версией. Если публикация оставила черновик, проверьте состояние тега и файлов перед ручным завершением черновика.
+
+[0.22.15 Preview](https://github.com/376east/kupleno/releases/tag/v0.22.15-preview.1) хранится в архиве. Новый процесс выпуска работает с тегами `vX.Y.Z`.
 
 <details>
 <summary>Процесс выпуска прежней реализации 0.19.2 (архив)</summary>

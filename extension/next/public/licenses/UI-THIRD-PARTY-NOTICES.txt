@@ -1,4 +1,4 @@
-Third-party runtime notices for the Kupleno preview UI
+Third-party runtime notices for Kupleno
 
 
 ===== @formkit/auto-animate 0.10.0 (MIT) =====

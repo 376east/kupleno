@@ -1,4 +1,4 @@
-"""Package the built preview with stable ZIP timestamps, order and permissions."""
+"""Package the built extension with stable ZIP timestamps, order and permissions."""
 import argparse
 import hashlib
 import json
@@ -15,13 +15,14 @@ if output.is_relative_to(build.resolve()):
     parser.error('Output must be outside the build directory')
 manifest = json.loads((build / 'manifest.json').read_text(encoding='utf-8'))
 package = json.loads((root / 'extension/next/package.json').read_text(encoding='utf-8'))
-assert manifest['version'] == package['version'] and manifest['manifest_version'] == 3
+assert manifest['version'] == manifest.get('version_name', manifest['version']) == package['version']
+assert manifest['manifest_version'] == 3
 files = sorted(path for path in build.rglob('*') if path.is_file())
 assert files and (build / 'app.html') in files
 output.parent.mkdir(parents=True, exist_ok=True)
 with ZipFile(output, 'w', compression=ZIP_DEFLATED, compresslevel=9) as archive:
     for path in files:
-        assert not path.is_symlink(), 'Symlinks must not enter a preview package'
+        assert not path.is_symlink(), 'Symlinks must not enter the package'
         entry = ZipInfo(path.relative_to(build).as_posix(), date_time=(1980, 1, 1, 0, 0, 0))
         entry.create_system = 3
         entry.external_attr = 0o100644 << 16

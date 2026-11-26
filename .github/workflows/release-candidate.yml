@@ -1,15 +1,16 @@
-name: Build and publish preview
+name: Build and publish release
 
 on:
   push:
-    tags: ['v*-preview.*']
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
   workflow_dispatch:
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
-  group: preview-release-${{ github.event_name }}-${{ github.ref }}
+  group: release-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -38,7 +39,26 @@ jobs:
             package-lock.json
             extension/next/package-lock.json
 
-      - name: Install locked preview and test dependencies
+      - name: Require successful CI for the tagged master commit
+        if: github.event_name == 'push'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          commit=$(git rev-parse HEAD)
+          if [[ "$commit" != "$(git rev-parse refs/remotes/origin/master)" ]]; then
+            echo "Release commit $commit must match current master."
+            exit 1
+          fi
+          conclusion=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" \
+            -f event=push -f branch=master -f "head_sha=$commit" --jq '.workflow_runs[0].conclusion')
+          if [[ "$conclusion" != success ]]; then
+            echo "Release commit $commit requires successful master push CI."
+            exit 1
+          fi
+
+      - name: Install locked build and test dependencies
         run: |
           npm ci
           npm --prefix extension/next ci
@@ -46,7 +66,7 @@ jobs:
       - name: Install test Chromium
         run: npx playwright install --with-deps chromium
 
-      - name: Check preview and verify ZIP reproducibility
+      - name: Verify the build and ZIP reproducibility
         id: verify
         shell: bash
         env:
@@ -55,10 +75,14 @@ jobs:
           set -euo pipefail
           args=()
           if [[ "$GITHUB_EVENT_NAME" == push ]]; then
+            : "${EVENT_SHA:?Missing tag push SHA}"
             args=(--tag "$GITHUB_REF_NAME" --event-sha "$EVENT_SHA")
           fi
           python3 scripts/verify-next-release.py --output-dir dist/next-release "${args[@]}"
-          printf 'artifact=kupleno-preview-%s-%s\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+          if [[ "$GITHUB_EVENT_NAME" == push ]]; then
+            node scripts/release-notes.js "$GITHUB_REF_NAME" dist/next-release/release-notes.md --current
+          fi
+          printf 'artifact=kupleno-release-%s-%s\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
           grep '^tag_object=' dist/next-release/provenance.txt >> "$GITHUB_OUTPUT"
 
       - name: Store verified archive
@@ -70,7 +94,7 @@ jobs:
           retention-days: 30
 
   publish:
-    name: Publish verified GitHub prerelease
+    name: Publish verified GitHub release
     if: github.event_name == 'push'
     needs: candidate
     runs-on: ubuntu-latest
@@ -86,7 +110,7 @@ jobs:
           ARTIFACT_NAME: ${{ needs.candidate.outputs.artifact }}
         run: gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "$ARTIFACT_NAME" --dir dist
 
-      - name: Publish GitHub prerelease
+      - name: Publish GitHub release
         working-directory: dist
         shell: bash
         env:
@@ -113,20 +137,12 @@ jobs:
             exit 1
           fi
 
-          cat > release-notes.md <<EOF
-          Предпросмотр Куплено для Chrome и Edge на Chromium 116 и новее.
-
-          Распакуйте \`kupleno-extension.zip\` и загрузите папку расширения в режиме разработчика. Перед обновлением экспортируйте резервную копию.
-          [Пошаговая установка]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/blob/master/README.md#установка)
-
-          CI проверяет установку и сбор с тестовыми ответами магазинов. Полнота сбора на ваших аккаунтах зависит от работы магазинов и проверяется отдельно.
-          EOF
           check_tag
           gh release create "$RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
-            --verify-tag --draft --prerelease --latest=false \
+            --verify-tag --draft --latest=false \
             --title "Куплено ${RELEASE_TAG#v}" \
             --notes-file release-notes.md \
             kupleno-extension.zip SHA256SUMS provenance.txt
           check_tag
-          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest=false
+          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest

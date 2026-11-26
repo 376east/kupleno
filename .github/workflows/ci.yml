@@ -51,6 +51,7 @@ jobs:
         if: always() && github.event_name == 'workflow_dispatch' && inputs.keep_artifacts
     if: github.event_name != 'schedule'
   preview:
+    name: Current extension
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -79,7 +80,7 @@ jobs:
       - run: npm run preview:design
         env:
           KUPLENO_DESIGN_OUTPUT: ${{ runner.temp }}/kupleno-design
-      - name: Prove preview package reproducibility
+      - name: Prove extension ZIP reproducibility
         shell: bash
         run: |
           python3 scripts/package-preview.py --output "$RUNNER_TEMP/preview-first.zip"
@@ -88,7 +89,7 @@ jobs:
           cmp "$RUNNER_TEMP/preview-first.zip" "$RUNNER_TEMP/preview-second.zip"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: kupleno-preview-${{ github.sha }}
+          name: kupleno-extension-build-${{ github.sha }}
           path: extension/next/.output/chrome-mv3/
           if-no-files-found: error
           retention-days: 7

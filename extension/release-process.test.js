@@ -81,22 +81,25 @@ for (const workflow of ['.github/workflows/ci.yml', '.github/workflows/release-c
   assert.match(source, /playwright install --with-deps chromium/);
 }
 
-// The public download describes a published preview. It can lag the source version.
+// The public download and latest page point to regular releases.
 const rootReadme = read('README.md');
-assert.match(rootReadme, /\[Скачать Куплено (\d+\.\d+\.\d+) Preview\]\(https:\/\/github\.com\/376east\/kupleno\/releases\/download\/v\1-preview\.[1-9]\d*\/kupleno-extension\.zip\)/);
+assert.match(rootReadme, /\[Скачать Куплено (\d+\.\d+\.\d+)\]\(https:\/\/github\.com\/376east\/kupleno\/releases\/download\/v\1\/kupleno-extension\.zip\)/);
+assert.ok(rootReadme.includes('(https://github.com/376east/kupleno/releases/latest)'));
 assert.ok(rootReadme.includes('[Инструкция по установке](#установка)'));
 assert.match(rootReadme, /^## Установка$/m);
 
 const releaseWorkflow = read('.github/workflows/release-candidate.yml');
 const [candidate, publish] = releaseWorkflow.split(/^  publish:\n/m);
-assert.match(candidate, /^permissions:\n  contents: read$/m);
+assert.match(candidate, /^permissions:\n  actions: read\n  contents: read$/m);
 assert.doesNotMatch(candidate, /contents:\s*write|gh release/);
-assert.match(candidate, /^    tags: \['v\*-preview\.\*'\]$/m);
+assert.match(candidate, /^    tags: \['v\[0-9\]\+\.\[0-9\]\+\.\[0-9\]\+'\]$/m);
 assert.match(candidate, /^  workflow_dispatch:$/m);
 assert.match(candidate, /github\.event\.created && !github\.event\.deleted/);
 assert.match(candidate, /ref: \$\{\{ github\.sha \}\}/);
 assert.match(candidate, /npm --prefix extension\/next ci/);
-assert.match(candidate, /if \[\[ "\$GITHUB_EVENT_NAME" == push \]\]; then\n\s+args=\(--tag "\$GITHUB_REF_NAME" --event-sha "\$EVENT_SHA"\)/);
+assert.match(candidate, /if \[\[ "\$GITHUB_EVENT_NAME" == push \]\]; then\n\s+: "\$\{EVENT_SHA:\?[^}]+\}"\n\s+args=\(--tag "\$GITHUB_REF_NAME" --event-sha "\$EVENT_SHA"\)/);
+assert.ok(candidate.includes('git rev-parse refs/remotes/origin/master'));
+assert.match(candidate, /actions\/workflows\/ci\.yml\/runs"[\s\S]+-f event=push -f branch=master -f "head_sha=\$commit"[\s\S]+"\$conclusion" != success/);
 assert.match(candidate, /python3 scripts\/verify-next-release\.py --output-dir dist\/next-release/);
 assert.match(candidate, /path: dist\/next-release\//);
 assert.doesNotMatch(releaseWorkflow, /verify:release\b|package-extension\.sh/);
@@ -104,12 +107,13 @@ assert.doesNotMatch(releaseWorkflow, /verify:release\b|package-extension\.sh/);
 assert.match(publish, /^    if: github\.event_name == 'push'$/m);
 assert.match(publish, /^    needs: candidate$/m);
 assert.match(publish, /^    permissions:\n      actions: read\n      contents: write$/m);
-assert.ok(publish.includes('[Пошаговая установка]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/blob/master/README.md#установка)'));
+assert.ok(candidate.includes('node scripts/release-notes.js "$GITHUB_REF_NAME" dist/next-release/release-notes.md --current'));
 assert.match(publish, /gh run download .*--name "\$ARTIFACT_NAME"/);
 assert.match(publish, /sha256sum --check SHA256SUMS[\s\S]+gh release create/);
 assert.match(publish, /gh release view[\s\S]+already exists\.[\s\S]+exit 1[\s\S]+gh release create/);
-assert.match(publish, /gh release create[\s\S]+--verify-tag --draft --prerelease --latest=false/);
-assert.match(publish, /kupleno-extension\.zip SHA256SUMS provenance\.txt[\s\S]+gh release edit .*--draft=false --latest=false/);
+assert.match(publish, /gh release create[\s\S]+--verify-tag --draft --latest=false/);
+assert.doesNotMatch(publish, /--prerelease/);
+assert.match(publish, /kupleno-extension\.zip SHA256SUMS provenance\.txt[\s\S]+gh release edit .*--draft=false --latest$/m);
 assert.doesNotMatch(publish, /gh release (?:delete|upload)/);
 
 const ciWorkflow = read('.github/workflows/ci.yml');
@@ -157,6 +161,11 @@ assert.equal(
 const generatedNotes = releaseNotes.buildReleaseNotes(read('CHANGELOG.md'), `v${manifest.version}`);
 assert.match(generatedNotes, new RegExp(`blob/v${manifest.version}/README\\.md`));
 assert.match(generatedNotes, /CI не имеет пользовательских сессий маркетплейсов/);
+const { version: currentVersion } = JSON.parse(read('extension/next/package.json'));
+const currentNotes = releaseNotes.buildReleaseNotes(read('CHANGELOG.md'), `v${currentVersion}`, true);
+assert.ok(currentNotes.includes(`/releases/download/v${currentVersion}/kupleno-extension.zip`));
+assert.ok(currentNotes.includes(`/blob/v${currentVersion}/README.md#установка`));
+assert.match(currentNotes, /с тестовыми ответами магазинов/);
 
 const packageScript = read('scripts/package-extension.sh');
 assert.match(packageScript, /Refusing ambiguous root archive/);

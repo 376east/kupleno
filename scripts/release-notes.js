@@ -33,10 +33,25 @@ function extractChangelogSection(changelog, version) {
   return body;
 }
 
-function buildReleaseNotes(changelog, rawTag) {
+function buildReleaseNotes(changelog, rawTag, current = false) {
   const { tag, version } = parseTag(rawTag);
   const changes = extractChangelogSection(changelog, version);
   const source = `${repositoryUrl}/blob/${tag}`;
+
+  if (current) return [
+    `**[Скачать Куплено ${version}](${repositoryUrl}/releases/download/${tag}/kupleno-extension.zip)** · [Установка и резервное копирование](${source}/README.md#установка)`,
+    '',
+    '## Что изменилось',
+    '',
+    changes,
+    '',
+    '## Что проверено',
+    '',
+    'ZIP собран из точного аннотированного тега. Повторная сборка дала тот же архив. Установка в Chromium и сбор проверены с тестовыми ответами магазинов.',
+    '',
+    'Полнота сбора в живых аккаунтах проверяется отдельно. [Текущая проверка](https://github.com/376east/kupleno/issues/23)',
+    ''
+  ].join('\n');
 
   return [
     '## Что изменилось',
@@ -62,14 +77,14 @@ function buildReleaseNotes(changelog, rawTag) {
 }
 
 function main() {
-  const [rawTag, outputPath] = process.argv.slice(2);
+  const [rawTag, outputPath, mode] = process.argv.slice(2);
   if (!outputPath) {
     throw new Error('Usage: node scripts/release-notes.js vX.Y.Z output.md');
   }
 
   const root = path.join(__dirname, '..');
   const changelog = fs.readFileSync(path.join(root, 'CHANGELOG.md'), 'utf8');
-  const notes = buildReleaseNotes(changelog, rawTag);
+  const notes = buildReleaseNotes(changelog, rawTag, mode === '--current');
   fs.mkdirSync(path.dirname(path.resolve(outputPath)), { recursive: true });
   fs.writeFileSync(outputPath, notes);
   console.log(`Release notes written to ${outputPath}`);

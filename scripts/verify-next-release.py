@@ -1,4 +1,4 @@
-"""Verify and package the current Kupleno Chromium preview."""
+"""Verify and package the current Kupleno Chromium release."""
 import argparse
 import hashlib
 import json
@@ -27,8 +27,8 @@ def git(*args):
 
 
 def check_tag(tag, version, commit, event_sha):
-    if not re.fullmatch(rf'v{re.escape(version)}-preview\.[1-9][0-9]*', tag):
-        raise ValueError(f'Expected v{version}-preview.N, where N is a positive integer')
+    if tag != f'v{version}':
+        raise ValueError(f'Expected release tag v{version}')
     ref = f'refs/tags/{tag}'
     if git('cat-file', '-t', ref) != 'tag':
         raise ValueError(f'{tag} must be an annotated tag')
@@ -47,7 +47,7 @@ def check_tag(tag, version, commit, event_sha):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output-dir', type=Path, required=True)
-    parser.add_argument('--tag', help='Require this annotated preview tag on HEAD')
+    parser.add_argument('--tag', help='Require this annotated release tag on HEAD')
     parser.add_argument('--event-sha', help='Expected GitHub tag push SHA')
     args = parser.parse_args()
     if args.event_sha and not args.tag:
@@ -58,6 +58,8 @@ def main():
         parser.error('Output must be outside extension/next')
 
     version = json.loads((extension / 'package.json').read_text(encoding='utf-8'))['version']
+    if not re.fullmatch(r'(?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*)){2}', version):
+        raise ValueError('The extension version must be MAJOR.MINOR.PATCH')
     commit = git('rev-parse', 'HEAD')
     tag_object = check_tag(args.tag, version, commit, args.event_sha) if args.tag else ''
     dirty = bool(git('status', '--porcelain', '--untracked-files=all'))
@@ -73,7 +75,7 @@ def main():
         run(sys.executable, packager, '--output', second)
         data = first.read_bytes()
         if data != second.read_bytes():
-            raise ValueError('The preview ZIP changed on rebuild')
+            raise ValueError('The release ZIP changed on rebuild')
 
         output.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(first, output / ZIP_NAME)
@@ -86,7 +88,7 @@ def main():
             encoding='utf-8',
             newline='\n',
         )
-    print(f'Verified reproducible preview {version}: {output / ZIP_NAME}')
+    print(f'Verified reproducible release build {version}: {output / ZIP_NAME}')
 
 
 if __name__ == '__main__':

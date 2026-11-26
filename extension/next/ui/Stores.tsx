@@ -22,6 +22,7 @@ export function Stores({ state, rows, update, onSelect }: { state: State; rows: 
   const [jobs, setJobs] = useState<Job[]>([]);
   const [errors, setErrors] = useState<Partial<Record<Source, string>>>({});
   const [error, setError] = useState('');
+  const [pollError, setPollError] = useState('');
   const [applying, setApplying] = useState<string[]>([]);
   const [starting, setStarting] = useState<Source[]>([]);
   const startingRef = useRef(new Set<Source>());
@@ -36,8 +37,15 @@ export function Stores({ state, rows, update, onSelect }: { state: State; rows: 
     let stopped = false;
     let timer: ReturnType<typeof setTimeout>;
     async function poll() {
-      try { const value = await command({ type: 'KUPLENO_JOB', action: 'status' }); if (!stopped) setJobs(readJobs(value)); }
-      catch (e) { if (!stopped) setError(e instanceof Error ? e.message : 'Не удалось прочитать ход сбора.'); }
+      try {
+        const value = await command({ type: 'KUPLENO_JOB', action: 'status' });
+        if (!stopped) {
+          setJobs(readJobs(value));
+          setPollError('');
+        }
+      } catch (e) {
+        if (!stopped) setPollError(e instanceof Error ? e.message : 'Не удалось прочитать ход сбора.');
+      }
       if (!stopped) timer = setTimeout(() => void poll(), 1500);
     }
     if (canCollect) void poll();
@@ -110,7 +118,7 @@ export function Stores({ state, rows, update, onSelect }: { state: State; rows: 
   }
   return <div className="store-list">
     {canCollect && <div className="row-actions"><button className="primary" disabled={!!clearing || sources.every(source => starting.includes(source) || pending(source))} onClick={() => void start(sources)}>Обновить все магазины</button></div>}
-    {!canCollect && <section className="callout" role="status"><h2>Предпросмотр истории</h2><p>Сбор покупок доступен в установленном расширении Куплено. Откройте его через меню расширений браузера. Здесь можно посмотреть сохранённую историю и перейти к чекам магазинов.</p></section>}
+    {!canCollect && <section className="callout" role="status"><h2>Просмотр истории</h2><p>Сбор покупок доступен в установленном расширении Куплено. Откройте его через меню расширений браузера. Здесь можно посмотреть сохранённую историю и перейти к чекам магазинов.</p></section>}
     {clearing && <Dialog title={`Удалить историю ${SOURCES[clearing].name}?`} error={error} onClose={() => !clearBusy && setClearing(null)}><p>Будут удалены покупки этого магазина во всех профилях, связанные ручные правки, ожидания возвратов и гарантии. История остальных магазинов останется.</p><p>Новый сбор не запустится. Предыдущие данные можно восстановить в настройках из истории изменений.</p><button className="danger" disabled={clearBusy} onClick={() => {
       const source = clearing;
       setClearBusy(true); setError('');
@@ -120,7 +128,7 @@ export function Stores({ state, rows, update, onSelect }: { state: State; rows: 
         await update(current => clearSource(current, source));
       }).then(() => { setClearing(null); setSuccess(value => ({ ...value, [source]: 'История магазина удалена' })); }).catch(e => setError(e instanceof Error ? e.message : 'Не удалось удалить историю.')).finally(() => setClearBusy(false));
     }}>Удалить историю</button></Dialog>}
-    {error && !clearing && <div className="callout" role="alert">{error}</div>}
+    {pollError && !clearing && <div className="callout" role="alert">{pollError}</div>}
     {Object.entries(SOURCES).map(([sourceName, info]) => {
       const source = sourceName as Source;
       const purchases = rows.filter(row => sourceOf(row) === source);

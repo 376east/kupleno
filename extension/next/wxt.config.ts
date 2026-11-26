@@ -18,10 +18,10 @@ export default defineConfig({
     },
   },
   manifest: ({ mode }) => ({
-    name: 'Куплено — новая версия',
+    name: 'Куплено',
     version: mode === 'local-audit' ? `${version}.${localAuditRevision}` : version,
-    version_name: mode === 'local-audit' ? `${version}.${localAuditRevision} local audit` : `${version} preview`,
-    description: 'Покупки и возвраты в одном месте. Локальная проверка новой версии.',
+    ...(mode === 'local-audit' ? { version_name: `${version}.${localAuditRevision} local audit` } : {}),
+    description: 'Локальный журнал покупок, возвратов и чеков Ozon, Wildberries и Яндекс Маркета.',
     minimum_chrome_version: '116',
     icons: { 16: 'icons/icon-16.png', 32: 'icons/icon-32.png', 48: 'icons/icon-48.png', 128: 'icons/icon-128.png' },
     permissions: ['scripting', 'storage', 'unlimitedStorage', 'offscreen', ...(mode === 'local-audit' ? ['downloads' as const] : [])],

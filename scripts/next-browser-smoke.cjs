@@ -35,7 +35,8 @@ async function main() {
     const manifest = await worker.evaluate(() => chrome.runtime.getManifest());
     const { version } = require('../extension/next/package.json');
     assert.equal(manifest.version, version);
-    assert.equal(manifest.version_name, `${version} preview`);
+    assert.equal(manifest.version_name ?? manifest.version, version);
+    assert.equal(manifest.name, 'Куплено');
     const id = new URL(worker.url()).host;
     const page = await context.newPage();
     page.on('pageerror', error => errors.push(error.message));
@@ -232,7 +233,19 @@ async function main() {
       if (out) { await fs.mkdir(out, { recursive: true }); await page.screenshot({ path: path.join(out, `next-overview-${dark ? 'dark' : 'light'}.png`), fullPage: true }); }
     }
     await page.setViewportSize({ width: 390, height: 844 });
+    await page.evaluate(() => {
+      const sendMessage = chrome.runtime.sendMessage;
+      chrome.runtime.sendMessage = (...args) => {
+        if (args[0]?.type === 'KUPLENO_JOB' && args[0].action === 'status') return Promise.reject(new Error('Временный сбой проверки статуса'));
+        return Reflect.apply(sendMessage, chrome.runtime, args);
+      };
+      window.restoreCollectionStatus = () => { chrome.runtime.sendMessage = sendMessage; };
+    });
     await page.getByRole('link', {name:'Магазины',exact:true}).click();
+    const statusError = page.getByRole('alert').filter({ hasText: 'Временный сбой проверки статуса' });
+    await statusError.waitFor({ timeout: 5000 });
+    await page.evaluate(() => window.restoreCollectionStatus());
+    await statusError.waitFor({ state: 'hidden', timeout: 5000 });
     const ozonPanel=page.locator('.store-panel').filter({has:page.getByRole('heading',{name:'Ozon',exact:true})});
     await ozonPanel.getByRole('button',{name:'Удалить историю',exact:true}).click();
     await page.getByRole('dialog').getByRole('button',{name:'Закрыть',exact:true}).click();

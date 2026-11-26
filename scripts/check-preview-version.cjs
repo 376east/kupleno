@@ -8,5 +8,6 @@ const { version } = readJson('package.json');
 const manifest = readJson('.output/chrome-mv3/manifest.json');
 
 assert.equal(manifest.version, version, 'Built extension version must match package.json');
-assert.equal(manifest.version_name, `${version} preview`, 'Built extension must show the current preview version');
-console.log(`Preview manifest version verified: ${manifest.version_name}`);
+assert.equal(manifest.version_name ?? manifest.version, version, 'Built extension must show the package version');
+assert.equal(manifest.name, 'Куплено');
+console.log(`Manifest version verified: ${manifest.version}`);

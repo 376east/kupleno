@@ -21,7 +21,7 @@ async function main() {
     const worker = context.serviceWorkers()[0] || await context.waitForEvent('serviceworker', { timeout: 8000 });
     const id = new URL(worker.url()).host;
     await worker.evaluate(async () => {
-      if (chrome.runtime.getManifest().permissions.includes('downloads')) throw new Error('Normal Preview requests downloads.');
+      if (chrome.runtime.getManifest().permissions.includes('downloads')) throw new Error('The regular extension requests downloads.');
       await chrome.storage.local.set({
         syntheticInstalledData: true,
         'kupleno-local-audit-result': { run: 'synthetic-restart', report: { version: '0.22.15.1', status: 'checked' } },
